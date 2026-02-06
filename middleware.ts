@@ -8,12 +8,16 @@ export const config = {
 export default async function middleware(req: NextRequest) {
   const url = req.nextUrl;
   const hostname = req.headers.get("host") || "";
-  const currentHost = process.env.NODE_ENV === "production" ? "zulora.in" : "localhost:3000";
   
+  // Define the main domain
+  const currentHost = "zulora.in"; // Hardcoded for safety
+
+  // LOGIC: Check if this is a user's subdomain
   const isSubdomain = 
     hostname.includes(".") && 
     !hostname.endsWith(currentHost) && 
-    !hostname.includes("www");
+    !hostname.includes("www") && 
+    !hostname.includes("vercel.app"); // <--- THIS LINE FIXES YOUR ERROR
 
   if (isSubdomain) {
     const subdomain = hostname.split(".")[0];
