@@ -9,16 +9,16 @@ export default async function middleware(req: NextRequest) {
   const url = req.nextUrl;
   const hostname = req.headers.get("host") || "";
   
-  // Define the main domain
   const currentHost = "zulora.in"; 
 
   // LOGIC: Check if this is a user's subdomain
-  // We added a check to IGNORE 'vercel.app' links so they work!
+  // I added a check to IGNORE 'netlify.app' so your site loads!
   const isSubdomain = 
     hostname.includes(".") && 
     !hostname.endsWith(currentHost) && 
     !hostname.includes("www") && 
-    !hostname.includes("vercel.app"); 
+    !hostname.includes("vercel.app") &&
+    !hostname.includes("netlify.app");  // <--- ADDED THIS FOR YOU
 
   if (isSubdomain) {
     const subdomain = hostname.split(".")[0];
