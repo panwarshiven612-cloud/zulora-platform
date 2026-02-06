@@ -10,14 +10,15 @@ export default async function middleware(req: NextRequest) {
   const hostname = req.headers.get("host") || "";
   
   // Define the main domain
-  const currentHost = "zulora.in"; // Hardcoded for safety
+  const currentHost = "zulora.in"; 
 
   // LOGIC: Check if this is a user's subdomain
+  // We added a check to IGNORE 'vercel.app' links so they work!
   const isSubdomain = 
     hostname.includes(".") && 
     !hostname.endsWith(currentHost) && 
     !hostname.includes("www") && 
-    !hostname.includes("vercel.app"); // <--- THIS LINE FIXES YOUR ERROR
+    !hostname.includes("vercel.app"); 
 
   if (isSubdomain) {
     const subdomain = hostname.split(".")[0];
