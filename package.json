@@ -1,0 +1,37 @@
+{
+  "name": "zulora-ultimate",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.73.0",
+    "canvas-confetti": "^1.9.4",
+    "clsx": "^2.1.1",
+    "firebase": "^12.9.0",
+    "framer-motion": "^12.33.0",
+    "groq-sdk": "^0.37.0",
+    "lucide-react": "^0.563.0",
+    "next": "^16.1.6",
+    "openai": "^6.18.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "react-hot-toast": "^2.6.0",
+    "tailwind-merge": "^3.4.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/canvas-confetti": "^1.9.0",
+    "@types/node": "^20.19.32",
+    "@types/react": "^19.2.13",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.6",
+    "tailwindcss": "^4",
+    "typescript": "^5.9.3"
+  }
+}
