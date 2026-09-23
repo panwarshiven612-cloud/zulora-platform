@@ -34,7 +34,7 @@ export const VideoGenerator = () => {
   const [prompt, setPrompt] = useState('');
   const [motionSpeed, setMotionSpeed] = useState(5);
   const [cameraAngle, setCameraAngle] = useState('Cinematic Pan');
-  const [duration, setDuration] = useState(4);
+  const [duration, setDuration] = useState(6);
   const [loading, setLoading] = useState(false);
   const [gallery, setGallery] = useState([]);
   const [activeVideo, setActiveVideo] = useState(null);
@@ -75,7 +75,7 @@ export const VideoGenerator = () => {
         prompt: prompt.trim(),
         cameraAngle,
         motionSpeed,
-        duration,
+        duration: result.duration || duration,
         provider: result.provider,
         model: result.model
       };
@@ -203,7 +203,7 @@ export const VideoGenerator = () => {
                 <span className="text-indigo-500 font-bold">{duration} Seconds</span>
               </div>
               <div className="flex gap-2">
-                {[4, 6, 8].map(d => (
+                {[6, 10].map(d => (
                   <button
                     key={d}
                     type="button"

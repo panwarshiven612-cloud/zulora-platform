@@ -1,9 +1,9 @@
 import { createPublicKey, createSign, verify as verifySignature } from 'node:crypto';
-import { apiKeyPool, providerKeys } from './apiKeyPool.js';
+import { apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
 
 export const config = { maxDuration: 60 };
 
-const CHAT_ORDER = ['groq', 'openrouter', 'cerebras', 'gemini', 'mistral'];
+const CHAT_ORDER = ['gemini', 'groq', 'cerebras', 'openrouter', 'mistral'];
 const COUNTERS = {
   chat: { used: 'textUsed', limit: 'textLimit', count: 'chatCount', window: 'chatWindowStart', duration: 2 * 60 * 60 * 1000 },
   image: { used: 'imageUsed', limit: 'imageLimit', count: 'imageCount', window: 'imageWindowStart', duration: 24 * 60 * 60 * 1000 },
@@ -226,7 +226,7 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
   const configs = {
     groq: { url: 'https://api.groq.com/openai/v1/chat/completions', model: 'llama-3.3-70b-versatile', label: 'Groq' },
     openrouter: { url: 'https://openrouter.ai/api/v1/chat/completions', model: options.vision ? 'google/gemini-3.8-flash' : 'meta-llama/llama-3.3-70b-instruct', label: 'OpenRouter' },
-    cerebras: { url: 'https://api.cerebras.ai/v1/chat/completions', model: 'llama3.1-8b', label: 'Cerebras' },
+    cerebras: { url: 'https://api.cerebras.ai/v1/chat/completions', model: 'gpt-oss-120b', label: 'Cerebras' },
     mistral: { url: 'https://api.mistral.ai/v1/chat/completions', model: 'mistral-small-latest', label: 'Mistral AI' }
   };
   const config = configs[provider];
@@ -256,8 +256,10 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
           return { text: text.trim(), provider: `${config.label}${provider === 'openrouter' ? ` (Key #${index + 1})` : ''}`, model: config.model };
         }
       }
+      console.warn(`${config.label} text request failed with HTTP ${response.status}.`);
       apiKeyPool.failed(provider, index, parseRetryAfter(response));
-    } catch {
+    } catch (error) {
+      console.warn(`${config.label} text request failed:`, error.message);
       apiKeyPool.failed(provider, index);
     }
   }
@@ -296,8 +298,10 @@ async function tryGemini(messages, options = {}) {
           return { text, provider: `Google Gemini (Key #${index + 1})`, model: 'gemini-3.8-flash', sources };
         }
       }
+      console.warn(`Google Gemini text request failed with HTTP ${response.status}.`);
       apiKeyPool.failed('gemini', index, parseRetryAfter(response));
-    } catch {
+    } catch (error) {
+      console.warn('Google Gemini text request failed:', error.message);
       apiKeyPool.failed('gemini', index);
     }
   }
@@ -322,6 +326,7 @@ async function generateChat(body) {
       : await tryOpenAiProvider(provider, messages, { attachments: body.attachments, vision });
     if (result) return result;
   }
+  if (!availableProviders().length) throw new Error('No text-generation providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.');
   throw new Error(vision ? 'Image analysis providers are unavailable. Please retry shortly.' : 'All configured AI providers are unavailable. Check the server provider keys and retry.');
 }
 
@@ -440,9 +445,15 @@ async function falRequest(model, input, maxWaitMs = 16_000) {
 
 async function cloudflareImage(prompt, aspectRatio) {
   if (!providerKeys.cloudflareAccountId || !providerKeys.cloudflareToken) return null;
-  const response = await fetchWithTimeout(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(providerKeys.cloudflareAccountId)}/ai/run/@cf/black-forest-labs/flux-1-schnell`, {
+  const [ratioWidth, ratioHeight] = String(aspectRatio || '1:1').split(':').map(Number);
+  const safeRatioWidth = Number.isFinite(ratioWidth) && ratioWidth > 0 ? ratioWidth : 1;
+  const safeRatioHeight = Number.isFinite(ratioHeight) && ratioHeight > 0 ? ratioHeight : 1;
+  const longEdge = 1024;
+  const width = Math.max(256, Math.round((safeRatioWidth >= safeRatioHeight ? longEdge : longEdge * safeRatioWidth / safeRatioHeight) / 8) * 8);
+  const height = Math.max(256, Math.round((safeRatioHeight >= safeRatioWidth ? longEdge : longEdge * safeRatioHeight / safeRatioWidth) / 8) * 8);
+  const response = await fetchWithTimeout(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(providerKeys.cloudflareAccountId)}/ai/run/@cf/bytedance/stable-diffusion-xl-lightning`, {
     method: 'POST', headers: { Authorization: `Bearer ${providerKeys.cloudflareToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, num_steps: 4, width: aspectRatio === '16:9' ? 1024 : 768, height: aspectRatio === '9:16' ? 1024 : 768 })
+    body: JSON.stringify({ prompt, num_steps: 4, width, height })
   }, 24_000);
   if (!response.ok) throw new Error('Cloudflare image generation failed.');
   const data = await response.json();
@@ -458,6 +469,16 @@ async function huggingfaceImage(prompt) {
   }, 25_000);
   if (!response.ok) throw new Error('Hugging Face image generation failed.');
   return responseImage(response);
+}
+
+function falImageSize(aspectRatio) {
+  return ({
+    '1:1': 'square',
+    '16:9': 'landscape_16_9',
+    '9:16': 'portrait_16_9',
+    '4:3': 'landscape_4_3',
+    '3:4': 'portrait_4_3'
+  })[aspectRatio] || 'square';
 }
 
 async function replicateImage(prompt, aspectRatio) {
@@ -482,14 +503,18 @@ async function generateImage(body) {
   const prompt = String(body.prompt || '').trim();
   const sourceImage = String(body.sourceImage || '');
   if (!prompt) throw new Error('Write a prompt before generating an image.');
+  const hasImageProvider = sourceImage
+    ? availableProviders().includes('gemini') || Boolean(providerKeys.pollinations)
+    : Boolean(providerKeys.pollinations || providerKeys.huggingface || providerKeys.fal || (providerKeys.cloudflareAccountId && providerKeys.cloudflareToken) || providerKeys.replicate);
+  if (!hasImageProvider) throw new Error(`No image-${sourceImage ? 'editing' : 'generation'} providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.`);
   const fullPrompt = [body.style && body.style !== 'Photorealistic' ? `Style: ${body.style}.` : '', prompt, body.negativePrompt ? `Avoid: ${String(body.negativePrompt).slice(0, 1000)}.` : ''].filter(Boolean).join(' ');
   const attempts = [];
   if (sourceImage) attempts.push(['Gemini 3.1 Flash Image', () => geminiImageEdit(fullPrompt, sourceImage, body.aspectRatio)]);
   attempts.push(['Pollinations', () => pollinationsImage(fullPrompt, sourceImage, body.aspectRatio, body.seed)]);
   if (!sourceImage) {
-    attempts.push(['Fal', async () => { const data = await falRequest('fal-ai/flux/schnell', { prompt: fullPrompt, image_size: body.aspectRatio || 'square' }); return data?.images?.[0]?.url || null; }]);
-    attempts.push(['Cloudflare Workers AI', () => cloudflareImage(fullPrompt, body.aspectRatio)]);
     attempts.push(['Hugging Face', () => huggingfaceImage(fullPrompt)]);
+    attempts.push(['Fal', async () => { const data = await falRequest('fal-ai/flux/schnell', { prompt: fullPrompt, image_size: falImageSize(body.aspectRatio) }); return data?.images?.[0]?.url || null; }]);
+    attempts.push(['Cloudflare Workers AI', () => cloudflareImage(fullPrompt, body.aspectRatio)]);
     attempts.push(['Replicate', () => replicateImage(fullPrompt, body.aspectRatio)]);
   }
   for (const [provider, run] of attempts) {
@@ -501,30 +526,31 @@ async function generateImage(body) {
   throw new Error(sourceImage ? 'Image editing providers are unavailable. Check Gemini and Pollinations server keys.' : 'All configured image providers are unavailable.');
 }
 
-async function replicateVideo(prompt, duration, aspectRatio, deadline) {
+async function replicateVideo(prompt, deadline) {
   if (!providerKeys.replicate) return null;
   const remaining = () => Math.max(0, deadline - Date.now());
   if (remaining() < 1_000) return null;
   const response = await fetchWithTimeout('https://api.replicate.com/v1/models/minimax/video-01/predictions', {
     method: 'POST', headers: { Authorization: `Bearer ${providerKeys.replicate}`, 'Content-Type': 'application/json', Prefer: 'wait=12' },
-    body: JSON.stringify({ input: { prompt, prompt_optimizer: true, duration: Math.min(Number(duration) || 4, 6), aspect_ratio: aspectRatio || '16:9' } })
+    body: JSON.stringify({ input: { prompt, prompt_optimizer: true } })
   }, Math.min(14_000, remaining()));
   if (!response.ok) throw new Error('Replicate video generation failed.');
   let data = await response.json();
-  if (data.status !== 'succeeded' && data.urls?.get) {
-    if (remaining() < 1_000) throw new Error('Replicate video generation is still running.');
+  while (!['succeeded', 'failed', 'canceled'].includes(data.status) && data.urls?.get && remaining() > 2_000) {
+    await new Promise(resolve => setTimeout(resolve, Math.min(2_500, remaining())));
+    if (remaining() < 1_000) break;
     const poll = await fetchWithTimeout(data.urls.get, { headers: { Authorization: `Bearer ${providerKeys.replicate}` } }, Math.min(8_000, remaining()));
     if (!poll.ok) throw new Error('Replicate video result failed.');
     data = await poll.json();
   }
   const url = Array.isArray(data.output) ? data.output[0] : data.output;
-  if (!url || data.status === 'failed') throw new Error('Replicate returned no video.');
+  if (!url || data.status !== 'succeeded') throw new Error('Replicate video generation did not finish before the request deadline.');
   return url;
 }
 
 async function falVideo(prompt, duration) {
   const data = await falRequest('fal-ai/minimax/hailuo-2.3/standard/text-to-video', {
-    prompt, prompt_optimizer: true, duration: Math.min(Number(duration) || 4, 6)
+    prompt, prompt_optimizer: true, duration: Number(duration) > 6 ? '10' : '6'
   }, 16_000);
   return data?.video?.url || null;
 }
@@ -561,18 +587,24 @@ async function pollinationsVideo(prompt, duration, aspectRatio, deadline) {
 async function generateVideo(body) {
   const prompt = String(body.prompt || '').trim();
   if (!prompt) throw new Error('Write a prompt before generating a video.');
+  if (!providerKeys.fal && !providerKeys.replicate && !providerKeys.pollinations) {
+    throw new Error('No video-generation providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.');
+  }
   const enriched = [prompt, body.cameraAngle ? `Camera movement: ${body.cameraAngle}.` : '', body.motionSpeed ? `Motion intensity: ${body.motionSpeed}/10.` : ''].filter(Boolean).join(' ');
   const deadline = Date.now() + 44_000;
   const attempts = [
     ['Fal AI', () => falVideo(enriched, body.duration)],
-    ['Replicate', () => replicateVideo(enriched, body.duration, body.aspectRatio, deadline)],
+    ['Replicate', () => replicateVideo(enriched, deadline)],
     ['Pollinations', () => pollinationsVideo(enriched, body.duration, body.aspectRatio, deadline)]
   ];
   for (const [provider, run] of attempts) {
     if (Date.now() >= deadline) break;
     try {
       const url = await run();
-      if (url) return { url, provider, model: provider === 'Fal AI' ? 'hailuo-2.3' : provider === 'Replicate' ? 'minimax-video-01' : 'veo-3.1-fast' };
+      if (url) {
+        const generatedDuration = provider === 'Replicate' ? 6 : provider === 'Fal AI' ? (Number(body.duration) > 6 ? 10 : 6) : Math.min(Number(body.duration) || 6, 8);
+        return { url, provider, model: provider === 'Fal AI' ? 'hailuo-2.3' : provider === 'Replicate' ? 'minimax-video-01' : 'veo-3.1-fast', duration: generatedDuration };
+      }
     } catch (error) { console.warn(`${provider} video attempt failed:`, error.message); }
   }
   throw new Error('All configured video providers are unavailable.');
@@ -630,7 +662,7 @@ export default async function handler(req, res) {
   } catch (error) {
     const message = error?.message || 'Generation failed. Please retry.';
     console.error('Zulora generation request failed:', type, message);
-    const isSetup = /FIREBASE_|Firestore Admin|Firestore .*missing|User profile was not found/.test(message);
+    const isSetup = /FIREBASE_|Firestore Admin|Firestore .*missing|User profile was not found|No (?:text|video)-generation providers are configured|No image-(?:generation|editing) providers are configured/.test(message);
     return safeError(res, isSetup ? 503 : 502, message);
   }
 }
