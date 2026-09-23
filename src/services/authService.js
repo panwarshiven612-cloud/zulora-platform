@@ -1,10 +1,8 @@
 import {
   signOut,
-  onAuthStateChanged,
-  setPersistence,
-  browserLocalPersistence
+  onAuthStateChanged
 } from 'firebase/auth';
-import { auth, performGoogleSignIn, checkRedirectResult } from './firebase';
+import { auth, authPersistenceReady, performGoogleSignIn, checkRedirectResult } from './firebase';
 
 export const authService = {
   /**
@@ -12,7 +10,7 @@ export const authService = {
    */
   async signInWithGoogle() {
     try {
-      await setPersistence(auth, browserLocalPersistence);
+      await authPersistenceReady;
       const user = await performGoogleSignIn();
       return { success: true, user, pendingRedirect: !user };
     } catch (error) {
@@ -37,7 +35,15 @@ export const authService = {
    * Subscribe to auth changes
    */
   onAuthStateChange(callback) {
-    return onAuthStateChanged(auth, callback);
+    let unsubscribe = () => {};
+    let cancelled = false;
+    authPersistenceReady.then(() => {
+      if (!cancelled) unsubscribe = onAuthStateChanged(auth, callback);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   },
 
   checkRedirectResult() {

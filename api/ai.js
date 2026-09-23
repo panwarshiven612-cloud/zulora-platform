@@ -1,4 +1,4 @@
-import { createSign } from 'node:crypto';
+import { createPublicKey, createSign, verify as verifySignature } from 'node:crypto';
 import { apiKeyPool, providerKeys } from './apiKeyPool.js';
 
 export const config = { maxDuration: 60 };
@@ -10,6 +10,7 @@ const COUNTERS = {
   video: { used: 'videoUsed', limit: 'videoLimit', count: 'videoCount', window: 'videoWindowStart', duration: 24 * 60 * 60 * 1000 }
 };
 let cachedFirestoreToken = null;
+let cachedFirebaseCertificates = null;
 
 const json = (res, status, payload) => res.status(status).json(payload);
 const bearer = req => String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i)?.[1] || '';
@@ -22,18 +23,54 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 20_000) {
   finally { clearTimeout(timer); }
 }
 
+async function firebaseCertificates(forceRefresh = false) {
+  if (!forceRefresh && cachedFirebaseCertificates?.expiresAt > Date.now()) return cachedFirebaseCertificates.certificates;
+  const response = await fetchWithTimeout('https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com', {}, 8_000);
+  if (!response.ok) throw new Error(`Firebase signing certificates returned HTTP ${response.status}.`);
+  const certificates = await response.json();
+  const maxAge = Number(response.headers.get('cache-control')?.match(/max-age=(\d+)/i)?.[1]) || 300;
+  cachedFirebaseCertificates = { certificates, expiresAt: Date.now() + maxAge * 1000 };
+  return certificates;
+}
+
 async function verifyUser(req) {
   const token = bearer(req);
-  const apiKey = process.env.FIREBASE_WEB_API_KEY || process.env.VITE_FIREBASE_API_KEY;
   if (!token) return null;
-  if (!apiKey) throw new Error('FIREBASE_WEB_API_KEY is not configured on the server.');
-  const response = await fetchWithTimeout(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idToken: token })
-  }, 8_000);
-  if (!response.ok) return null;
-  const data = await response.json();
-  const user = data.users?.[0];
-  return user && !user.disabled ? user.localId : null;
+  const [encodedHeader, encodedPayload, encodedSignature, extra] = token.split('.');
+  if (!encodedHeader || !encodedPayload || !encodedSignature || extra !== undefined) return null;
+
+  let header;
+  let claims;
+  try {
+    header = JSON.parse(Buffer.from(encodedHeader, 'base64url').toString('utf8'));
+    claims = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+  if (!header || typeof header !== 'object' || !claims || typeof claims !== 'object') return null;
+
+  const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || 'zulora-al';
+  const now = Math.floor(Date.now() / 1000);
+  if (
+    header.alg !== 'RS256' || typeof header.kid !== 'string' ||
+    claims.aud !== projectId || claims.iss !== `https://securetoken.google.com/${projectId}` ||
+    typeof claims.sub !== 'string' || claims.sub.length < 1 || claims.sub.length > 128 ||
+    !Number.isFinite(claims.exp) || claims.exp <= now ||
+    !Number.isFinite(claims.iat) || claims.iat > now + 60 ||
+    !Number.isFinite(claims.auth_time) || claims.auth_time > now + 60
+  ) return null;
+
+  let certificates = await firebaseCertificates();
+  if (!certificates[header.kid]) certificates = await firebaseCertificates(true);
+  const certificate = certificates[header.kid];
+  if (!certificate) return null;
+  const valid = verifySignature(
+    'RSA-SHA256',
+    Buffer.from(`${encodedHeader}.${encodedPayload}`),
+    createPublicKey(certificate),
+    Buffer.from(encodedSignature, 'base64url')
+  );
+  return valid ? claims.sub : null;
 }
 
 const firestoreRoot = () => {

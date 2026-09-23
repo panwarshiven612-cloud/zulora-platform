@@ -37,36 +37,58 @@ export const AuthProvider = ({ children }) => {
     return profile;
   }, []);
 
-  // Listen to Auth State
+  // Resolve the first auth event and any OAuth redirect before exposing protected tools.
   useEffect(() => {
-    const unsubscribe = authService.onAuthStateChange(async (user) => {
-      if (user) {
-        setCurrentUser(user);
-        await refreshProfile(user.uid, user);
-      } else {
-        setCurrentUser(null);
+    let active = true;
+    let initialAuthResolved = false;
+    let redirectResolved = false;
+    let latestUid = null;
+    let profiledUid = null;
+
+    const finishLoading = () => {
+      if (active && initialAuthResolved && redirectResolved) setLoading(false);
+    };
+
+    const applyUser = async user => {
+      if (!active) return;
+      latestUid = user?.uid || null;
+      setCurrentUser(user || null);
+      if (!user) {
+        profiledUid = null;
         setUserProfile(null);
+        return;
       }
-      setLoading(false);
+      if (profiledUid === user.uid) return;
+      profiledUid = user.uid;
+      try {
+        const profile = await firestoreService.getUserProfile(user.uid, user);
+        if (active && latestUid === user.uid) setUserProfile(profile);
+      } catch (error) {
+        console.warn('Could not load the signed-in user profile:', error);
+      }
+    };
+
+    const unsubscribe = authService.onAuthStateChange(async user => {
+      await applyUser(user);
+      if (!active) return;
+      initialAuthResolved = true;
+      finishLoading();
     });
 
-    return () => unsubscribe();
-  }, [refreshProfile]);
-
-  useEffect(() => {
-    let mounted = true;
-
-    authService.checkRedirectResult().then(async (user) => {
-      if (!mounted || !user) return;
-      setCurrentUser(user);
-      await refreshProfile(user.uid, user);
-      if (mounted) setLoading(false);
+    authService.checkRedirectResult().then(async user => {
+      if (user && active && latestUid !== user.uid) await applyUser(user);
+    }).catch(error => {
+      console.warn('Could not complete sign-in redirect:', error);
+    }).finally(() => {
+      redirectResolved = true;
+      finishLoading();
     });
 
     return () => {
-      mounted = false;
+      active = false;
+      unsubscribe();
     };
-  }, [refreshProfile]);
+  }, []);
 
   const signInWithGoogle = async () => {
     setLoading(true);

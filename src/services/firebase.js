@@ -6,7 +6,8 @@ import {
   signInWithPopup,
   signInWithRedirect,
   setPersistence,
-  browserLocalPersistence
+  browserLocalPersistence,
+  onAuthStateChanged
 } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
@@ -24,17 +25,37 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const storage = getStorage(app);
-const googleProvider = new GoogleAuthProvider();
+export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({
   prompt: 'select_account'
 });
 
-setPersistence(auth, browserLocalPersistence).catch(error => {
+export const authPersistenceReady = setPersistence(auth, browserLocalPersistence).catch(error => {
   console.error('Firebase persistence error:', error);
+  return null;
 });
+
+export const authStateReady = authPersistenceReady.then(() => new Promise(resolve => {
+  let unsubscribe = () => {};
+  let settled = false;
+  const finish = user => {
+    if (settled) return;
+    settled = true;
+    unsubscribe();
+    resolve(user || null);
+  };
+  unsubscribe = onAuthStateChanged(auth, finish, error => {
+    console.error('Firebase initial auth state error:', error);
+    finish(null);
+  });
+  if (settled) unsubscribe();
+}));
+
+export const waitForAuthInitialization = () => authStateReady;
 
 export const performGoogleSignIn = async () => {
   try {
+    await authPersistenceReady;
     const result = await signInWithPopup(auth, googleProvider);
     return result.user;
   } catch (error) {
@@ -55,6 +76,7 @@ export const handleGoogleSignIn = performGoogleSignIn;
 
 export const checkRedirectResult = async () => {
   try {
+    await authPersistenceReady;
     const result = await getRedirectResult(auth);
     return result?.user || null;
   } catch (error) {
@@ -65,5 +87,5 @@ export const checkRedirectResult = async () => {
 
 export const checkAuthRedirect = checkRedirectResult;
 
-export { app, auth, db, storage, googleProvider };
+export { app, auth, db, storage };
 export default app;
