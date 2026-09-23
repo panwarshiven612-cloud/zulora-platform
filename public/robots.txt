@@ -1,0 +1,13 @@
+User-agent: *
+Allow: /
+
+# Block sensitive/auth paths
+Disallow: /api/
+Disallow: /__/
+Disallow: /private/
+
+# Sitemap location
+Sitemap: https://zulora-al.firebaseapp.com/sitemap.xml
+
+# Crawl delay for good bots
+Crawl-delay: 10

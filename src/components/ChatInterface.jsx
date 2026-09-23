@@ -1,36 +1,411 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Send, 
-  Search, 
-  Sparkles, 
-  Paperclip, 
-  Mic, 
-  MicOff, 
-  Volume2, 
-  Copy, 
-  Check, 
-  Globe, 
-  Cpu, 
-  Bot, 
-  User, 
+import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import {
+  Send,
+  Search,
+  Sparkles,
+  Paperclip,
+  Mic,
+  MicOff,
+  Volume2,
+  VolumeX,
+  Copy,
+  Check,
+  Globe,
+  Cpu,
+  Bot,
+  User,
   ExternalLink,
   ChevronDown,
   RefreshCw,
   Zap,
   Image as ImageIcon,
-  X
+  X,
+  ChevronRight,
+  StopCircle,
+  Lightbulb,
+  Code2,
+  FlaskConical,
+  BarChart3,
+  ThumbsUp,
+  ThumbsDown,
+  MoreHorizontal,
+  ArrowDown,
+  Plus,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { apiRouter } from '../services/apiRouter';
 import { firestoreService } from '../services/firestoreService';
 
-const SUGGESTIONS = [
-  { icon: Globe, label: 'Research 2026 AI breakthroughs', query: 'What are the major breakthrough AI architectures and quantum computing developments in 2026?' },
-  { icon: Cpu, label: 'Write a Python web scraper', query: 'Write a production-ready Python script using httpx and BeautifulSoup with retry logic, proxies, and error handling.' },
-  { icon: Sparkles, label: 'Build fullstack SaaS schema', query: 'Design an optimal scalable database schema for a multi-tenant AI SaaS with credits and billing.' },
-  { icon: Zap, label: 'Analyze tech market trends', query: 'Provide a strategic macroeconomic analysis of generative AI adoption and cloud compute efficiency.' }
+/* ============================================================
+   CONSTANTS
+   ============================================================ */
+const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
+
+const MODEL_OPTIONS = [
+  { id: 'auto',     label: 'Auto (Best)',       icon: Sparkles,     color: 'text-sky-500' },
+  { id: 'gemini',   label: 'Gemini 1.5',        icon: Zap,          color: 'text-emerald-500' },
+  { id: 'groq',     label: 'Groq (Fast)',        icon: Cpu,          color: 'text-violet-500' },
+  { id: 'mistral',  label: 'Mistral',           icon: FlaskConical, color: 'text-amber-500' },
 ];
 
+const SUGGESTION_CARDS = [
+  {
+    icon: Globe,
+    iconColor: 'text-sky-500',
+    bgColor: 'bg-sky-50 dark:bg-sky-950/30',
+    borderColor: 'border-sky-100 dark:border-sky-900/40',
+    title: 'Research latest AI breakthroughs',
+    subtitle: 'Summarize 2026 AI developments',
+    query: 'What are the major AI architecture breakthroughs and LLM innovations happening in 2026? Provide a well-structured summary.',
+  },
+  {
+    icon: Code2,
+    iconColor: 'text-emerald-500',
+    bgColor: 'bg-emerald-50 dark:bg-emerald-950/30',
+    borderColor: 'border-emerald-100 dark:border-emerald-900/40',
+    title: 'Write a Python web scraper',
+    subtitle: 'With retry logic & error handling',
+    query: 'Write a production-ready Python web scraper using httpx and BeautifulSoup with retry logic, rate limiting, and proper error handling. Include docstrings.',
+  },
+  {
+    icon: BarChart3,
+    iconColor: 'text-violet-500',
+    bgColor: 'bg-violet-50 dark:bg-violet-950/30',
+    borderColor: 'border-violet-100 dark:border-violet-900/40',
+    title: 'Analyze market strategies',
+    subtitle: 'Strategic business analysis',
+    query: 'Provide a strategic SWOT analysis and market positioning framework for a new SaaS AI platform launching in 2026.',
+  },
+  {
+    icon: Lightbulb,
+    iconColor: 'text-amber-500',
+    bgColor: 'bg-amber-50 dark:bg-amber-950/30',
+    borderColor: 'border-amber-100 dark:border-amber-900/40',
+    title: 'Design a SaaS database schema',
+    subtitle: 'Multi-tenant with billing',
+    query: 'Design a scalable PostgreSQL schema for a multi-tenant AI SaaS platform with user tiers, credit billing, sessions, and audit logs. Use proper indexing.',
+  },
+];
+
+/* ============================================================
+   CODE BLOCK COMPONENT
+   ============================================================ */
+const CodeBlock = memo(({ language, value }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, [value]);
+
+  return (
+    <div className="code-block-wrapper my-3">
+      <div className="code-block-header">
+        <span className="lang-label">{language || 'code'}</span>
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1.5 text-slate-400 hover:text-slate-200 transition-colors px-2 py-0.5 rounded hover:bg-white/5"
+        >
+          {copied ? (
+            <>
+              <Check className="w-3 h-3 text-emerald-400" />
+              <span className="text-emerald-400">Copied!</span>
+            </>
+          ) : (
+            <>
+              <Copy className="w-3 h-3" />
+              <span>Copy</span>
+            </>
+          )}
+        </button>
+      </div>
+      <SyntaxHighlighter
+        style={oneDark}
+        language={language || 'text'}
+        PreTag="div"
+        customStyle={{
+          margin: 0,
+          borderRadius: 0,
+          padding: '1rem',
+          fontSize: '0.835rem',
+          lineHeight: '1.6',
+          background: '#0d1117',
+        }}
+        codeTagProps={{
+          style: { fontFamily: "'JetBrains Mono', monospace" },
+        }}
+      >
+        {value}
+      </SyntaxHighlighter>
+    </div>
+  );
+});
+
+CodeBlock.displayName = 'CodeBlock';
+
+/* ============================================================
+   MARKDOWN RENDERER
+   ============================================================ */
+const MarkdownContent = memo(({ content }) => {
+  return (
+    <div className="prose-chat">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          code({ node, inline, className, children, ...props }) {
+            const match = /language-(\w+)/.exec(className || '');
+            const lang = match ? match[1] : '';
+            if (!inline && (match || String(children).includes('\n'))) {
+              return (
+                <CodeBlock
+                  language={lang}
+                  value={String(children).replace(/\n$/, '')}
+                />
+              );
+            }
+            return (
+              <code className={className} {...props}>
+                {children}
+              </code>
+            );
+          },
+          a({ href, children }) {
+            return (
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sky-500 hover:text-sky-400 underline underline-offset-2 inline-flex items-center gap-0.5"
+              >
+                {children}
+                <ExternalLink className="w-3 h-3 inline ml-0.5" />
+              </a>
+            );
+          },
+          table({ children }) {
+            return (
+              <div className="overflow-x-auto my-3">
+                <table className="w-full text-sm border-collapse">
+                  {children}
+                </table>
+              </div>
+            );
+          },
+          th({ children }) {
+            return (
+              <th className="px-3 py-2 bg-sky-50/60 dark:bg-sky-950/30 border border-sky-100 dark:border-sky-900/40 text-left font-semibold text-slate-800 dark:text-slate-200">
+                {children}
+              </th>
+            );
+          },
+          td({ children }) {
+            return (
+              <td className="px-3 py-2 border border-slate-200/60 dark:border-slate-700/40 text-slate-700 dark:text-slate-300">
+                {children}
+              </td>
+            );
+          },
+          blockquote({ children }) {
+            return (
+              <blockquote className="border-l-3 border-sky-400 pl-4 my-3 text-slate-500 dark:text-slate-400 italic bg-sky-50/30 dark:bg-sky-950/10 py-2 pr-2 rounded-r">
+                {children}
+              </blockquote>
+            );
+          },
+          h1: ({ children }) => <h1 className="text-xl font-bold mt-4 mb-2 text-slate-900 dark:text-white">{children}</h1>,
+          h2: ({ children }) => <h2 className="text-lg font-bold mt-4 mb-2 text-slate-900 dark:text-white">{children}</h2>,
+          h3: ({ children }) => <h3 className="text-base font-semibold mt-3 mb-1.5 text-slate-800 dark:text-slate-100">{children}</h3>,
+          ul: ({ children }) => <ul className="list-disc pl-5 my-2 space-y-1">{children}</ul>,
+          ol: ({ children }) => <ol className="list-decimal pl-5 my-2 space-y-1">{children}</ol>,
+          li: ({ children }) => <li className="text-slate-700 dark:text-slate-300">{children}</li>,
+          p: ({ children }) => <p className="mb-2 last:mb-0 text-slate-700 dark:text-slate-300 leading-relaxed">{children}</p>,
+          hr: () => <hr className="my-4 border-slate-200 dark:border-slate-700" />,
+          strong: ({ children }) => <strong className="font-semibold text-slate-900 dark:text-white">{children}</strong>,
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+});
+
+MarkdownContent.displayName = 'MarkdownContent';
+
+/* ============================================================
+   TYPING INDICATOR
+   ============================================================ */
+const TypingIndicator = () => (
+  <div className="flex items-start gap-3 animate-fade-slide">
+    <div className="flex-shrink-0 w-8 h-8 rounded-xl overflow-hidden ring-2 ring-sky-500/30">
+      <img src={LOGO_URL} alt="Zulora AI" className="w-full h-full object-cover" />
+    </div>
+    <div className="glass-pearl dark:glass-dark rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-2 border border-white/60 dark:border-slate-700/60">
+      <span className="text-xs text-slate-500 dark:text-slate-400 mr-1">Thinking</span>
+      <span className="typing-dot" />
+      <span className="typing-dot" />
+      <span className="typing-dot" />
+    </div>
+  </div>
+);
+
+/* ============================================================
+   MESSAGE BUBBLE
+   ============================================================ */
+const MessageBubble = memo(({ message, index, onCopy, onSpeak, isSpeaking, copiedIndex }) => {
+  const isUser = message.role === 'user';
+  const timestamp = message.timestamp
+    ? new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : '';
+
+  const [showActions, setShowActions] = useState(false);
+
+  return (
+    <div
+      className={`group flex items-start gap-3 animate-fade-slide ${isUser ? 'flex-row-reverse' : ''}`}
+      onMouseEnter={() => setShowActions(true)}
+      onMouseLeave={() => setShowActions(false)}
+    >
+      {/* Avatar */}
+      <div className={`flex-shrink-0 w-8 h-8 rounded-xl overflow-hidden shadow-sm ${isUser ? 'ring-2 ring-sky-500/20' : 'ring-2 ring-sky-500/30'}`}>
+        {isUser ? (
+          <div className="w-full h-full bg-gradient-to-br from-sky-500 to-indigo-600 flex items-center justify-center">
+            <User className="w-4 h-4 text-white" />
+          </div>
+        ) : (
+          <img src={LOGO_URL} alt="Zulora AI" className="w-full h-full object-cover" />
+        )}
+      </div>
+
+      {/* Content */}
+      <div className={`flex flex-col max-w-[80%] sm:max-w-[75%] gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
+        {/* Header */}
+        <div className={`flex items-center gap-2 px-1 ${isUser ? 'flex-row-reverse' : ''}`}>
+          <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">
+            {isUser ? 'You' : 'Zulora AI'}
+          </span>
+          {message.model && !isUser && (
+            <span className="text-[10px] px-1.5 py-0.5 bg-sky-100 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 rounded-full font-medium border border-sky-200/50 dark:border-sky-800/40">
+              {message.model}
+            </span>
+          )}
+          {timestamp && (
+            <span className="text-[10px] text-slate-400 dark:text-slate-600">{timestamp}</span>
+          )}
+        </div>
+
+        {/* Bubble */}
+        <div
+          className={`relative rounded-2xl px-4 py-3 shadow-sm transition-all duration-200
+            ${isUser
+              ? 'bg-gradient-to-br from-sky-500 to-sky-600 text-white rounded-tr-sm'
+              : 'glass-pearl dark:glass-dark border border-white/60 dark:border-slate-700/60 rounded-tl-sm text-slate-800 dark:text-slate-200'
+            }`}
+        >
+          {isUser ? (
+            <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
+          ) : (
+            <MarkdownContent content={message.content} />
+          )}
+        </div>
+
+        {/* Action Bar — AI messages only */}
+        {!isUser && (
+          <div className={`flex items-center gap-1 px-1 transition-opacity duration-200 ${showActions ? 'opacity-100' : 'opacity-0'}`}>
+            <button
+              onClick={() => onCopy(message.content, index)}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-all"
+              title="Copy"
+            >
+              {copiedIndex === index ? (
+                <Check className="w-3.5 h-3.5 text-emerald-500" />
+              ) : (
+                <Copy className="w-3.5 h-3.5" />
+              )}
+            </button>
+            <button
+              onClick={() => onSpeak(message.content, index)}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-all"
+              title={isSpeaking === index ? 'Stop' : 'Read aloud'}
+            >
+              {isSpeaking === index ? (
+                <VolumeX className="w-3.5 h-3.5 text-sky-500" />
+              ) : (
+                <Volume2 className="w-3.5 h-3.5" />
+              )}
+            </button>
+            <button className="p-1.5 rounded-lg text-slate-400 hover:text-green-500 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-all" title="Good response">
+              <ThumbsUp className="w-3.5 h-3.5" />
+            </button>
+            <button className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-all" title="Bad response">
+              <ThumbsDown className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
+MessageBubble.displayName = 'MessageBubble';
+
+/* ============================================================
+   WELCOME / EMPTY STATE
+   ============================================================ */
+const WelcomeScreen = ({ user, onSuggestion }) => (
+  <div className="flex-1 flex flex-col items-center justify-center p-6 md:p-10 space-y-8 animate-scale-in">
+    {/* Hero */}
+    <div className="text-center space-y-3">
+      <div className="relative inline-flex">
+        <div className="w-16 h-16 rounded-2xl overflow-hidden shadow-xl ring-2 ring-sky-500/30">
+          <img src={LOGO_URL} alt="Zulora" className="w-full h-full object-cover" />
+        </div>
+        <div className="absolute -inset-1.5 rounded-2xl bg-sky-500/20 blur-xl -z-10" />
+      </div>
+      <div className="space-y-1">
+        <h1 className="text-2xl md:text-3xl font-black text-slate-900 dark:text-white">
+          Hello, <span className="azure-gradient-text">{user?.displayName?.split(' ')[0] || 'there'}</span> 👋
+        </h1>
+        <p className="text-slate-500 dark:text-slate-400 text-sm md:text-base">
+          How can Zulora AI help you today?
+        </p>
+      </div>
+    </div>
+
+    {/* Suggestion Cards */}
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-2xl">
+      {SUGGESTION_CARDS.map((card, i) => (
+        <button
+          key={i}
+          onClick={() => onSuggestion(card.query)}
+          className={`text-left p-4 rounded-xl border ${card.bgColor} ${card.borderColor} glass-card-hover cursor-pointer transition-all duration-200 group`}
+        >
+          <div className="flex items-start gap-3">
+            <div className={`p-2 rounded-lg ${card.bgColor} border ${card.borderColor}`}>
+              <card.icon className={`w-4 h-4 ${card.iconColor}`} />
+            </div>
+            <div className="space-y-0.5 min-w-0">
+              <p className="font-semibold text-slate-800 dark:text-slate-200 text-sm leading-tight group-hover:text-sky-600 dark:group-hover:text-sky-400 transition-colors">
+                {card.title}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-500">{card.subtitle}</p>
+            </div>
+            <ChevronRight className="w-4 h-4 text-slate-400 ml-auto flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+          </div>
+        </button>
+      ))}
+    </div>
+  </div>
+);
+
+/* ============================================================
+   MAIN CHAT INTERFACE
+   ============================================================ */
 export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => {
   const { currentUser, checkAndIncrement, setIsUsageModalOpen } = useAuth();
 
@@ -43,10 +418,16 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
   const [isListening, setIsListening] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [isSpeakingIndex, setIsSpeakingIndex] = useState(null);
+  const [showModelMenu, setShowModelMenu] = useState(false);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const [isAtBottom, setIsAtBottom] = useState(true);
 
   const messagesEndRef = useRef(null);
+  const messagesContainerRef = useRef(null);
   const fileInputRef = useRef(null);
   const recognitionRef = useRef(null);
+  const textareaRef = useRef(null);
+  const speechRef = useRef(null);
 
   // Sync messages when activeSession changes
   useEffect(() => {
@@ -59,8 +440,27 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
 
   // Scroll to bottom when messages update
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (isAtBottom) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages, loading]);
+
+  // Track scroll position
+  const handleScroll = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    setShowScrollBtn(distFromBottom > 120);
+    setIsAtBottom(distFromBottom < 60);
+  }, []);
+
+  // Auto-resize textarea
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 180) + 'px';
+  }, [inputPrompt]);
 
   // Initialize Speech Recognition
   useEffect(() => {
@@ -70,25 +470,23 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
       recognition.continuous = false;
       recognition.interimResults = false;
       recognition.lang = 'en-US';
-
-      recognition.onresult = (event) => {
-        const transcript = event.results[0][0].transcript;
-        setInputPrompt(prev => (prev ? `${prev} ${transcript}` : transcript));
+      recognition.onresult = (e) => {
+        const transcript = e.results[0][0].transcript;
+        setInputPrompt(prev => prev ? `${prev} ${transcript}` : transcript);
         setIsListening(false);
       };
-
       recognition.onerror = () => setIsListening(false);
       recognition.onend = () => setIsListening(false);
-
       recognitionRef.current = recognition;
     }
   }, []);
 
-  const toggleSpeechRecognition = () => {
-    if (!recognitionRef.current) {
-      alert('Speech recognition is not supported in this browser.');
-      return;
-    }
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const toggleListening = () => {
+    if (!recognitionRef.current) return;
     if (isListening) {
       recognitionRef.current.stop();
       setIsListening(false);
@@ -98,398 +496,190 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     }
   };
 
-  const speakText = (text, index) => {
-    if (!window.speechSynthesis) return;
+  const handleCopy = useCallback((text, index) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedIndex(index);
+      setTimeout(() => setCopiedIndex(null), 2000);
+    });
+  }, []);
 
+  const handleSpeak = useCallback((text, index) => {
+    if (!window.speechSynthesis) return;
     if (isSpeakingIndex === index) {
       window.speechSynthesis.cancel();
       setIsSpeakingIndex(null);
       return;
     }
-
     window.speechSynthesis.cancel();
-    const cleanText = text.replace(/[#*`_~\[\]()]/g, '');
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-
-    utterance.onend = () => setIsSpeakingIndex(null);
-    utterance.onerror = () => setIsSpeakingIndex(null);
-
+    const utter = new SpeechSynthesisUtterance(text.replace(/[#*`_]/g, ''));
+    utter.rate = 0.95;
+    utter.pitch = 1;
+    utter.onend = () => setIsSpeakingIndex(null);
+    utter.onerror = () => setIsSpeakingIndex(null);
+    speechRef.current = utter;
+    window.speechSynthesis.speak(utter);
     setIsSpeakingIndex(index);
-    window.speechSynthesis.speak(utterance);
+  }, [isSpeakingIndex]);
+
+  const handleFileAttach = (e) => {
+    const files = Array.from(e.target.files || []);
+    setAttachments(prev => [...prev, ...files.slice(0, 5 - prev.length)]);
+    e.target.value = '';
   };
 
-  const handleCopy = (text, index) => {
-    navigator.clipboard.writeText(text);
-    setCopiedIndex(index);
-    setTimeout(() => setCopiedIndex(null), 2000);
+  const removeAttachment = (idx) => {
+    setAttachments(prev => prev.filter((_, i) => i !== idx));
   };
 
-  const handleFileUpload = (e) => {
-    const files = Array.from(e.target.files);
-    if (!files.length) return;
+  const buildContextMessages = useCallback(() => {
+    return messages.slice(-12).map(m => ({
+      role: m.role,
+      content: m.content,
+    }));
+  }, [messages]);
 
-    files.forEach(file => {
-      if (!file.type.startsWith('image/')) {
-        alert('Currently, image attachments are supported for multimodal analysis.');
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-        setAttachments(prev => [
-          ...prev,
-          {
-            name: file.name,
-            mimeType: file.type,
-            base64: reader.result
-          }
-        ]);
-      };
-      reader.readAsDataURL(file);
-    });
-  };
+  const sendMessage = useCallback(async (promptOverride = null) => {
+    const prompt = (promptOverride || inputPrompt).trim();
+    if (!prompt || loading) return;
 
-  const removeAttachment = (index) => {
-    setAttachments(prev => prev.filter((_, i) => i !== index));
-  };
-
-  const handleSend = async (overridePrompt = null) => {
-    const promptToSend = (overridePrompt || inputPrompt).trim();
-    if ((!promptToSend && attachments.length === 0) || loading) return;
-
-    // 1. Check Usage Limits before sending
-    const usageCheck = await checkAndIncrement('chat');
-    if (!usageCheck.allowed) {
+    // Usage check
+    const allowed = await checkAndIncrement('chat');
+    if (!allowed) {
+      setIsUsageModalOpen(true);
       return;
     }
 
-    const userMessage = {
-      id: 'msg_' + Date.now(),
+    const userMsg = {
+      id: Date.now().toString(),
       role: 'user',
-      content: promptToSend,
-      attachments: [...attachments],
-      timestamp: Date.now()
+      content: prompt,
+      timestamp: Date.now(),
+      attachments: attachments.map(f => f.name),
     };
 
-    const newMessages = [...messages, userMessage];
+    const newMessages = [...messages, userMsg];
     setMessages(newMessages);
     setInputPrompt('');
     setAttachments([]);
     setLoading(true);
+    setIsAtBottom(true);
 
-    // Generate response via Multi-Model Engine
     try {
-      const response = await apiRouter.generateChat({
-        messages: newMessages,
-        modelPreference,
-        enableWebSearch,
-        attachments: userMessage.attachments
-      });
+      const contextMessages = buildContextMessages();
+      const result = await apiRouter.generateChat(
+        prompt,
+        contextMessages,
+        {
+          model: modelPreference,
+          webSearch: enableWebSearch,
+          userId: currentUser?.uid,
+        }
+      );
 
-      const assistantMessage = {
-        id: 'msg_' + (Date.now() + 1),
+      const aiMsg = {
+        id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: response.text,
-        provider: response.provider,
-        model: response.model,
-        sources: response.sources || [],
-        latencyMs: response.latencyMs,
-        timestamp: Date.now()
+        content: result.text || 'I encountered an issue generating a response. Please try again.',
+        timestamp: Date.now(),
+        model: result.model || 'Zulora AI',
+        tokensUsed: result.tokensUsed,
       };
 
-      const finalMessages = [...newMessages, assistantMessage];
+      const finalMessages = [...newMessages, aiMsg];
       setMessages(finalMessages);
 
-      // Save to Firestore & local history
-      const chatId = activeSession?.id || 'chat_' + Date.now();
-      const chatTitle = activeSession?.title || promptToSend.substring(0, 36) + (promptToSend.length > 36 ? '...' : '');
+      // Persist to Firestore
+      const sessionId = activeSession?.id || `chat_${Date.now()}`;
+      const sessionTitle = prompt.length > 50 ? prompt.slice(0, 47) + '...' : prompt;
 
-      const sessionData = {
-        id: chatId,
-        title: chatTitle,
-        mode: enableWebSearch ? 'search' : 'chat',
-        model: modelPreference,
+      const updatedSession = {
+        id: sessionId,
+        title: activeSession?.title || sessionTitle,
         messages: finalMessages,
-        updatedAt: Date.now()
+        updatedAt: Date.now(),
+        model: result.model,
       };
 
-      await firestoreService.saveChatSession(currentUser.uid, chatId, sessionData);
-      if (onUpdateSession) {
-        onUpdateSession(sessionData);
+      if (currentUser?.uid) {
+        await firestoreService.saveChatSession(currentUser.uid, updatedSession);
       }
+      onUpdateSession?.(updatedSession);
+
     } catch (err) {
       console.error('Chat error:', err);
-      const errorMessage = {
-        id: 'msg_' + (Date.now() + 1),
+      const errorMsg = {
+        id: (Date.now() + 2).toString(),
         role: 'assistant',
-        content: "We encountered a temporary network delay with upstream models. Zulora AI will seamlessly reconnect on your next prompt.",
-        provider: 'Zulora Failover Engine',
-        model: 'failover-recovery',
-        timestamp: Date.now()
+        content: '⚠️ I ran into an issue processing your request. All AI providers seem unavailable right now. Please try again in a moment.',
+        timestamp: Date.now(),
+        model: 'Error',
       };
-      setMessages([...newMessages, errorMessage]);
+      setMessages(prev => [...prev, errorMsg]);
     } finally {
       setLoading(false);
     }
+  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, checkAndIncrement, setIsUsageModalOpen, buildContextMessages, onUpdateSession]);
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
   };
 
+  const selectedModel = MODEL_OPTIONS.find(m => m.id === modelPreference) || MODEL_OPTIONS[0];
+
   return (
-    <div className="flex-1 flex flex-col h-[calc(100vh-4rem)] relative overflow-hidden bg-slate-50/50 dark:bg-slate-950/30">
-      
-      {/* Top Floating Control Bar */}
-      <div className="shrink-0 p-3 sm:px-6 border-b border-slate-200/80 dark:border-slate-800/80 bg-white/60 dark:bg-slate-950/60 backdrop-blur-md flex flex-wrap items-center justify-between gap-3 z-10">
-        
-        {/* Model Selector */}
-        <div className="flex items-center gap-2">
-          <div className="relative">
-            <select
-              value={modelPreference}
-              onChange={e => setModelPreference(e.target.value)}
-              className="appearance-none pl-3 pr-8 py-1.5 rounded-xl text-xs font-semibold bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 text-slate-800 dark:text-slate-200 shadow-sm focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer"
-            >
-              <option value="auto">Auto-Fallback Engine (Gemini + Groq + Cerebras)</option>
-              <option value="gemini">Google Gemini 2.0 Flash (Rotating Keys)</option>
-              <option value="groq">Groq Cloud (Llama 3.3 70B Ultra-Fast)</option>
-              <option value="cerebras">Cerebras AI (Llama 3.1 8B High-Speed)</option>
-              <option value="openrouter">OpenRouter (DeepSeek / Llama 3.3)</option>
-              <option value="mistral">Mistral AI (Mistral Small)</option>
-            </select>
-            <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-          </div>
+    <div className="flex-1 flex flex-col h-full overflow-hidden relative">
 
-          <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-50 dark:bg-sky-950/40 text-[11px] font-semibold text-sky-600 dark:text-sky-400 border border-sky-200/50 dark:border-sky-800/50">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span>Multi-Model Live</span>
-          </div>
-        </div>
-
-        {/* Web Search Toggle & Actions */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setEnableWebSearch(!enableWebSearch)}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border ${
-              enableWebSearch
-                ? 'bg-sky-500 text-white border-sky-400 shadow-azure-glow'
-                : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            <Globe className={`w-3.5 h-3.5 ${enableWebSearch ? 'animate-spin' : ''}`} />
-            <span>{enableWebSearch ? 'Web Search: ON' : 'Web Search'}</span>
-          </button>
-
-          <button
-            onClick={onNewChat}
-            className="p-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-sky-500 hover:border-sky-400 transition-colors"
-            title="Start Fresh Chat"
-          >
-            <RefreshCw className="w-4 h-4" />
-          </button>
-        </div>
-
-      </div>
-
-      {/* Messages Scroll Area */}
-      <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8 space-y-6">
-        
-        {/* Welcome Empty State */}
-        {messages.length === 0 && (
-          <div className="max-w-3xl mx-auto py-10 sm:py-16 text-center animate-fade-in">
-            <div className="inline-flex p-3 rounded-2xl bg-sky-500/10 border border-sky-500/20 text-sky-500 mb-4 shadow-glass">
-              <Sparkles className="w-8 h-8" />
-            </div>
-            
-            <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-slate-900 dark:text-white mb-2">
-              What can <span className="azure-gradient-text">Zulora AI</span> solve for you today?
-            </h1>
-            
-            <p className="text-sm text-slate-600 dark:text-slate-400 max-w-xl mx-auto mb-8">
-              Pristine Pearl & Azure intelligence studio founded by <strong>Shiven Panwar</strong>. Powered by automated multi-model routing across Gemini, Groq, Cerebras, and real-time Web Research.
-            </p>
-
-            {/* Prompt Suggestion Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-left max-w-2xl mx-auto">
-              {SUGGESTIONS.map((item, idx) => (
-                <div
-                  key={idx}
-                  onClick={() => handleSend(item.query)}
-                  className="p-3.5 rounded-2xl glass-pearl dark:glass-dark border border-slate-200 dark:border-slate-800 glass-card-hover cursor-pointer group"
-                >
-                  <div className="flex items-center gap-2.5 mb-1">
-                    <div className="p-1.5 rounded-lg bg-sky-50 dark:bg-sky-950/60 text-sky-500 group-hover:scale-110 transition-transform">
-                      <item.icon className="w-4 h-4" />
-                    </div>
-                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 group-hover:text-sky-500 transition-colors">
-                      {item.label}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2">
-                    {item.query}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </div>
+      {/* Messages Area */}
+      <div
+        ref={messagesContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-4 md:px-6 py-6 space-y-6 scroll-smooth"
+      >
+        {messages.length === 0 ? (
+          <WelcomeScreen user={currentUser} onSuggestion={(q) => sendMessage(q)} />
+        ) : (
+          <>
+            {messages.map((msg, i) => (
+              <MessageBubble
+                key={msg.id || i}
+                message={msg}
+                index={i}
+                onCopy={handleCopy}
+                onSpeak={handleSpeak}
+                isSpeaking={isSpeakingIndex}
+                copiedIndex={copiedIndex}
+              />
+            ))}
+            {loading && <TypingIndicator />}
+          </>
         )}
-
-        {/* Message Stream */}
-        {messages.map((msg, index) => {
-          const isUser = msg.role === 'user';
-          return (
-            <div
-              key={msg.id || index}
-              className={`flex gap-3 max-w-3xl mx-auto ${isUser ? 'justify-end' : 'justify-start'} animate-slide-up`}
-            >
-              {/* Assistant Avatar */}
-              {!isUser && (
-                <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center text-white shrink-0 shadow-md">
-                  <Bot className="w-4 h-4" />
-                </div>
-              )}
-
-              {/* Message Bubble Container */}
-              <div className={`max-w-[85%] sm:max-w-[80%] space-y-2`}>
-                
-                {/* User Attachment previews */}
-                {isUser && msg.attachments && msg.attachments.length > 0 && (
-                  <div className="flex flex-wrap gap-2 justify-end mb-1">
-                    {msg.attachments.map((att, i) => (
-                      <img
-                        key={i}
-                        src={att.base64}
-                        alt="attachment"
-                        className="w-24 h-24 object-cover rounded-xl border border-sky-400/50 shadow-md"
-                      />
-                    ))}
-                  </div>
-                )}
-
-                {/* Bubble */}
-                <div
-                  className={`p-4 rounded-2xl text-xs sm:text-sm leading-relaxed ${
-                    isUser
-                      ? 'azure-gradient-btn text-white rounded-br-none shadow-md font-medium'
-                      : 'glass-pearl dark:glass-dark border border-slate-200 dark:border-slate-800/90 text-slate-800 dark:text-slate-100 rounded-bl-none shadow-sm'
-                  }`}
-                >
-                  <div className="whitespace-pre-wrap font-sans break-words">
-                    {msg.content}
-                  </div>
-
-                  {/* Sources Preview for Deep Research */}
-                  {!isUser && msg.sources && msg.sources.length > 0 && (
-                    <div className="mt-4 pt-3 border-t border-slate-200/80 dark:border-slate-800 space-y-2">
-                      <span className="text-[11px] font-bold text-sky-500 flex items-center gap-1.5">
-                        <Globe className="w-3.5 h-3.5" />
-                        <span>Sources & Citations:</span>
-                      </span>
-                      <div className="grid grid-cols-1 gap-1.5">
-                        {msg.sources.map((source, sIdx) => (
-                          <a
-                            key={sIdx}
-                            href={source.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="p-2 rounded-xl bg-slate-100/70 dark:bg-slate-900/70 border border-slate-200/60 dark:border-slate-800/60 hover:border-sky-500/50 transition-colors flex items-center justify-between group"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <p className="text-[11px] font-semibold text-slate-800 dark:text-slate-200 truncate group-hover:text-sky-500">
-                                [{sIdx + 1}] {source.title}
-                              </p>
-                              <p className="text-[10px] text-slate-500 truncate">{source.snippet}</p>
-                            </div>
-                            <ExternalLink className="w-3 h-3 text-slate-400 group-hover:text-sky-500 shrink-0 ml-2" />
-                          </a>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Assistant Footer Info & Action Icons */}
-                {!isUser && (
-                  <div className="flex items-center justify-between text-[10px] text-slate-400 px-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold text-sky-500">{msg.provider || 'Zulora AI'}</span>
-                      {msg.latencyMs && (
-                        <span>• {(msg.latencyMs / 1000).toFixed(2)}s</span>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => speakText(msg.content, index)}
-                        className="p-1 hover:text-sky-500 transition-colors"
-                        title="Read aloud"
-                      >
-                        <Volume2 className={`w-3.5 h-3.5 ${isSpeakingIndex === index ? 'text-sky-500 animate-pulse' : ''}`} />
-                      </button>
-                      <button
-                        onClick={() => handleCopy(msg.content, index)}
-                        className="p-1 hover:text-sky-500 transition-colors"
-                        title="Copy message"
-                      >
-                        {copiedIndex === index ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-500" />
-                        ) : (
-                          <Copy className="w-3.5 h-3.5" />
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-              </div>
-
-              {/* User Avatar */}
-              {isUser && (
-                <div className="w-8 h-8 rounded-xl bg-slate-200 dark:bg-slate-800 flex items-center justify-center text-slate-700 dark:text-slate-300 shrink-0 border border-slate-300 dark:border-slate-700">
-                  <User className="w-4 h-4" />
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        {/* Loading Spinner Indicator */}
-        {loading && (
-          <div className="flex gap-3 max-w-3xl mx-auto justify-start animate-fade-in">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center text-white shrink-0 shadow-md">
-              <Bot className="w-4 h-4" />
-            </div>
-            <div className="p-4 rounded-2xl glass-pearl dark:glass-dark border border-slate-200 dark:border-slate-800 shadow-sm flex items-center gap-3">
-              <div className="flex gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-sky-500 animate-bounce" style={{ animationDelay: '0ms' }} />
-                <span className="w-2 h-2 rounded-full bg-sky-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-                <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" style={{ animationDelay: '300ms' }} />
-              </div>
-              <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-                {enableWebSearch ? 'Searching web & reasoning...' : 'Synthesizing response across multi-model waterfall...'}
-              </span>
-            </div>
-          </div>
-        )}
-
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Box Fixed Area */}
-      <div className="shrink-0 p-3 sm:p-5 max-w-4xl w-full mx-auto">
-        
-        {/* Attachment preview bar */}
+      {/* Scroll to Bottom Button */}
+      {showScrollBtn && (
+        <button
+          onClick={scrollToBottom}
+          className="absolute bottom-28 right-6 w-9 h-9 rounded-full azure-gradient-btn text-white flex items-center justify-center shadow-lg z-10 animate-scale-in"
+        >
+          <ArrowDown className="w-4 h-4" />
+        </button>
+      )}
+
+      {/* ─── Input Area ─── */}
+      <div className="border-t border-slate-200/70 dark:border-slate-800/70 bg-white/80 dark:bg-[#070b14]/90 backdrop-blur-xl px-4 md:px-6 py-4">
+
+        {/* Attachments Preview */}
         {attachments.length > 0 && (
-          <div className="flex items-center gap-2 mb-2 p-2 rounded-xl bg-white/80 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800">
-            {attachments.map((att, idx) => (
-              <div key={idx} className="relative group">
-                <img
-                  src={att.base64}
-                  alt={att.name}
-                  className="w-12 h-12 rounded-lg object-cover border border-sky-400"
-                />
-                <button
-                  onClick={() => removeAttachment(idx)}
-                  className="absolute -top-1 -right-1 p-0.5 rounded-full bg-red-500 text-white"
-                >
+          <div className="flex flex-wrap gap-2 mb-3">
+            {attachments.map((file, i) => (
+              <div key={i} className="flex items-center gap-1.5 text-xs bg-sky-50 dark:bg-sky-950/30 text-sky-700 dark:text-sky-400 border border-sky-200/50 dark:border-sky-800/40 rounded-lg px-2.5 py-1.5">
+                <Paperclip className="w-3 h-3" />
+                <span className="max-w-[120px] truncate">{file.name}</span>
+                <button onClick={() => removeAttachment(i)} className="hover:text-red-500 transition-colors ml-0.5">
                   <X className="w-3 h-3" />
                 </button>
               </div>
@@ -497,106 +687,126 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
           </div>
         )}
 
-        {/* Input Wrapper Glass Card */}
-        <div className="relative rounded-2xl glass-pearl dark:glass-dark border border-slate-300/80 dark:border-slate-700/80 shadow-lg focus-within:border-sky-500 focus-within:ring-2 focus-within:ring-sky-500/20 transition-all p-2 sm:p-3">
-          
+        {/* Input Box */}
+        <div className="glass-pearl dark:glass-dark rounded-2xl border border-slate-200/70 dark:border-slate-700/60 overflow-hidden transition-all duration-200 focus-within:border-sky-400/50 dark:focus-within:border-sky-500/40 focus-within:shadow-[0_0_0_3px_rgba(14,165,233,0.1)]">
+
+          {/* Text Area */}
           <textarea
+            ref={textareaRef}
             value={inputPrompt}
             onChange={e => setInputPrompt(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
-            placeholder={
-              enableWebSearch 
-                ? "Enter your research topic or question with Web Grounding..."
-                : "Ask Zulora AI anything, paste code, or explore ideas..."
-            }
-            rows={2}
-            className="w-full bg-transparent text-xs sm:text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none resize-none px-2"
+            onKeyDown={handleKeyDown}
+            placeholder="Ask Zulora AI anything... (Shift+Enter for new line)"
+            rows={1}
+            disabled={loading}
+            className="w-full bg-transparent px-4 pt-3.5 pb-2 text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-600 resize-none outline-none leading-relaxed"
+            style={{ maxHeight: '180px' }}
           />
 
-          {/* Bottom input toolbar */}
-          <div className="flex items-center justify-between pt-2 border-t border-slate-200/50 dark:border-slate-800/60 mt-1">
-            
-            <div className="flex items-center gap-1 sm:gap-2">
-              {/* File / Image attachment button */}
-              <input
-                type="file"
-                ref={fileInputRef}
-                onChange={handleFileUpload}
-                accept="image/*"
-                className="hidden"
-                multiple
-              />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="p-2 rounded-xl text-slate-500 hover:text-sky-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                title="Attach image for multimodal analysis"
-              >
-                <Paperclip className="w-4 h-4" />
-              </button>
+          {/* Toolbar */}
+          <div className="flex items-center justify-between px-3 pb-3 gap-2">
+            {/* Left Tools */}
+            <div className="flex items-center gap-1">
+              {/* Model Selector */}
+              <div className="relative">
+                <button
+                  onClick={() => setShowModelMenu(v => !v)}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700/50 transition-all"
+                >
+                  <selectedModel.icon className={`w-3.5 h-3.5 ${selectedModel.color}`} />
+                  <span>{selectedModel.label}</span>
+                  <ChevronDown className="w-3 h-3 text-slate-400" />
+                </button>
+                {showModelMenu && (
+                  <div className="absolute bottom-full mb-2 left-0 glass-elevated dark:glass-dark rounded-xl border border-white/80 dark:border-slate-700/60 shadow-2xl z-50 p-1.5 min-w-[160px] animate-scale-in">
+                    {MODEL_OPTIONS.map(opt => (
+                      <button
+                        key={opt.id}
+                        onClick={() => { setModelPreference(opt.id); setShowModelMenu(false); }}
+                        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                          modelPreference === opt.id
+                            ? 'bg-sky-50 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400'
+                            : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                        }`}
+                      >
+                        <opt.icon className={`w-3.5 h-3.5 ${opt.color}`} />
+                        {opt.label}
+                        {modelPreference === opt.id && <Check className="w-3 h-3 ml-auto" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
 
-              {/* Voice recognition input button */}
+              {/* Web Search Toggle */}
               <button
-                type="button"
-                onClick={toggleSpeechRecognition}
-                className={`p-2 rounded-xl transition-colors ${
-                  isListening 
-                    ? 'bg-red-500 text-white animate-pulse' 
-                    : 'text-slate-500 hover:text-sky-500 hover:bg-slate-100 dark:hover:bg-slate-800'
-                }`}
-                title={isListening ? "Listening... click to stop" : "Voice input"}
-              >
-                {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-              </button>
-
-              {/* Quick web search chip */}
-              <button
-                type="button"
-                onClick={() => setEnableWebSearch(!enableWebSearch)}
-                className={`hidden sm:flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors ${
+                onClick={() => setEnableWebSearch(v => !v)}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-all ${
                   enableWebSearch
-                    ? 'bg-sky-500/10 text-sky-500 border border-sky-500/30'
-                    : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                    ? 'bg-sky-50 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 border-sky-200/60 dark:border-sky-800/50'
+                    : 'text-slate-500 dark:text-slate-500 border-slate-200/60 dark:border-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-800/60'
                 }`}
               >
-                <Globe className="w-3 h-3" />
-                <span>Web Grounding</span>
+                <Globe className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Search</span>
+              </button>
+
+              {/* Attach */}
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="p-1.5 rounded-lg text-slate-500 dark:text-slate-500 hover:text-sky-500 hover:bg-sky-50 dark:hover:bg-sky-950/30 border border-slate-200/60 dark:border-slate-700/50 transition-all"
+                title="Attach file"
+              >
+                <Paperclip className="w-3.5 h-3.5" />
+              </button>
+              <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileAttach} accept="image/*,.pdf,.txt,.md,.csv,.json,.js,.py,.ts,.jsx,.tsx" />
+
+              {/* Mic */}
+              <button
+                onClick={toggleListening}
+                className={`p-1.5 rounded-lg border transition-all ${
+                  isListening
+                    ? 'bg-red-50 dark:bg-red-950/30 text-red-500 border-red-200/60 dark:border-red-800/50 animate-pulse'
+                    : 'text-slate-500 dark:text-slate-500 hover:text-sky-500 hover:bg-sky-50 dark:hover:bg-sky-950/30 border-slate-200/60 dark:border-slate-700/50'
+                }`}
+                title={isListening ? 'Stop listening' : 'Voice input'}
+              >
+                {isListening ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
               </button>
             </div>
 
-            {/* Send button */}
+            {/* Right: Send Button */}
             <button
-              onClick={() => handleSend()}
-              disabled={(!inputPrompt.trim() && attachments.length === 0) || loading}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
-                (!inputPrompt.trim() && attachments.length === 0) || loading
-                  ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
-                  : 'text-white azure-gradient-btn'
+              onClick={() => sendMessage()}
+              disabled={!inputPrompt.trim() || loading}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-semibold transition-all duration-200 ${
+                inputPrompt.trim() && !loading
+                  ? 'azure-gradient-btn text-white shadow-md'
+                  : 'bg-slate-100 dark:bg-slate-800/60 text-slate-400 cursor-not-allowed'
               }`}
             >
-              <span>Send</span>
-              <Send className="w-3.5 h-3.5" />
+              {loading ? (
+                <RefreshCw className="w-4 h-4 animate-spin" />
+              ) : (
+                <Send className="w-4 h-4" />
+              )}
+              <span className="hidden sm:inline">{loading ? 'Generating...' : 'Send'}</span>
             </button>
-
           </div>
-
         </div>
 
-        {/* Small footer disclaimer */}
-        <p className="text-center text-[10px] text-slate-400 dark:text-slate-500 mt-2">
-          Zulora AI can make mistakes. Verify critical facts. Founded by <strong>Shiven Panwar</strong>.
+        {/* Disclaimer */}
+        <p className="text-center text-[10px] text-slate-400 dark:text-slate-600 mt-2">
+          Zulora AI can make mistakes. Consider checking important information.
         </p>
-
       </div>
 
+      {/* Click outside model menu */}
+      {showModelMenu && (
+        <div className="fixed inset-0 z-40" onClick={() => setShowModelMenu(false)} />
+      )}
     </div>
   );
 };
 
 export default ChatInterface;
-
