@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useAuth } from './context/AuthContext';
 import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
@@ -27,11 +27,23 @@ export const App = () => {
   const [activeSession, setActiveSession] = useState(null);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
+  const navigate = useCallback((path, replace = true) => {
+    window.history[replace ? 'replaceState' : 'pushState']({}, '', path);
+    setPathname(path);
+  }, []);
+  const goToDashboard = useCallback(() => navigate('/dashboard'), [navigate]);
+
   useEffect(() => {
     const handlePopState = () => setPathname(window.location.pathname);
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
+
+  useEffect(() => {
+    if (loading) return;
+    if (pathname === '/dashboard' && !currentUser) navigate('/signin');
+    else if (pathname === '/signin' && currentUser) navigate('/dashboard');
+  }, [currentUser, loading, navigate, pathname]);
 
   // If initial auth check is loading, display refined glass spinner
   if (loading) {
@@ -60,11 +72,10 @@ export const App = () => {
   }
 
   if ((pathname === '/signin' || pathname === '/dashboard') && !currentUser) {
-    return <SignIn />;
+    return <SignIn onAuthenticated={goToDashboard} />;
   }
 
   if (pathname === '/signin' && currentUser) {
-    window.history.replaceState({}, '', '/dashboard');
     return null;
   }
 
@@ -147,4 +158,3 @@ export const App = () => {
 };
 
 export default App;
-

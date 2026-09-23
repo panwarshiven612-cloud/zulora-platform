@@ -155,6 +155,9 @@ export const LandingPage = () => {
     const result = await signInWithGoogle();
     if (!result?.success) {
       setAuthError(result?.error || 'Sign-in failed. Please try again.');
+    } else {
+      window.history.replaceState({}, '', '/dashboard');
+      window.dispatchEvent(new PopStateEvent('popstate'));
     }
     setSigningIn(false);
   };

@@ -1,48 +1,23 @@
 import React, { useEffect, useState } from 'react';
 import { Chrome, LoaderCircle, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { checkRedirectResult, performGoogleSignIn } from '../services/firebase';
-import { firestoreService } from '../services/firestoreService';
 
-const DASHBOARD_PATH = '/dashboard';
-
-export const SignIn = () => {
-  const { currentUser, refreshProfile } = useAuth();
+export const SignIn = ({ onAuthenticated }) => {
+  const { currentUser, signInWithGoogle } = useAuth();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    let mounted = true;
-
-    checkRedirectResult().then(async user => {
-      if (!mounted || !user) return;
-      await firestoreService.getUserProfile(user.uid, user);
-      await refreshProfile();
-      window.history.replaceState({}, '', DASHBOARD_PATH);
-    }).catch(signInError => {
-      if (mounted) setError(signInError.message || 'Unable to complete Google sign-in.');
-    });
-
-    return () => {
-      mounted = false;
-    };
-  }, [refreshProfile]);
-
-  useEffect(() => {
-    if (currentUser && window.location.pathname !== DASHBOARD_PATH) {
-      window.history.replaceState({}, '', DASHBOARD_PATH);
-    }
-  }, [currentUser]);
+    if (currentUser) onAuthenticated?.();
+  }, [currentUser, onAuthenticated]);
 
   const signIn = async () => {
     setBusy(true);
     setError('');
     try {
-      const user = await performGoogleSignIn();
-      if (!user) return;
-      await firestoreService.getUserProfile(user.uid, user);
-      await refreshProfile();
-      window.history.replaceState({}, '', DASHBOARD_PATH);
+      const result = await signInWithGoogle();
+      if (!result.success) setError(result.error || 'Unable to complete Google sign-in.');
+      else if (result.user) onAuthenticated?.();
     } catch (signInError) {
       setError(signInError.message || 'Unable to complete Google sign-in.');
     } finally {

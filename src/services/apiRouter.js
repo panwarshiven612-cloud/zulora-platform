@@ -60,20 +60,10 @@ export const apiRouter = {
 
     let searchSources = [];
 
-    const executionPlan = [];
-    if (modelPreference === 'groq') {
-      executionPlan.push('groq', 'openrouter', 'cerebras', 'gemini', 'mistral');
-    } else if (modelPreference === 'cerebras') {
-      executionPlan.push('cerebras', 'groq', 'gemini', 'openrouter', 'mistral');
-    } else if (modelPreference === 'openrouter') {
-      executionPlan.push('openrouter', 'groq', 'gemini', 'mistral');
-    } else if (modelPreference === 'mistral') {
-      executionPlan.push('mistral', 'groq', 'gemini', 'openrouter');
-    } else if (modelPreference === 'gemini') {
-      executionPlan.push('gemini', 'groq', 'cerebras', 'openrouter', 'mistral');
-    } else {
-      executionPlan.push('groq', 'openrouter', 'cerebras', 'gemini', 'mistral');
-    }
+    const waterfall = ['groq', 'openrouter', 'cerebras', 'gemini', 'mistral'];
+    const executionPlan = modelPreference === 'auto' || !waterfall.includes(modelPreference)
+      ? [...waterfall]
+      : [modelPreference, ...waterfall.filter(provider => provider !== modelPreference)];
 
     if (enableWebSearch) {
       executionPlan.splice(0, executionPlan.length, 'gemini', ...executionPlan.filter(provider => provider !== 'gemini'));
@@ -166,7 +156,7 @@ export const apiRouter = {
     }
 
     for (const { key: apiKey, index } of candidates) {
-      const model = 'gemini-2.0-flash';
+      const model = 'gemini-3.8-flash';
       const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
       try {
@@ -211,7 +201,7 @@ export const apiRouter = {
               text: citedText,
               sources,
               provider: `Google Gemini (Key #${index + 1})`,
-              model: 'gemini-2.0-flash'
+              model: 'gemini-3.8-flash'
             };
           }
         }

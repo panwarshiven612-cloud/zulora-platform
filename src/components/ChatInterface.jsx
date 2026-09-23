@@ -46,10 +46,11 @@ import { firestoreService } from '../services/firestoreService';
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 
 const MODEL_OPTIONS = [
-  { id: 'auto',     label: 'Auto (Best)',       icon: Sparkles,     color: 'text-sky-500' },
-  { id: 'gemini',   label: 'Gemini 1.5',        icon: Zap,          color: 'text-emerald-500' },
-  { id: 'groq',     label: 'Groq (Fast)',        icon: Cpu,          color: 'text-violet-500' },
-  { id: 'mistral',  label: 'Mistral',           icon: FlaskConical, color: 'text-amber-500' },
+  { id: 'auto',       label: 'Auto (Best / Default)',               shortLabel: 'Auto',      icon: Sparkles,     color: 'text-sky-500' },
+  { id: 'gemini',     label: 'Gemini 3.8 Flash (Google)',            shortLabel: 'Gemini',    icon: Zap,          color: 'text-emerald-500' },
+  { id: 'groq',       label: 'Llama 3.3 70B (Groq / Fast)',          shortLabel: 'Groq',      icon: Cpu,          color: 'text-violet-500' },
+  { id: 'mistral',    label: 'Mistral AI (European Engine)',         shortLabel: 'Mistral',   icon: FlaskConical, color: 'text-amber-500' },
+  { id: 'openrouter', label: 'DeepSeek V3 / Llama 3.3 (OpenRouter)', shortLabel: 'OpenRouter',icon: ExternalLink, color: 'text-cyan-500' },
 ];
 
 const SUGGESTION_CARDS = [
@@ -720,7 +721,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
                   className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700/50 transition-all"
                 >
                   <selectedModel.icon className={`w-3.5 h-3.5 ${selectedModel.color}`} />
-                  <span>{selectedModel.label}</span>
+                  <span>{selectedModel.shortLabel}</span>
                   <ChevronDown className="w-3 h-3 text-slate-400" />
                 </button>
                 {showModelMenu && (
