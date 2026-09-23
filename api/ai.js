@@ -11,10 +11,23 @@ const COUNTERS = {
 };
 let cachedFirestoreToken = null;
 let cachedFirebaseCertificates = null;
+let firestoreAdminWarningLogged = false;
 
 const json = (res, status, payload) => res.status(status).json(payload);
 const bearer = req => String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i)?.[1] || '';
 const safeError = (res, status, message, extra = {}) => json(res, status, { error: message, ...extra });
+
+function firestoreAdminCredentials() {
+  const email = process.env.FIREBASE_ADMIN_CLIENT_EMAIL || process.env.FIREBASE_CLIENT_EMAIL;
+  const privateKey = (process.env.FIREBASE_ADMIN_PRIVATE_KEY || process.env.FIREBASE_PRIVATE_KEY)?.replace(/\\n/g, '\n');
+  return email && privateKey ? { email, privateKey } : null;
+}
+
+function warnFirestoreTrackingUnavailable(reason) {
+  if (firestoreAdminWarningLogged) return;
+  firestoreAdminWarningLogged = true;
+  console.warn(`Firestore usage tracking unavailable; generation will continue without server-side usage tracking. ${reason}`);
+}
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 20_000) {
   const controller = new AbortController();
@@ -74,8 +87,7 @@ async function verifyUser(req) {
 }
 
 const firestoreRoot = () => {
-  const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID;
-  if (!projectId) throw new Error('FIREBASE_PROJECT_ID is not configured on the server.');
+  const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || 'zulora-al';
   return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents`;
 };
 
@@ -87,9 +99,9 @@ function base64Url(value) {
 
 async function firestoreAccessToken() {
   if (cachedFirestoreToken?.expiresAt > Date.now() + 60_000) return cachedFirestoreToken.token;
-  const email = process.env.FIREBASE_ADMIN_CLIENT_EMAIL;
-  const privateKey = process.env.FIREBASE_ADMIN_PRIVATE_KEY?.replace(/\\n/g, '\n');
-  if (!email || !privateKey) throw new Error('Firestore Admin credentials are not configured on the server.');
+  const credentials = firestoreAdminCredentials();
+  if (!credentials) throw new Error('Firestore Admin credentials are not configured on the server.');
+  const { email, privateKey } = credentials;
   const now = Math.floor(Date.now() / 1000);
   const claims = base64Url(JSON.stringify({ alg: 'RS256', typ: 'JWT' })) + '.' + base64Url(JSON.stringify({
     iss: email, sub: email, aud: 'https://oauth2.googleapis.com/token',
@@ -583,13 +595,38 @@ export default async function handler(req, res) {
   if (!uid) return safeError(res, 401, 'Your sign-in session has expired. Sign in again.');
 
   try {
-    const before = await checkUsage(uid, type);
-    if (before.error) return safeError(res, 503, before.error);
-    if (!before.allowed) return safeError(res, 403, before.error || `${type} limit reached. Upgrade your subscription to continue.`, { limit: before.limit, used: before.current, planTier: before.planTier });
+    let usageTrackingAvailable = false;
+    if (!firestoreAdminCredentials()) {
+      warnFirestoreTrackingUnavailable('Admin service-account email or private key is not configured.');
+    } else {
+      try {
+        const before = await checkUsage(uid, type);
+        if (before.error) {
+          warnFirestoreTrackingUnavailable(before.error);
+        } else if (!before.allowed) {
+          return safeError(res, 403, `${type} limit reached. Upgrade your subscription to continue.`, { limit: before.limit, used: before.current, planTier: before.planTier });
+        } else {
+          usageTrackingAvailable = true;
+        }
+      } catch (error) {
+        warnFirestoreTrackingUnavailable(error?.message || 'Could not read the user usage record.');
+      }
+    }
+
     const output = type === 'chat' ? await generateChat(body) : type === 'image' ? await generateImage(body) : await generateVideo(body);
-    const updated = await incrementUsage(uid, type);
-    if (!updated.allowed) return safeError(res, 403, `${type} limit reached. Upgrade your subscription to continue.`, { limit: updated.limit, used: updated.current, planTier: updated.planTier });
-    return json(res, 200, { ...output, usage: { type, used: updated.current, limit: updated.limit } });
+    let usage = { type, tracked: false };
+    if (usageTrackingAvailable) {
+      try {
+        const updated = await incrementUsage(uid, type);
+        if (!updated.allowed) {
+          return safeError(res, 403, `${type} limit reached. Upgrade your subscription to continue.`, { limit: updated.limit, used: updated.current, planTier: updated.planTier });
+        }
+        usage = { type, tracked: true, used: updated.current, limit: updated.limit };
+      } catch (error) {
+        warnFirestoreTrackingUnavailable(error?.message || 'Could not save the user usage record.');
+      }
+    }
+    return json(res, 200, { ...output, usage });
   } catch (error) {
     const message = error?.message || 'Generation failed. Please retry.';
     console.error('Zulora generation request failed:', type, message);

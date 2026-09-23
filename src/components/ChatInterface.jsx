@@ -439,7 +439,7 @@ const WelcomeScreen = ({ user, onSuggestion }) => (
    MAIN CHAT INTERFACE
    ============================================================ */
 export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => {
-  const { currentUser, checkUsage, refreshProfile, setIsUsageModalOpen } = useAuth();
+  const { currentUser, refreshProfile, setIsUsageModalOpen } = useAuth();
 
   const [messages, setMessages] = useState([]);
   const [inputPrompt, setInputPrompt] = useState('');
@@ -580,13 +580,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     const prompt = (promptOverride || inputPrompt).trim();
     if (!prompt || loading) return;
 
-    // Usage check
-    const allowed = await checkUsage('chat');
-    if (!allowed.allowed) {
-      setIsUsageModalOpen(true);
-      return;
-    }
-
     const userMsg = {
       id: Date.now().toString(),
       role: 'user',
@@ -611,7 +604,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
         enableWebSearch,
         attachments: imageAttachments
       });
-      await refreshProfile();
+      if (result.usage?.tracked) await refreshProfile();
 
       const aiMsg = {
         id: (Date.now() + 1).toString(),
@@ -658,7 +651,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     } finally {
       setLoading(false);
     }
-  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, checkUsage, refreshProfile, setIsUsageModalOpen, buildContextMessages, onUpdateSession]);
+  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, refreshProfile, setIsUsageModalOpen, buildContextMessages, onUpdateSession]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {

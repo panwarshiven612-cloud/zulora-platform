@@ -29,7 +29,7 @@ const CAMERA_ANGLES = [
 ];
 
 export const VideoGenerator = () => {
-  const { currentUser, limits, usage, checkUsage, refreshProfile, setIsUsageModalOpen } = useAuth();
+  const { currentUser, limits, usage, refreshProfile, setIsUsageModalOpen } = useAuth();
 
   const [prompt, setPrompt] = useState('');
   const [motionSpeed, setMotionSpeed] = useState(5);
@@ -57,12 +57,6 @@ export const VideoGenerator = () => {
   const handleGenerate = async () => {
     if (!prompt.trim() || loading) return;
 
-    // 1. Check Usage Limits
-    const usageCheck = await checkUsage('video');
-    if (!usageCheck.allowed) {
-      return;
-    }
-
     setLoading(true);
 
     try {
@@ -73,7 +67,7 @@ export const VideoGenerator = () => {
         duration
       });
       if (!result?.url) throw new Error('Video provider returned no video.');
-      await refreshProfile();
+      if (result.usage?.tracked) await refreshProfile();
 
       const videoAsset = {
         type: 'video',

@@ -39,7 +39,7 @@ const ASPECT_RATIOS = [
 ];
 
 export const ImageGenerator = () => {
-  const { currentUser, limits, usage, checkUsage, refreshProfile, setIsUsageModalOpen } = useAuth();
+  const { currentUser, limits, usage, refreshProfile, setIsUsageModalOpen } = useAuth();
 
   const [prompt, setPrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
@@ -66,12 +66,6 @@ export const ImageGenerator = () => {
   const handleGenerate = async () => {
     if (!prompt.trim() || loading) return;
 
-    // 1. Check Usage Limits
-      const usageCheck = await checkUsage('image');
-      if (!usageCheck.allowed) {
-        return;
-      }
-
     setLoading(true);
 
     try {
@@ -84,7 +78,7 @@ export const ImageGenerator = () => {
       });
 
       if (!result?.url) throw new Error('Image provider returned no downloadable image.');
-      await refreshProfile();
+      if (result.usage?.tracked) await refreshProfile();
 
       // Save asset in Firestore
       const assetData = {
