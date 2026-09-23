@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from './context/AuthContext';
 import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
@@ -8,7 +8,7 @@ import VideoGenerator from './components/VideoGenerator';
 import UsageLimitsModal from './components/UsageLimitsModal';
 import PricingModal from './components/PricingModal';
 import Footer from './components/Footer';
-import LandingPage from './components/LandingPage';
+import SignIn from './pages/SignIn';
 import { Sparkles } from 'lucide-react';
 
 export const App = () => {
@@ -24,6 +24,12 @@ export const App = () => {
   const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'image' | 'video'
   const [activeSession, setActiveSession] = useState(null);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    if (currentUser && window.location.pathname !== '/dashboard') {
+      window.history.replaceState({}, '', '/dashboard');
+    }
+  }, [currentUser]);
 
   // If initial auth check is loading, display refined glass spinner
   if (loading) {
@@ -51,10 +57,8 @@ export const App = () => {
     );
   }
 
-  // MANDATORY ACCESS GATING:
-  // Unauthenticated users are gated to the Landing / Sign-In page
   if (!currentUser) {
-    return <LandingPage />;
+    return <SignIn />;
   }
 
   // Handle creating a new chat

@@ -4,7 +4,7 @@ import {
   setPersistence,
   browserLocalPersistence
 } from 'firebase/auth';
-import { auth, handleGoogleSignIn, checkRedirectResult } from './firebase';
+import { auth, performGoogleSignIn, checkRedirectResult } from './firebase';
 
 export const authService = {
   /**
@@ -13,8 +13,8 @@ export const authService = {
   async signInWithGoogle() {
     try {
       await setPersistence(auth, browserLocalPersistence);
-      const result = await handleGoogleSignIn();
-      return { success: true, user: result.user, pendingRedirect: result.pendingRedirect };
+      const user = await performGoogleSignIn();
+      return { success: true, user, pendingRedirect: !user };
     } catch (error) {
       return {
         success: false,

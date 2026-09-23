@@ -4,7 +4,9 @@ import {
   GoogleAuthProvider,
   getRedirectResult,
   signInWithPopup,
-  signInWithRedirect
+  signInWithRedirect,
+  setPersistence,
+  browserLocalPersistence
 } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
@@ -35,10 +37,14 @@ googleProvider.setCustomParameters({
   prompt: 'select_account'
 });
 
-export const handleGoogleSignIn = async () => {
+setPersistence(auth, browserLocalPersistence).catch(error => {
+  console.error('Firebase persistence error:', error);
+});
+
+export const performGoogleSignIn = async () => {
   try {
     const result = await signInWithPopup(auth, googleProvider);
-    return { user: result.user, pendingRedirect: false };
+    return result.user;
   } catch (error) {
     console.warn('Google popup sign-in failed; falling back to redirect:', error);
     if (
@@ -47,11 +53,13 @@ export const handleGoogleSignIn = async () => {
       error.code === 'auth/cancelled-popup-request'
     ) {
       await signInWithRedirect(auth, googleProvider);
-      return { user: null, pendingRedirect: true };
+      return null;
     }
     throw error;
   }
 };
+
+export const handleGoogleSignIn = performGoogleSignIn;
 
 export const checkRedirectResult = async () => {
   try {
