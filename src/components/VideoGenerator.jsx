@@ -17,6 +17,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { apiRouter } from '../services/apiRouter';
 import { firestoreService } from '../services/firestoreService';
+import { downloadMedia } from '../services/downloadService';
 
 const CAMERA_ANGLES = [
   'Cinematic Pan',
@@ -28,7 +29,7 @@ const CAMERA_ANGLES = [
 ];
 
 export const VideoGenerator = () => {
-  const { currentUser, limits, usage, checkAndIncrement, setIsUsageModalOpen } = useAuth();
+  const { currentUser, limits, usage, checkAndIncrement, recordUsage, setIsUsageModalOpen } = useAuth();
 
   const [prompt, setPrompt] = useState('');
   const [motionSpeed, setMotionSpeed] = useState(5);
@@ -71,6 +72,8 @@ export const VideoGenerator = () => {
         cameraAngle,
         duration
       });
+      if (!result?.url) throw new Error('Video provider returned no video.');
+      await recordUsage('video');
 
       const videoAsset = {
         type: 'video',
@@ -97,18 +100,9 @@ export const VideoGenerator = () => {
 
   const handleDownload = async (url, filename) => {
     try {
-      const res = await fetch(url);
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = `${filename || 'zulora-clip'}.mp4`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(blobUrl);
+      await downloadMedia(url, `${filename || 'zulora-clip'}.mp4`);
     } catch (e) {
-      window.open(url, '_blank');
+      console.error('Video download failed:', e.message);
     }
   };
 
@@ -394,4 +388,3 @@ export const VideoGenerator = () => {
 };
 
 export default VideoGenerator;
-

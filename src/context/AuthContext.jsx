@@ -85,11 +85,9 @@ export const AuthProvider = ({ children }) => {
     setUserProfile(null);
   };
 
-  const checkAndIncrement = async (type) => {
+  const checkUsage = async (type) => {
     if (!currentUser) return { allowed: false, error: 'User not signed in' };
-    const result = await firestoreService.checkAndIncrementUsage(currentUser.uid, type);
-    await refreshProfile(currentUser.uid, currentUser);
-    
+    const result = await firestoreService.checkUsageAllowance(currentUser.uid, type);
     // Automatically trigger usage limits modal if limit reached
     if (!result.allowed) {
       setIsUsageModalOpen(true);
@@ -97,9 +95,18 @@ export const AuthProvider = ({ children }) => {
     return result;
   };
 
-  const isPro = userProfile?.isPro === true;
-  const currentTier = isPro ? (userProfile?.tier || TIERS.PRO) : TIERS.FREE;
-  const currentLimits = firestoreService.getLimitsForTier(currentTier);
+  const recordUsage = async type => {
+    if (!currentUser) return;
+    await firestoreService.recordUsage(currentUser.uid, type);
+    await refreshProfile(currentUser.uid, currentUser);
+  };
+
+  const storedTier = userProfile?.planTier || userProfile?.tier || TIERS.FREE;
+  const currentTier = String(storedTier).toLowerCase() === 'ultrapro' || String(storedTier).toLowerCase() === 'ultra_pro_max'
+    ? TIERS.ULTRA
+    : String(storedTier).toLowerCase() === 'pro' ? TIERS.PRO : TIERS.FREE;
+  const isPro = currentTier !== TIERS.FREE;
+  const currentLimits = firestoreService.getProfileLimits(userProfile || {});
 
   const value = {
     currentUser,
@@ -114,7 +121,9 @@ export const AuthProvider = ({ children }) => {
     logout,
     refreshProfile: () => refreshProfile(currentUser?.uid, currentUser),
     isPro,
-    checkAndIncrement,
+    checkAndIncrement: checkUsage,
+    checkUsage,
+    recordUsage,
     isUsageModalOpen,
     setIsUsageModalOpen,
     isPricingModalOpen,
@@ -133,4 +142,3 @@ export const useAuth = () => {
 };
 
 export default AuthContext;
-

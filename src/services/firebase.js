@@ -9,6 +9,7 @@ import {
   browserLocalPersistence
 } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyDU2mwqs-pZjW37FOruKgSoxpIm3GJ3baY',
@@ -22,6 +23,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const storage = getStorage(app);
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({
   prompt: 'select_account'
@@ -63,5 +65,5 @@ export const checkRedirectResult = async () => {
 
 export const checkAuthRedirect = checkRedirectResult;
 
-export { app, auth, db, googleProvider };
+export { app, auth, db, storage, googleProvider };
 export default app;

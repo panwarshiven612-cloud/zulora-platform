@@ -12,11 +12,13 @@ import {
   Layers, 
   Sliders, 
   ExternalLink,
-  ChevronDown
+  ChevronDown,
+  Image as ImageIcon
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { apiRouter } from '../services/apiRouter';
 import { firestoreService, TIERS } from '../services/firestoreService';
+import { downloadMedia } from '../services/downloadService';
 
 const STYLES = [
   { id: 'Photorealistic', name: 'Photorealistic 8K', preview: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=300&q=80' },
@@ -36,7 +38,7 @@ const ASPECT_RATIOS = [
 ];
 
 export const ImageGenerator = () => {
-  const { currentUser, limits, usage, checkAndIncrement, setIsUsageModalOpen } = useAuth();
+  const { currentUser, limits, usage, checkAndIncrement, recordUsage, setIsUsageModalOpen } = useAuth();
 
   const [prompt, setPrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
@@ -64,10 +66,10 @@ export const ImageGenerator = () => {
     if (!prompt.trim() || loading) return;
 
     // 1. Check Usage Limits
-    const usageCheck = await checkAndIncrement('image');
-    if (!usageCheck.allowed) {
-      return;
-    }
+      const usageCheck = await checkAndIncrement('image');
+      if (!usageCheck.allowed) {
+        return;
+      }
 
     setLoading(true);
 
@@ -79,6 +81,9 @@ export const ImageGenerator = () => {
         aspectRatio,
         sourceImage: sourceImage?.dataUrl || ''
       });
+
+      if (!result?.url) throw new Error('Image provider returned no downloadable image.');
+      await recordUsage('image');
 
       // Save asset in Firestore
       const assetData = {
@@ -119,18 +124,9 @@ export const ImageGenerator = () => {
 
   const handleDownload = async (url, filename) => {
     try {
-      const res = await fetch(url);
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = `${filename || 'zulora-art'}.png`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(blobUrl);
+      await downloadMedia(url, `${filename || 'zulora-art'}.png`);
     } catch (e) {
-      window.open(url, '_blank');
+      console.error('Image download failed:', e.message);
     }
   };
 
@@ -465,4 +461,3 @@ export const ImageGenerator = () => {
 };
 
 export default ImageGenerator;
-

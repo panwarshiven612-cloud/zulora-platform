@@ -10,9 +10,11 @@ import {
   getDocs,
   addDoc,
   deleteDoc,
-  serverTimestamp
+  serverTimestamp,
+  runTransaction
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { db, storage } from './firebase';
+import { ref, uploadString, getDownloadURL } from 'firebase/storage';
 import { emailService } from './emailService';
 
 export const TIERS = {
@@ -59,6 +61,18 @@ export const firestoreService = {
     };
   },
 
+  getProfileLimits(profile = {}) {
+    const tier = profile.planTier || profile.tier || TIERS.FREE;
+    const normalizedTier = String(tier).toLowerCase();
+    const defaults = this.getLimitsForTier(normalizedTier === 'ultrapro' || normalizedTier === 'ultra_pro_max' ? TIERS.ULTRA : normalizedTier);
+    return {
+      chat: Number(profile.textLimit ?? defaults.chat),
+      image: Number(profile.imageLimit ?? defaults.image),
+      video: Number(profile.videoLimit ?? defaults.video),
+      multiplier: defaults.multiplier
+    };
+  },
+
   /**
    * Get or create User Profile with usage and tier tracking
    * Sends EmailJS welcome email on first registration
@@ -83,6 +97,13 @@ export const firestoreService = {
           displayName: initialUser.displayName || 'Zulora Member',
           photoURL: initialUser.photoURL || '',
           isPro: false,
+          planTier: 'Free',
+          textLimit: BASE_LIMITS.chat,
+          imageLimit: BASE_LIMITS.image,
+          videoLimit: BASE_LIMITS.video,
+          textUsed: 0,
+          imageUsed: 0,
+          videoUsed: 0,
           tier: TIERS.FREE,
           tierUpdatedAt: now,
           welcomeEmailSent: false,
@@ -151,6 +172,12 @@ export const firestoreService = {
 
     // Evaluate and reset dynamic windows
     profileData = this.evaluateUsageWindows(profileData);
+    profileData.usage = {
+      ...(profileData.usage || {}),
+      chatCount: Number(profileData.textUsed ?? profileData.usage?.chatCount ?? 0),
+      imageCount: Number(profileData.imageUsed ?? profileData.usage?.imageCount ?? 0),
+      videoCount: Number(profileData.videoUsed ?? profileData.usage?.videoCount ?? 0)
+    };
     localStorage.setItem(localKey, JSON.stringify(profileData));
     return profileData;
   },
@@ -160,12 +187,13 @@ export const firestoreService = {
    */
   evaluateUsageWindows(profile) {
     const now = Date.now();
-    const usage = { ...profile.usage };
+    const usage = { ...(profile.usage || {}) };
     let changed = false;
 
     // Chat window check (2 hours)
     if (!usage.chatWindowStart || now - usage.chatWindowStart > CHAT_WINDOW_MS) {
       usage.chatCount = 0;
+      profile.textUsed = 0;
       usage.chatWindowStart = now;
       changed = true;
     }
@@ -173,6 +201,7 @@ export const firestoreService = {
     // Image window check (24 hours)
     if (!usage.imageWindowStart || now - usage.imageWindowStart > DAY_WINDOW_MS) {
       usage.imageCount = 0;
+      profile.imageUsed = 0;
       usage.imageWindowStart = now;
       changed = true;
     }
@@ -180,6 +209,7 @@ export const firestoreService = {
     // Video window check (24 hours)
     if (!usage.videoWindowStart || now - usage.videoWindowStart > DAY_WINDOW_MS) {
       usage.videoCount = 0;
+      profile.videoUsed = 0;
       usage.videoWindowStart = now;
       changed = true;
     }
@@ -191,16 +221,16 @@ export const firestoreService = {
   },
 
   /**
-   * Check if a specific usage type is allowed; increment if within limit
+   * Check the current allowance without consuming it. Call recordUsage only
+   * after a generation has returned a usable result.
    */
-  async checkAndIncrementUsage(uid, type = 'chat') {
+  async checkUsageAllowance(uid, type = 'chat') {
     let profile = await this.getUserProfile(uid);
     profile = this.evaluateUsageWindows(profile);
-
-    const effectiveTier = profile.isPro === true ? profile.tier : TIERS.FREE;
-    const limits = this.getLimitsForTier(effectiveTier);
+    const limits = this.getProfileLimits(profile);
     const usageKey = `${type}Count`;
-    const currentCount = profile.usage[usageKey] || 0;
+    const topLevelCounter = type === 'chat' ? 'textUsed' : `${type}Used`;
+    const currentCount = Number(profile[topLevelCounter] ?? profile.usage[usageKey] ?? 0);
     const maxLimit = limits[type];
 
     if (currentCount >= maxLimit) {
@@ -213,22 +243,54 @@ export const firestoreService = {
         currentCount,
         maxLimit,
         resetsInMs,
-        tier: effectiveTier,
+        tier: profile.planTier || profile.tier || TIERS.FREE,
         error: `Limit reached for ${type}. Current plan: ${profile.tier}. Upgrade to increase limits.`
       };
     }
 
-    // Increment count
-    profile.usage[usageKey] = currentCount + 1;
-    await this.updateUserProfile(uid, { usage: profile.usage });
-
     return {
       allowed: true,
-      currentCount: profile.usage[usageKey],
+      currentCount,
       maxLimit,
-      remaining: maxLimit - profile.usage[usageKey],
-      tier: effectiveTier
+      remaining: maxLimit - currentCount,
+      tier: profile.planTier || profile.tier || TIERS.FREE
     };
+  },
+
+  async recordUsage(uid, type = 'chat') {
+    const counter = `${type}Count`;
+    const startKey = `${type}WindowStart`;
+    const localKey = `${STORAGE_PREFIX}user_${uid}`;
+    try {
+      const userRef = doc(db, 'users', uid);
+      let committedProfile;
+      await runTransaction(db, async transaction => {
+        const snap = await transaction.get(userRef);
+        const profile = snap.exists() ? snap.data() : { usage: {} };
+        const profileWithUsage = this.evaluateUsageWindows({ ...profile, usage: profile.usage || {} });
+        const topLevelCounter = type === 'chat' ? 'textUsed' : `${type}Used`;
+        const count = Number(profileWithUsage[topLevelCounter] ?? profileWithUsage.usage?.[counter] ?? 0);
+        transaction.set(userRef, { [topLevelCounter]: count + 1, usage: { ...profileWithUsage.usage, [counter]: count + 1, [startKey]: profileWithUsage.usage[startKey] || Date.now() } }, { merge: true });
+        profileWithUsage[topLevelCounter] = count + 1;
+        profileWithUsage.usage[counter] = count + 1;
+        committedProfile = profileWithUsage;
+      });
+      if (committedProfile) localStorage.setItem(localKey, JSON.stringify(committedProfile));
+    } catch (err) {
+      console.warn('Firestore recordUsage fallback:', err.message);
+      const profile = JSON.parse(localStorage.getItem(localKey) || '{}');
+      const topLevelCounter = type === 'chat' ? 'textUsed' : `${type}Used`;
+      const nextCount = Number(profile[topLevelCounter] ?? profile.usage?.[counter] ?? 0) + 1;
+      profile[topLevelCounter] = nextCount;
+      profile.usage = { ...(profile.usage || {}), [counter]: nextCount, [startKey]: profile.usage?.[startKey] || Date.now() };
+      localStorage.setItem(localKey, JSON.stringify(profile));
+    }
+  },
+
+  async checkAndIncrementUsage(uid, type = 'chat') {
+    const result = await this.checkUsageAllowance(uid, type);
+    if (result.allowed) await this.recordUsage(uid, type);
+    return result;
   },
 
   /**
@@ -379,6 +441,17 @@ export const firestoreService = {
       id: assetData.id || 'asset_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       createdAt: Date.now()
     };
+
+    if (asset.url?.startsWith('data:')) {
+      try {
+        const mimeType = asset.url.match(/^data:([^;]+);base64,/)?.[1] || 'image/png';
+        const objectRef = ref(storage, `users/${uid}/assets/${asset.id}`);
+        await uploadString(objectRef, asset.url, 'data_url', { contentType: mimeType });
+        asset.url = await getDownloadURL(objectRef);
+      } catch (err) {
+        console.warn('Firebase Storage upload fallback:', err.message);
+      }
+    }
 
     try {
       const assetDocRef = doc(db, 'users', uid, 'assets', asset.id);

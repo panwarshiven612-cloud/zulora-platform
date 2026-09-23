@@ -407,7 +407,7 @@ const WelcomeScreen = ({ user, onSuggestion }) => (
    MAIN CHAT INTERFACE
    ============================================================ */
 export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => {
-  const { currentUser, checkAndIncrement, setIsUsageModalOpen } = useAuth();
+  const { currentUser, checkAndIncrement, recordUsage, setIsUsageModalOpen } = useAuth();
 
   const [messages, setMessages] = useState([]);
   const [inputPrompt, setInputPrompt] = useState('');
@@ -531,6 +531,13 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     setAttachments(prev => prev.filter((_, i) => i !== idx));
   };
 
+  const readImageAttachments = files => Promise.all(files.filter(file => file.type.startsWith('image/')).map(file => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ name: file.name, mimeType: file.type, base64: reader.result });
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
+    reader.readAsDataURL(file);
+  })));
+
   const buildContextMessages = useCallback(() => {
     return messages.slice(-12).map(m => ({
       role: m.role,
@@ -544,7 +551,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
 
     // Usage check
     const allowed = await checkAndIncrement('chat');
-    if (!allowed) {
+    if (!allowed.allowed) {
       setIsUsageModalOpen(true);
       return;
     }
@@ -565,13 +572,15 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     setIsAtBottom(true);
 
     try {
+      const imageAttachments = await readImageAttachments(attachments);
       const contextMessages = buildContextMessages();
       const result = await apiRouter.generateChat({
         messages: [...contextMessages, { role: 'user', content: prompt }],
         modelPreference,
         enableWebSearch,
-        attachments: []
+        attachments: imageAttachments
       });
+      await recordUsage('chat');
 
       const aiMsg = {
         id: (Date.now() + 1).toString(),
@@ -615,7 +624,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     } finally {
       setLoading(false);
     }
-  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, checkAndIncrement, setIsUsageModalOpen, buildContextMessages, onUpdateSession]);
+  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, checkAndIncrement, recordUsage, setIsUsageModalOpen, buildContextMessages, onUpdateSession]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {

@@ -15,33 +15,10 @@
  * - Replicate
  */
 
-// Safe runtime key resolver
-const resolveKey = envVal => envVal || '';
+import { apiKeyPool } from './apiKeyPool';
 
-// Gemini Keys Array (7 keys provided)
-const GEMINI_KEYS = [
-  resolveKey(import.meta.env.VITE_GEMINI_KEY_1),
-  resolveKey(import.meta.env.VITE_GEMINI_KEY_2),
-  resolveKey(import.meta.env.VITE_GEMINI_KEY_3),
-  resolveKey(import.meta.env.VITE_GEMINI_KEY_4),
-  resolveKey(import.meta.env.VITE_GEMINI_KEY_5),
-  resolveKey(import.meta.env.VITE_GEMINI_KEY_6),
-  resolveKey(import.meta.env.VITE_GEMINI_KEY_7)
-];
-
-const GROQ_KEY = resolveKey(import.meta.env.VITE_GROQ_API_KEY);
-const CEREBRAS_KEY = resolveKey(import.meta.env.VITE_CEREBRAS_API_KEY);
-const OPENROUTER_KEYS = [
-  resolveKey(import.meta.env.VITE_OPENROUTER_KEY_1),
-  resolveKey(import.meta.env.VITE_OPENROUTER_KEY_2)
-];
-const MISTRAL_KEY = resolveKey(import.meta.env.VITE_MISTRAL_API_KEY);
-const POLLINATIONS_KEY = resolveKey(import.meta.env.VITE_POLLINATIONS_KEY);
-const FAL_KEY = resolveKey(import.meta.env.VITE_FAL_KEY);
-
-// Key index rotation state
-let currentGeminiKeyIndex = 0;
-let currentOpenRouterKeyIndex = 0;
+const POLLINATIONS_KEY = import.meta.env.VITE_POLLINATIONS_KEY || '';
+const FAL_KEY = import.meta.env.VITE_FAL_KEY || '';
 
 /**
  * Helper to fetch with timeout
@@ -82,19 +59,10 @@ export const apiRouter = {
     ];
 
     let searchSources = [];
-    if (enableWebSearch) {
-      const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content || '';
-      searchSources = this.simulateWebSearch(lastUserMsg);
-      const searchContext = `[Web Search Active]\nRecent Sources retrieved for query "${lastUserMsg}":\n` +
-        searchSources.map((s, idx) => `[${idx + 1}] ${s.title} (${s.url}): ${s.snippet}`).join('\n') +
-        `\nSynthesize the latest factual data from these sources into your answer and cite references like [1], [2] where appropriate.`;
-      
-      formattedMessages.splice(1, 0, { role: 'system', content: searchContext });
-    }
 
     const executionPlan = [];
     if (modelPreference === 'groq') {
-      executionPlan.push('groq', 'gemini', 'cerebras', 'openrouter', 'mistral', 'pollinations');
+      executionPlan.push('groq', 'openrouter', 'cerebras', 'gemini', 'mistral');
     } else if (modelPreference === 'cerebras') {
       executionPlan.push('cerebras', 'groq', 'gemini', 'openrouter', 'mistral');
     } else if (modelPreference === 'openrouter') {
@@ -104,7 +72,16 @@ export const apiRouter = {
     } else if (modelPreference === 'gemini') {
       executionPlan.push('gemini', 'groq', 'cerebras', 'openrouter', 'mistral');
     } else {
-      executionPlan.push('gemini', 'groq', 'cerebras', 'openrouter', 'mistral', 'pollinations');
+      executionPlan.push('groq', 'openrouter', 'cerebras', 'gemini', 'mistral');
+    }
+
+    if (enableWebSearch) {
+      executionPlan.splice(0, executionPlan.length, 'gemini', ...executionPlan.filter(provider => provider !== 'gemini'));
+      const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content || '';
+      formattedMessages.splice(1, 0, { role: 'system', content: `Use Google Search grounding for current facts about: ${lastUserMsg}. Cite sources supplied by the search tool. Do not invent sources.` });
+    }
+    if (attachments.some(attachment => attachment.mimeType?.startsWith('image/'))) {
+      executionPlan.splice(0, executionPlan.length, 'gemini', ...executionPlan.filter(provider => provider !== 'gemini'));
     }
 
     executionPlan.push('fallback');
@@ -113,7 +90,7 @@ export const apiRouter = {
       try {
         if (provider === 'gemini') {
           const res = await this.tryGemini(formattedMessages, attachments);
-          if (res) return { ...res, sources: searchSources, latencyMs: Date.now() - startTime };
+          if (res) return { ...res, sources: res.sources || searchSources, latencyMs: Date.now() - startTime };
         } else if (provider === 'groq') {
           const res = await this.tryGroq(formattedMessages);
           if (res) return { ...res, sources: searchSources, latencyMs: Date.now() - startTime };
@@ -158,8 +135,7 @@ export const apiRouter = {
    * 1. Google Gemini Provider with 7-Key Rotation
    */
   async tryGemini(messages, attachments = []) {
-    const totalKeys = GEMINI_KEYS.length;
-    let attempts = 0;
+    const candidates = apiKeyPool.candidates('gemini');
 
     const contents = [];
     const systemInstruction = messages.find(message => message.role === 'system')?.content;
@@ -189,8 +165,7 @@ export const apiRouter = {
       }
     }
 
-    while (attempts < totalKeys) {
-      const apiKey = GEMINI_KEYS[currentGeminiKeyIndex];
+    for (const { key: apiKey, index } of candidates) {
       const model = 'gemini-2.0-flash';
       const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
@@ -204,6 +179,7 @@ export const apiRouter = {
           body: JSON.stringify({
             contents,
             ...(systemInstruction ? { system_instruction: { parts: [{ text: systemInstruction }] } } : {}),
+            ...(messages.some(message => message.content?.startsWith('Use Google Search grounding')) ? { tools: [{ google_search: {} }] } : {}),
             generationConfig: {
               temperature: 0.7,
               maxOutputTokens: 2048
@@ -216,19 +192,33 @@ export const apiRouter = {
           const candidate = data.candidates?.[0];
           const text = candidate?.content?.parts?.map(p => p.text).join('') || '';
           if (text) {
+            apiKeyPool.succeeded('gemini', index);
+            const groundingMetadata = candidate.groundingMetadata || data.groundingMetadata;
+            const chunks = groundingMetadata?.groundingChunks || [];
+            const sources = chunks.map(chunk => chunk.web && ({
+              title: chunk.web.title || chunk.web.uri,
+              url: chunk.web.uri,
+              snippet: ''
+            })).filter(Boolean);
+            let citedText = text;
+            const supports = [...(groundingMetadata?.groundingSupports || [])].sort((a, b) => (b.segment?.endIndex || 0) - (a.segment?.endIndex || 0));
+            for (const support of supports) {
+              const endIndex = support.segment?.endIndex;
+              const links = (support.groundingChunkIndices || []).map(chunkIndex => chunks[chunkIndex]?.web?.uri ? `[${chunkIndex + 1}](${chunks[chunkIndex].web.uri})` : '').filter(Boolean);
+              if (endIndex !== undefined && links.length) citedText = `${citedText.slice(0, endIndex)} ${links.join(', ')}${citedText.slice(endIndex)}`;
+            }
             return {
-              text,
-              provider: `Google Gemini (Key #${currentGeminiKeyIndex + 1})`,
+              text: citedText,
+              sources,
+              provider: `Google Gemini (Key #${index + 1})`,
               model: 'gemini-2.0-flash'
             };
           }
         }
       } catch (err) {
-        console.warn(`Gemini key #${currentGeminiKeyIndex + 1} note:`, err.message);
+        console.warn(`Gemini key #${index + 1} note:`, err.message);
       }
-
-      currentGeminiKeyIndex = (currentGeminiKeyIndex + 1) % totalKeys;
-      attempts++;
+      apiKeyPool.failed('gemini', index);
     }
 
     return null;
@@ -238,11 +228,12 @@ export const apiRouter = {
    * 2. Groq Provider (Llama 3.3 70B)
    */
   async tryGroq(messages) {
-    if (!GROQ_KEY) return null;
+    const candidates = apiKeyPool.candidates('groq');
+    for (const { key, index } of candidates) try {
     const response = await fetchWithTimeout('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${GROQ_KEY}`,
+        'Authorization': `Bearer ${key}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -257,6 +248,7 @@ export const apiRouter = {
       const data = await response.json();
       const text = data.choices?.[0]?.message?.content;
       if (text) {
+        apiKeyPool.succeeded('groq', index);
         return {
           text,
           provider: 'Groq Cloud',
@@ -264,6 +256,8 @@ export const apiRouter = {
         };
       }
     }
+    } catch (err) { console.warn('Groq key attempt note:', err.message); }
+    for (const { index } of candidates) apiKeyPool.failed('groq', index);
     return null;
   },
 
@@ -271,11 +265,12 @@ export const apiRouter = {
    * 3. Cerebras Provider (Ultra-Fast Llama 3.1)
    */
   async tryCerebras(messages) {
-    if (!CEREBRAS_KEY) return null;
+    const candidates = apiKeyPool.candidates('cerebras');
+    for (const { key, index } of candidates) try {
     const response = await fetchWithTimeout('https://api.cerebras.ai/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${CEREBRAS_KEY}`,
+        'Authorization': `Bearer ${key}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -290,6 +285,7 @@ export const apiRouter = {
       const data = await response.json();
       const text = data.choices?.[0]?.message?.content;
       if (text) {
+        apiKeyPool.succeeded('cerebras', index);
         return {
           text,
           provider: 'Cerebras Ultra-Fast',
@@ -297,6 +293,8 @@ export const apiRouter = {
         };
       }
     }
+    } catch (err) { console.warn('Cerebras key attempt note:', err.message); }
+    for (const { index } of candidates) apiKeyPool.failed('cerebras', index);
     return null;
   },
 
@@ -304,10 +302,8 @@ export const apiRouter = {
    * 4. OpenRouter Provider
    */
   async tryOpenRouter(messages) {
-    for (let i = 0; i < OPENROUTER_KEYS.length; i++) {
-      const keyIndex = (currentOpenRouterKeyIndex + i) % OPENROUTER_KEYS.length;
-      const key = OPENROUTER_KEYS[keyIndex];
-      if (!key) continue;
+    const candidates = apiKeyPool.candidates('openrouter');
+    for (const { key, index: keyIndex } of candidates) {
 
       try {
         const response = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
@@ -329,7 +325,7 @@ export const apiRouter = {
           const data = await response.json();
           const text = data.choices?.[0]?.message?.content;
           if (text) {
-            currentOpenRouterKeyIndex = (keyIndex + 1) % OPENROUTER_KEYS.length;
+            apiKeyPool.succeeded('openrouter', keyIndex);
             return {
               text,
               provider: `OpenRouter (Key #${keyIndex + 1})`,
@@ -340,6 +336,7 @@ export const apiRouter = {
       } catch (err) {
         console.warn('OpenRouter key attempt note:', err.message);
       }
+      apiKeyPool.failed('openrouter', keyIndex);
     }
     return null;
   },
@@ -348,11 +345,12 @@ export const apiRouter = {
    * 5. Mistral AI Provider
    */
   async tryMistral(messages) {
-    if (!MISTRAL_KEY) return null;
+    const candidates = apiKeyPool.candidates('mistral');
+    for (const { key, index } of candidates) try {
     const response = await fetchWithTimeout('https://api.mistral.ai/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${MISTRAL_KEY}`,
+        'Authorization': `Bearer ${key}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -366,6 +364,7 @@ export const apiRouter = {
       const data = await response.json();
       const text = data.choices?.[0]?.message?.content;
       if (text) {
+        apiKeyPool.succeeded('mistral', index);
         return {
           text,
           provider: 'Mistral AI',
@@ -373,6 +372,8 @@ export const apiRouter = {
         };
       }
     }
+    } catch (err) { console.warn('Mistral key attempt note:', err.message); }
+    for (const { index } of candidates) apiKeyPool.failed('mistral', index);
     return null;
   },
 
@@ -462,6 +463,42 @@ export const apiRouter = {
   }) {
     const startTime = Date.now();
 
+    if (sourceImage) {
+      const match = sourceImage.match(/^data:([^;]+);base64,(.+)$/);
+      if (match) {
+        for (const { key, index } of apiKeyPool.candidates('gemini')) {
+          try {
+            const response = await fetchWithTimeout(`https://generativelanguage.googleapis.com/v1beta/interactions`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+              body: JSON.stringify({
+                model: 'gemini-3.1-flash-image',
+                input: [
+                  { type: 'text', text: `Edit this reference image according to the request. Preserve the main subject and composition unless asked otherwise. Request: ${prompt}` },
+                  { type: 'image', mime_type: match[1], data: match[2] }
+                ],
+                response_format: { type: 'image', aspect_ratio: aspectRatio }
+              })
+            }, 20000);
+            if (!response.ok) {
+              apiKeyPool.failed('gemini', index, response.status === 429 ? 30_000 : 0);
+              continue;
+            }
+            const data = await response.json();
+            const imageData = data.output_image;
+            if (imageData?.data) {
+              apiKeyPool.succeeded('gemini', index);
+              return { url: `data:${imageData.mime_type || 'image/png'};base64,${imageData.data}`, provider: `Google Gemini Image Edit (Key #${index + 1})`, model: 'gemini-3.1-flash-image', prompt, enhancedPrompt: prompt, aspectRatio, latencyMs: Date.now() - startTime };
+            }
+            apiKeyPool.failed('gemini', index);
+          } catch (err) {
+            apiKeyPool.failed('gemini', index);
+            console.warn('Gemini image edit note:', err.message);
+          }
+        }
+      }
+    }
+
     let width = 1024;
     let height = 1024;
     if (aspectRatio === '16:9') { width = 1280; height = 720; }
@@ -491,7 +528,7 @@ export const apiRouter = {
     // Provider 1: Pollinations AI (Flux / Turbo model)
     try {
       const encodedPrompt = encodeURIComponent(enhancedPrompt);
-      const imageQuery = sourceImage ? `&image=${encodeURIComponent(sourceImage)}` : '';
+      const imageQuery = sourceImage && !sourceImage.startsWith('data:') ? `&image=${encodeURIComponent(sourceImage)}` : '';
       const keyQuery = POLLINATIONS_KEY ? `&key=${encodeURIComponent(POLLINATIONS_KEY)}` : '';
       const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&seed=${seed}&nologo=true&enhance=true&model=flux${imageQuery}${keyQuery}`;
       
@@ -608,31 +645,7 @@ export const apiRouter = {
       }
     }
 
-    const sampleVideos = [
-      'https://assets.mixkit.co/videos/preview/mixkit-flying-through-a-futuristic-digital-matrix-tunnel-42998-large.mp4',
-      'https://assets.mixkit.co/videos/preview/mixkit-glowing-digital-neurons-in-a-network-42997-large.mp4',
-      'https://assets.mixkit.co/videos/preview/mixkit-abstract-fast-lines-of-blue-and-purple-light-42994-large.mp4',
-      'https://assets.mixkit.co/videos/preview/mixkit-digital-circuit-board-with-glowing-lines-42999-large.mp4',
-      'https://assets.mixkit.co/videos/preview/mixkit-space-odyssey-through-nebula-clouds-42995-large.mp4'
-    ];
-    
-    let hash = 0;
-    for (let i = 0; i < prompt.length; i++) {
-      hash = (hash << 5) - hash + prompt.charCodeAt(i);
-      hash |= 0;
-    }
-    const chosenVideo = sampleVideos[Math.abs(hash) % sampleVideos.length];
-
-    return {
-      url: chosenVideo,
-      provider: 'Zulora Cinematic Motion Engine',
-      model: 'zulora-motion-v2.5',
-      prompt,
-      motionSpeed,
-      cameraAngle,
-      duration,
-      latencyMs: Date.now() - startTime
-    };
+    throw new Error('Video generation is unavailable. Configure a working VITE_FAL_KEY and retry.');
   }
 };
 
