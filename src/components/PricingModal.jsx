@@ -1,41 +1,19 @@
 import React, { useState } from 'react';
 import { 
   X, 
-  Check, 
-  Zap, 
+  Check,
   Crown, 
-  ShieldCheck, 
   Sparkles, 
-  ExternalLink,
   MessageCircle,
-  HelpCircle
+  ExternalLink
 } from 'lucide-react';
-import confetti from 'canvas-confetti';
 import { useAuth } from '../context/AuthContext';
 import { TIERS } from '../services/firestoreService';
 
 export const PricingModal = ({ isOpen, onClose }) => {
-  const { tier, upgradeTier, refreshProfile } = useAuth();
-  const [upgrading, setUpgrading] = useState(false);
+  const { tier } = useAuth();
 
   if (!isOpen) return null;
-
-  const handleUpgrade = async (selectedTier) => {
-    setUpgrading(true);
-    try {
-      await upgradeTier(selectedTier);
-      confetti({
-        particleCount: 120,
-        spread: 80,
-        origin: { y: 0.6 }
-      });
-      await refreshProfile();
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setUpgrading(false);
-    }
-  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xl animate-fade-in">
@@ -175,15 +153,15 @@ export const PricingModal = ({ isOpen, onClose }) => {
             </div>
 
             <button
-              onClick={() => handleUpgrade(TIERS.PRO)}
-              disabled={upgrading || tier === TIERS.PRO}
+              onClick={() => window.open('https://wa.me/916395211325?text=Hi%20Shiven,%20I%20have%20completed%20the%20payment%20to%20shivenpanwar@fam%20for%20Zulora%20AI%20Pro.%20Here%20is%20my%20registered%20email:', '_blank', 'noopener,noreferrer')}
+              disabled={tier === TIERS.PRO}
               className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all ${
                 tier === TIERS.PRO 
                   ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-default'
                   : 'text-white azure-gradient-btn'
               }`}
             >
-              {tier === TIERS.PRO ? 'Active Plan' : 'Upgrade to Pro (₹299)'}
+              {tier === TIERS.PRO ? 'Verified Pro Plan' : 'Submit Payment Proof via WhatsApp'}
             </button>
           </div>
 
@@ -238,18 +216,28 @@ export const PricingModal = ({ isOpen, onClose }) => {
             </div>
 
             <button
-              onClick={() => handleUpgrade(TIERS.ULTRA)}
-              disabled={upgrading || tier === TIERS.ULTRA}
+              onClick={() => window.open('https://wa.me/916395211325?text=Hi%20Shiven,%20I%20have%20completed%20the%20payment%20to%20shivenpanwar@fam%20for%20Zulora%20AI%20Pro.%20Here%20is%20my%20registered%20email:', '_blank', 'noopener,noreferrer')}
+              disabled={tier === TIERS.ULTRA}
               className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all ${
                 tier === TIERS.ULTRA 
                   ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-default'
                   : 'text-white bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 shadow-md'
               }`}
             >
-              {tier === TIERS.ULTRA ? 'Active Plan' : 'Activate Ultra (₹599)'}
+              {tier === TIERS.ULTRA ? 'Verified Ultra Plan' : 'Submit Payment Proof via WhatsApp'}
             </button>
           </div>
 
+        </div>
+
+        <div className="p-5 rounded-2xl bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-800 space-y-3">
+          <p className="text-sm font-bold text-slate-900 dark:text-white">Manual UPI subscription verification</p>
+          <p className="text-xs text-slate-600 dark:text-slate-300">Pay for subscription using any UPI app (PhonePe/GPay/Paytm) to UPI ID: <strong>shivenpanwar@fam</strong></p>
+          <a href="https://wa.me/916395211325?text=Hi%20Shiven,%20I%20have%20completed%20the%20payment%20to%20shivenpanwar@fam%20for%20Zulora%20AI%20Pro.%20Here%20is%20my%20registered%20email:" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">
+            <MessageCircle className="w-4 h-4" />
+            Submit Payment Proof via WhatsApp
+          </a>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">Paid features unlock only after manual verification updates your Firestore profile.</p>
         </div>
 
         {/* Enterprise & Founder WhatsApp Card */}

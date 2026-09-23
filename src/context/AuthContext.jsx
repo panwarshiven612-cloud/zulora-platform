@@ -64,26 +64,10 @@ export const AuthProvider = ({ children }) => {
     return result;
   };
 
-  const signInAsDemo = async (custom = {}) => {
-    setLoading(true);
-    const demo = authService.signInAsDemoUser(custom);
-    setCurrentUser(demo);
-    await refreshProfile(demo.uid, demo);
-    setLoading(false);
-    return demo;
-  };
-
   const logout = async () => {
     await authService.signOut();
     setCurrentUser(null);
     setUserProfile(null);
-  };
-
-  const upgradeTier = async (newTier) => {
-    if (!currentUser) return;
-    const updated = await firestoreService.upgradeUserTier(currentUser.uid, newTier);
-    setUserProfile(updated);
-    return updated;
   };
 
   const checkAndIncrement = async (type) => {
@@ -98,7 +82,8 @@ export const AuthProvider = ({ children }) => {
     return result;
   };
 
-  const currentTier = userProfile?.tier || TIERS.FREE;
+  const isPro = userProfile?.isPro === true;
+  const currentTier = isPro ? (userProfile?.tier || TIERS.PRO) : TIERS.FREE;
   const currentLimits = firestoreService.getLimitsForTier(currentTier);
 
   const value = {
@@ -111,10 +96,9 @@ export const AuthProvider = ({ children }) => {
     theme,
     toggleTheme,
     signInWithGoogle,
-    signInAsDemo,
     logout,
     refreshProfile: () => refreshProfile(currentUser?.uid, currentUser),
-    upgradeTier,
+    isPro,
     checkAndIncrement,
     isUsageModalOpen,
     setIsUsageModalOpen,

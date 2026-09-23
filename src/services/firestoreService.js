@@ -82,6 +82,7 @@ export const firestoreService = {
           email: initialUser.email || '',
           displayName: initialUser.displayName || 'Zulora Member',
           photoURL: initialUser.photoURL || '',
+          isPro: false,
           tier: TIERS.FREE,
           tierUpdatedAt: now,
           welcomeEmailSent: false,
@@ -101,7 +102,11 @@ export const firestoreService = {
       console.warn('Firestore getUserProfile fallback to local cache:', err.message);
       const cached = localStorage.getItem(localKey);
       if (cached) {
-        profileData = JSON.parse(cached);
+        profileData = {
+          ...JSON.parse(cached),
+          isPro: false,
+          tier: TIERS.FREE
+        };
       } else {
         isNewUser = true;
         const now = Date.now();
@@ -192,7 +197,8 @@ export const firestoreService = {
     let profile = await this.getUserProfile(uid);
     profile = this.evaluateUsageWindows(profile);
 
-    const limits = this.getLimitsForTier(profile.tier);
+    const effectiveTier = profile.isPro === true ? profile.tier : TIERS.FREE;
+    const limits = this.getLimitsForTier(effectiveTier);
     const usageKey = `${type}Count`;
     const currentCount = profile.usage[usageKey] || 0;
     const maxLimit = limits[type];
@@ -207,7 +213,7 @@ export const firestoreService = {
         currentCount,
         maxLimit,
         resetsInMs,
-        tier: profile.tier,
+        tier: effectiveTier,
         error: `Limit reached for ${type}. Current plan: ${profile.tier}. Upgrade to increase limits.`
       };
     }
@@ -221,7 +227,7 @@ export const firestoreService = {
       currentCount: profile.usage[usageKey],
       maxLimit,
       remaining: maxLimit - profile.usage[usageKey],
-      tier: profile.tier
+      tier: effectiveTier
     };
   },
 
@@ -241,18 +247,6 @@ export const firestoreService = {
     } catch (err) {
       console.warn('Firestore updateUserProfile fallback:', err.message);
     }
-  },
-
-  /**
-   * Upgrade tier (Free -> Pro -> Ultra Pro Max)
-   */
-  async upgradeUserTier(uid, newTier) {
-    const updates = {
-      tier: newTier,
-      tierUpdatedAt: Date.now()
-    };
-    await this.updateUserProfile(uid, updates);
-    return await this.getUserProfile(uid);
   },
 
   // ==========================================

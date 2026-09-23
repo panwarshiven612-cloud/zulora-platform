@@ -16,36 +16,28 @@
  */
 
 // Safe runtime key resolver
-const resolveKey = (envVal, obf) => {
-  if (envVal) return envVal;
-  if (!obf) return '';
-  return obf.split('').map(c => String.fromCharCode(c.charCodeAt(0) ^ 7)).join('');
-};
+const resolveKey = envVal => envVal || '';
 
 // Gemini Keys Array (7 keys provided)
 const GEMINI_KEYS = [
-  resolveKey(import.meta.env.VITE_GEMINI_KEY_1, "FV)Fe?UI1LpQB>m~2d_P5w>IwJ5POjqIq}U6EqadP @iEUJC?j}c`"),
-  resolveKey(import.meta.env.VITE_GEMINI_KEY_2, "FV)Fe?UI1LuC@Wmn2tr p3O}w0?}O_]jNuwk6a@N3vmb]FiPECek`"),
-  resolveKey(import.meta.env.VITE_GEMINI_KEY_3, "FV)Fe?UI1L>sc s~jfpo_RtE}BTa`oolfHmNAFNCwe>M4vH27HF7V"),
-  resolveKey(import.meta.env.VITE_GEMINI_KEY_4, "FV)Fe?UI1Mwtnu6O>RO1j3aw^_Ud6o0Jc~QuUDXCa@*iljK2P0E>F"),
-  resolveKey(import.meta.env.VITE_GEMINI_KEY_5, "FV)Fe?UI1M_ijl2ie@ek*V5w2OsFBcV5Fd}XfpOv>DMhdMk5tie3`"),
-  resolveKey(import.meta.env.VITE_GEMINI_KEY_6, "FV)Fe?UI1KfB5D]mT305B3>?olKtJuBNvfw]0LeF@ATE MlDIFJRV"),
-  resolveKey(import.meta.env.VITE_GEMINI_KEY_7, "FV)Fe?UI1Kor@hBu6Ip]ciWboQs>m]Jwm mjcTP5R_]_c@ij0RQ4p")
+  resolveKey(import.meta.env.VITE_GEMINI_KEY_1),
+  resolveKey(import.meta.env.VITE_GEMINI_KEY_2),
+  resolveKey(import.meta.env.VITE_GEMINI_KEY_3),
+  resolveKey(import.meta.env.VITE_GEMINI_KEY_4),
+  resolveKey(import.meta.env.VITE_GEMINI_KEY_5),
+  resolveKey(import.meta.env.VITE_GEMINI_KEY_6),
+  resolveKey(import.meta.env.VITE_GEMINI_KEY_7)
 ];
 
-const GROQ_KEY = resolveKey(import.meta.env.VITE_GROQ_API_KEY, "`tlXVEpUV31JqbhL]@4uHCpPP@c~e4A^>vhOJh1m0Ti2ueu]k0I~Hb4k");
-const CEREBRAS_KEY = resolveKey(import.meta.env.VITE_CEREBRAS_API_KEY, "dtl* 5m>p5qacs2lii2ij>lq4>d1>i2wipom51~u qci3 cws~3s");
+const GROQ_KEY = resolveKey(import.meta.env.VITE_GROQ_API_KEY);
+const CEREBRAS_KEY = resolveKey(import.meta.env.VITE_CEREBRAS_API_KEY);
 const OPENROUTER_KEYS = [
-  resolveKey(import.meta.env.VITE_OPENROUTER_KEY_1, "tl*hu*q6*>e04705bce13b07ba40>aed3>2f45e64605e0?30367634646>b2?2a7??f5ec5b"),
-  resolveKey(import.meta.env.VITE_OPENROUTER_KEY_2, "tl*hu*q6*622c7?>>0f>>257?>36cdfedb>3c773>fb264aa?e6?f>>ffc51>7a723adcd>66")
+  resolveKey(import.meta.env.VITE_OPENROUTER_KEY_1),
+  resolveKey(import.meta.env.VITE_OPENROUTER_KEY_2)
 ];
-const MISTRAL_KEY = resolveKey(import.meta.env.VITE_MISTRAL_API_KEY, "jtsukXMftns1IQ2j^o>ItafP PML55 vPpBLPhX7hl6^u");
-const POLLINATIONS_KEY = resolveKey(import.meta.env.VITE_POLLINATIONS_KEY, "tlXCMrD4>?AUAaWsBottCu2pQw H}AkV@>C");
-const HUGGINGFACE_KEY = resolveKey(import.meta.env.VITE_HUGGINGFACE_KEY, "oaXQV^KBuPfAk ~iO@KsDE^KsK_^I]Ua~hPUh");
-const FAL_KEY = resolveKey(import.meta.env.VITE_FAL_KEY, "6>b45f>e*f0f?*3a>c*?a?c*ae7?6cf65?ee=0d7522?aee644d447b1b550>110ddbf3");
-const CLOUDFLARE_ACCOUNT = import.meta.env.VITE_CLOUDFLARE_ACCOUNT_ID || "75d1aeca46cd7feb956023adf9a8628a";
-const CLOUDFLARE_TOKEN = resolveKey(import.meta.env.VITE_CLOUDFLARE_TOKEN, "dafsXJHbBf^lFiwA2^lWlDU_1r?tNcao`4K3s ortnf]}122>43cc");
-const REPLICATE_KEY = resolveKey(import.meta.env.VITE_REPLICATE_KEY, "u?X3^` h_oriKN3NlBqd4H`C2iJ`UbdMbf6RVH0f");
+const MISTRAL_KEY = resolveKey(import.meta.env.VITE_MISTRAL_API_KEY);
+const POLLINATIONS_KEY = resolveKey(import.meta.env.VITE_POLLINATIONS_KEY);
+const FAL_KEY = resolveKey(import.meta.env.VITE_FAL_KEY);
 
 // Key index rotation state
 let currentGeminiKeyIndex = 0;
@@ -154,7 +146,7 @@ export const apiRouter = {
     }
 
     return {
-      text: "I am ready to assist you. What would you like to explore or create with Zulora AI?",
+      text: this.generateIntelligentFallback(formattedMessages, enableWebSearch, searchSources),
       provider: 'Zulora AI Core',
       model: 'zulora-core',
       sources: searchSources,
@@ -170,6 +162,7 @@ export const apiRouter = {
     let attempts = 0;
 
     const contents = [];
+    const systemInstruction = messages.find(message => message.role === 'system')?.content;
     for (const msg of messages) {
       if (msg.role === 'system') continue;
       contents.push({
@@ -210,6 +203,7 @@ export const apiRouter = {
           },
           body: JSON.stringify({
             contents,
+            ...(systemInstruction ? { system_instruction: { parts: [{ text: systemInstruction }] } } : {}),
             generationConfig: {
               temperature: 0.7,
               maxOutputTokens: 2048
@@ -424,7 +418,7 @@ export const apiRouter = {
         `\n\n**Key Takeaways:**\n- Deep intelligence synthesis completed across verified endpoints.\n- Zulora AI ensures continuous operational uptime through automated waterfall failover.`;
     }
 
-    return `### Response from Zulora AI\n\nThank you for your inquiry regarding: **"${messages[messages.length - 1]?.content}"**.\n\nZulora AI brings together multi-model intelligence across Google Gemini, Groq Llama 3.3, Cerebras, and OpenRouter with real-time web grounding.\n\nHow would you like to proceed? We can:\n1. Expand on this topic in technical detail\n2. Generate related visual assets in the **Image Studio**\n3. Produce an AI motion clip in the **Video Studio**\n4. Synthesize live data with **Web Search / Deep Research**`;
+    return `I could not reach an upstream AI provider for this request: **"${messages[messages.length - 1]?.content || ''}"**. Please retry in a moment.`;
   },
 
   /**
@@ -463,7 +457,8 @@ export const apiRouter = {
     negativePrompt = '',
     style = 'Photorealistic',
     aspectRatio = '1:1',
-    seed = Math.floor(Math.random() * 1000000)
+    seed = Math.floor(Math.random() * 1000000),
+    sourceImage = ''
   }) {
     const startTime = Date.now();
 
@@ -496,7 +491,9 @@ export const apiRouter = {
     // Provider 1: Pollinations AI (Flux / Turbo model)
     try {
       const encodedPrompt = encodeURIComponent(enhancedPrompt);
-      const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&seed=${seed}&nologo=true&enhance=true&model=flux&key=${POLLINATIONS_KEY}`;
+      const imageQuery = sourceImage ? `&image=${encodeURIComponent(sourceImage)}` : '';
+      const keyQuery = POLLINATIONS_KEY ? `&key=${encodeURIComponent(POLLINATIONS_KEY)}` : '';
+      const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&seed=${seed}&nologo=true&enhance=true&model=flux${imageQuery}${keyQuery}`;
       
       return {
         url: pollinationsUrl,

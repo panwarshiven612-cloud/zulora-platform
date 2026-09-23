@@ -13,22 +13,18 @@ import {
   ExternalLink,
   Crown
 } from 'lucide-react';
-import confetti from 'canvas-confetti';
 import { useAuth } from '../context/AuthContext';
-import { TIERS, TIER_PRICING, BASE_LIMITS } from '../services/firestoreService';
+import { TIERS } from '../services/firestoreService';
 
 export const UsageLimitsModal = ({ isOpen, onClose }) => {
   const { 
     tier, 
     limits, 
-    usage, 
-    upgradeTier, 
-    refreshProfile 
+    usage
   } = useAuth();
 
   const [chatCountdown, setChatCountdown] = useState('');
   const [dayCountdown, setDayCountdown] = useState('');
-  const [upgrading, setUpgrading] = useState(false);
 
   // Dynamic countdown calculations
   useEffect(() => {
@@ -64,21 +60,8 @@ export const UsageLimitsModal = ({ isOpen, onClose }) => {
 
   if (!isOpen) return null;
 
-  const handleUpgrade = async (newTier) => {
-    setUpgrading(true);
-    try {
-      await upgradeTier(newTier);
-      confetti({
-        particleCount: 100,
-        spread: 70,
-        origin: { y: 0.6 }
-      });
-      await refreshProfile();
-    } catch (e) {
-      console.error('Upgrade failed:', e);
-    } finally {
-      setUpgrading(false);
-    }
+  const handlePaymentProof = () => {
+    window.open('https://wa.me/916395211325?text=Hi%20Shiven,%20I%20have%20completed%20the%20payment%20to%20shivenpanwar@fam%20for%20Zulora%20AI%20Pro.%20Here%20is%20my%20registered%20email:', '_blank', 'noopener,noreferrer');
   };
 
   const chatPercent = Math.min(100, Math.round(((usage.chatCount || 0) / limits.chat) * 100));
@@ -263,15 +246,15 @@ export const UsageLimitsModal = ({ isOpen, onClose }) => {
               </ul>
 
               <button
-                onClick={() => handleUpgrade(TIERS.PRO)}
-                disabled={upgrading || tier === TIERS.PRO}
+                onClick={handlePaymentProof}
+                disabled={tier === TIERS.PRO}
                 className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all ${
                   tier === TIERS.PRO
                     ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-default'
                     : 'text-white azure-gradient-btn'
                 }`}
               >
-                {tier === TIERS.PRO ? 'Active Plan' : 'Activate Pro (₹299)'}
+                {tier === TIERS.PRO ? 'Verified Pro Plan' : 'Submit Payment Proof'}
               </button>
             </div>
 
@@ -312,15 +295,15 @@ export const UsageLimitsModal = ({ isOpen, onClose }) => {
               </ul>
 
               <button
-                onClick={() => handleUpgrade(TIERS.ULTRA)}
-                disabled={upgrading || tier === TIERS.ULTRA}
+                onClick={handlePaymentProof}
+                disabled={tier === TIERS.ULTRA}
                 className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all ${
                   tier === TIERS.ULTRA
                     ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-default'
                     : 'text-white bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 shadow-md'
                 }`}
               >
-                {tier === TIERS.ULTRA ? 'Active Plan' : 'Activate Ultra (₹599)'}
+                {tier === TIERS.ULTRA ? 'Verified Ultra Plan' : 'Submit Payment Proof'}
               </button>
             </div>
 

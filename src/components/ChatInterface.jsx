@@ -566,15 +566,12 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
 
     try {
       const contextMessages = buildContextMessages();
-      const result = await apiRouter.generateChat(
-        prompt,
-        contextMessages,
-        {
-          model: modelPreference,
-          webSearch: enableWebSearch,
-          userId: currentUser?.uid,
-        }
-      );
+      const result = await apiRouter.generateChat({
+        messages: [...contextMessages, { role: 'user', content: prompt }],
+        modelPreference,
+        enableWebSearch,
+        attachments: []
+      });
 
       const aiMsg = {
         id: (Date.now() + 1).toString(),

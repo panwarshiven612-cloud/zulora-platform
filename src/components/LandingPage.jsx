@@ -131,10 +131,9 @@ const PricingCard = ({ tier, price, period, desc, features, highlight, badge }) 
 
 /* ─── MAIN LANDING PAGE ─── */
 export const LandingPage = () => {
-  const { signInWithGoogle, signInAsDemo, theme, toggleTheme } = useAuth();
+  const { signInWithGoogle, theme, toggleTheme } = useAuth();
   const [authError, setAuthError] = useState(null);
   const [signingIn, setSigningIn] = useState(false);
-  const [signingInDemo, setSigningInDemo] = useState(false);
   const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
@@ -151,12 +150,6 @@ export const LandingPage = () => {
       setAuthError(result?.error || 'Sign-in failed. Please try again.');
     }
     setSigningIn(false);
-  };
-
-  const handleDemoSignIn = async () => {
-    setSigningInDemo(true);
-    await signInAsDemo();
-    setSigningInDemo(false);
   };
 
   const features = [
@@ -350,18 +343,6 @@ export const LandingPage = () => {
                 </svg>
               )}
               {signingIn ? 'Signing in...' : 'Start for Free — Google Sign In'}
-            </button>
-            <button
-              onClick={handleDemoSignIn}
-              disabled={signingInDemo}
-              className="px-7 py-3.5 rounded-2xl text-base font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-sky-400 dark:hover:border-sky-600 hover:text-sky-500 glass-pearl dark:glass-dark transition-all duration-200 flex items-center gap-2 min-w-[160px] justify-center"
-            >
-              {signingInDemo ? (
-                <div className="w-4 h-4 border-2 border-sky-500/40 border-t-sky-500 rounded-full animate-spin" />
-              ) : (
-                <Play className="w-4 h-4" />
-              )}
-              {signingInDemo ? 'Loading...' : 'Try Demo'}
             </button>
           </div>
 
