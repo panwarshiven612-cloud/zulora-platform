@@ -53,6 +53,21 @@ export const AuthProvider = ({ children }) => {
     return () => unsubscribe();
   }, [refreshProfile]);
 
+  useEffect(() => {
+    let mounted = true;
+
+    authService.checkRedirectResult().then(async (user) => {
+      if (!mounted || !user) return;
+      setCurrentUser(user);
+      await refreshProfile(user.uid, user);
+      if (mounted) setLoading(false);
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [refreshProfile]);
+
   const signInWithGoogle = async () => {
     setLoading(true);
     const result = await authService.signInWithGoogle();

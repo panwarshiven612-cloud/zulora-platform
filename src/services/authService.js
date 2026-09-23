@@ -1,12 +1,10 @@
 import {
-  signInWithPopup,
-  signInWithRedirect,
   signOut,
   onAuthStateChanged,
   setPersistence,
   browserLocalPersistence
 } from 'firebase/auth';
-import { auth, googleProvider } from './firebase';
+import { auth, handleGoogleSignIn, checkRedirectResult } from './firebase';
 
 export const authService = {
   /**
@@ -15,22 +13,9 @@ export const authService = {
   async signInWithGoogle() {
     try {
       await setPersistence(auth, browserLocalPersistence);
-      const result = await signInWithPopup(auth, googleProvider);
-      return { success: true, user: result.user };
+      const result = await handleGoogleSignIn();
+      return { success: true, user: result.user, pendingRedirect: result.pendingRedirect };
     } catch (error) {
-      console.warn('Firebase signInWithPopup note:', error.code, error.message);
-
-      // If popup was blocked or closed, try redirect
-      if (error.code === 'auth/popup-blocked' || error.code === 'auth/cancelled-popup-request') {
-        try {
-          await signInWithRedirect(auth, googleProvider);
-          return { success: true, pendingRedirect: true };
-        } catch (redirectError) {
-          console.error('Firebase redirect sign-in error:', redirectError);
-        }
-      }
-
-      // Return error code and message for UI handling
       return {
         success: false,
         error: error.message,
@@ -53,6 +38,10 @@ export const authService = {
    */
   onAuthStateChange(callback) {
     return onAuthStateChanged(auth, callback);
+  },
+
+  checkRedirectResult() {
+    return checkRedirectResult();
   }
 };
 

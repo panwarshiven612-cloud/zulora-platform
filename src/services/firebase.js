@@ -1,5 +1,11 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider } from 'firebase/auth';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  getRedirectResult,
+  signInWithPopup,
+  signInWithRedirect
+} from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
 const resolveSecret = (envVal, b64Fallback) => {
@@ -28,6 +34,34 @@ const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({
   prompt: 'select_account'
 });
+
+export const handleGoogleSignIn = async () => {
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    return { user: result.user, pendingRedirect: false };
+  } catch (error) {
+    console.warn('Google popup sign-in failed; falling back to redirect:', error);
+    if (
+      error.code === 'auth/popup-blocked' ||
+      error.code === 'auth/popup-closed-by-user' ||
+      error.code === 'auth/cancelled-popup-request'
+    ) {
+      await signInWithRedirect(auth, googleProvider);
+      return { user: null, pendingRedirect: true };
+    }
+    throw error;
+  }
+};
+
+export const checkRedirectResult = async () => {
+  try {
+    const result = await getRedirectResult(auth);
+    return result?.user || null;
+  } catch (error) {
+    console.error('Error handling Google redirect sign-in:', error);
+    return null;
+  }
+};
 
 export { app, auth, db, googleProvider };
 export default app;
