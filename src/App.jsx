@@ -8,6 +8,7 @@ import VideoGenerator from './components/VideoGenerator';
 import UsageLimitsModal from './components/UsageLimitsModal';
 import PricingModal from './components/PricingModal';
 import Footer from './components/Footer';
+import LandingPage from './components/LandingPage';
 import SignIn from './pages/SignIn';
 import { Sparkles } from 'lucide-react';
 
@@ -21,15 +22,16 @@ export const App = () => {
     setIsPricingModalOpen 
   } = useAuth();
 
+  const [pathname, setPathname] = useState(() => window.location.pathname);
   const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'image' | 'video'
   const [activeSession, setActiveSession] = useState(null);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   useEffect(() => {
-    if (currentUser && window.location.pathname !== '/dashboard') {
-      window.history.replaceState({}, '', '/dashboard');
-    }
-  }, [currentUser]);
+    const handlePopState = () => setPathname(window.location.pathname);
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   // If initial auth check is loading, display refined glass spinner
   if (loading) {
@@ -57,8 +59,17 @@ export const App = () => {
     );
   }
 
-  if (!currentUser) {
+  if ((pathname === '/signin' || pathname === '/dashboard') && !currentUser) {
     return <SignIn />;
+  }
+
+  if (pathname === '/signin' && currentUser) {
+    window.history.replaceState({}, '', '/dashboard');
+    return null;
+  }
+
+  if (pathname !== '/dashboard') {
+    return <LandingPage />;
   }
 
   // Handle creating a new chat

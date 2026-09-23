@@ -61,7 +61,7 @@ const StatCard = ({ value, label, icon: Icon }) => (
 );
 
 /* ─── Feature Card ─── */
-const FeatureCard = ({ icon: Icon, iconBg, title, desc, badge, items }) => (
+const FeatureCard = ({ icon: Icon, iconBg, title, desc, badge, items, onOpen }) => (
   <div className="feature-card glass-pearl dark:glass-dark rounded-2xl p-6 border border-white/70 dark:border-slate-700/60 glass-card-hover cursor-default">
     <div className="flex items-start justify-between mb-4">
       <div className={`p-3 rounded-xl ${iconBg}`}>
@@ -85,6 +85,13 @@ const FeatureCard = ({ icon: Icon, iconBg, title, desc, badge, items }) => (
         ))}
       </ul>
     )}
+    <button
+      type="button"
+      onClick={onOpen}
+      className="mt-5 inline-flex items-center gap-1.5 text-xs font-bold text-sky-600 hover:text-sky-500"
+    >
+      Open {title} <ArrowRight className="w-3.5 h-3.5" />
+    </button>
   </div>
 );
 
@@ -131,7 +138,7 @@ const PricingCard = ({ tier, price, period, desc, features, highlight, badge }) 
 
 /* ─── MAIN LANDING PAGE ─── */
 export const LandingPage = () => {
-  const { signInWithGoogle, theme, toggleTheme } = useAuth();
+  const { currentUser, signInWithGoogle, theme, toggleTheme } = useAuth();
   const [authError, setAuthError] = useState(null);
   const [signingIn, setSigningIn] = useState(false);
   const [scrolled, setScrolled] = useState(false);
@@ -150,6 +157,11 @@ export const LandingPage = () => {
       setAuthError(result?.error || 'Sign-in failed. Please try again.');
     }
     setSigningIn(false);
+  };
+
+  const openFeature = () => {
+    window.history.pushState({}, '', currentUser ? '/dashboard' : '/signin');
+    window.dispatchEvent(new PopStateEvent('popstate'));
   };
 
   const features = [
@@ -393,7 +405,7 @@ export const LandingPage = () => {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {features.map((f, i) => (
-            <FeatureCard key={i} {...f} />
+            <FeatureCard key={i} {...f} onOpen={openFeature} />
           ))}
         </div>
       </section>
