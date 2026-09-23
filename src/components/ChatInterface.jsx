@@ -1,8 +1,21 @@
 import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import clike from 'react-syntax-highlighter/dist/esm/languages/prism/clike';
+import markup from 'react-syntax-highlighter/dist/esm/languages/prism/markup';
+import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javascript';
+import jsx from 'react-syntax-highlighter/dist/esm/languages/prism/jsx';
+import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typescript';
+import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
+import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
+import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
+import json from 'react-syntax-highlighter/dist/esm/languages/prism/json';
+import css from 'react-syntax-highlighter/dist/esm/languages/prism/css';
+import sql from 'react-syntax-highlighter/dist/esm/languages/prism/sql';
+import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml';
+import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown';
 import {
   Send,
   Search,
@@ -37,7 +50,8 @@ import {
   Plus,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { apiRouter } from '../services/apiRouter';
+import { aiRouter } from '../services/aiRouter';
+import { imageFileToDataUrl } from '../services/imageUtils';
 import { firestoreService } from '../services/firestoreService';
 
 /* ============================================================
@@ -45,9 +59,15 @@ import { firestoreService } from '../services/firestoreService';
    ============================================================ */
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 
+[
+  ['clike', clike], ['markup', markup], ['javascript', javascript], ['jsx', jsx],
+  ['typescript', typescript], ['tsx', tsx], ['python', python], ['bash', bash],
+  ['json', json], ['css', css], ['sql', sql], ['yaml', yaml], ['markdown', markdown]
+].forEach(([name, language]) => SyntaxHighlighter.registerLanguage(name, language));
+
 const MODEL_OPTIONS = [
-  { id: 'auto',       label: 'Auto (Best / Default)',               shortLabel: 'Auto',      icon: Sparkles,     color: 'text-sky-500' },
-  { id: 'gemini',     label: 'Gemini 3.8 Flash (Google)',            shortLabel: 'Gemini',    icon: Zap,          color: 'text-emerald-500' },
+  { id: 'auto',       label: 'Auto-Waterfall (Best / Default)',     shortLabel: 'Auto',      icon: Sparkles,     color: 'text-sky-500' },
+  { id: 'gemini',     label: 'Gemini 3.8 Flash (Google)',             shortLabel: 'Gemini',    icon: Zap,          color: 'text-emerald-500' },
   { id: 'groq',       label: 'Llama 3.3 70B (Groq / Fast)',          shortLabel: 'Groq',      icon: Cpu,          color: 'text-violet-500' },
   { id: 'mistral',    label: 'Mistral AI (European Engine)',         shortLabel: 'Mistral',   icon: FlaskConical, color: 'text-amber-500' },
   { id: 'openrouter', label: 'DeepSeek V3 / Llama 3.3 (OpenRouter)', shortLabel: 'OpenRouter',icon: ExternalLink, color: 'text-cyan-500' },
@@ -314,6 +334,17 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, isSpeaking, copie
             <MarkdownContent content={message.content} />
           )}
         </div>
+        {!isUser && message.sources?.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 px-1 pt-1">
+            {message.sources.slice(0, 5).map((source, sourceIndex) => (
+              <a key={`${source.url}-${sourceIndex}`} href={source.url} target="_blank" rel="noreferrer"
+                className="inline-flex max-w-full items-center gap-1 rounded-full border border-sky-200/70 dark:border-sky-800/50 bg-sky-50/70 dark:bg-sky-950/30 px-2 py-1 text-[10px] text-sky-700 dark:text-sky-300 hover:underline">
+                <ExternalLink className="h-3 w-3 shrink-0" />
+                <span className="truncate">{source.title || source.url}</span>
+              </a>
+            ))}
+          </div>
+        )}
 
         {/* Action Bar — AI messages only */}
         {!isUser && (
@@ -408,7 +439,7 @@ const WelcomeScreen = ({ user, onSuggestion }) => (
    MAIN CHAT INTERFACE
    ============================================================ */
 export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => {
-  const { currentUser, checkAndIncrement, recordUsage, setIsUsageModalOpen } = useAuth();
+  const { currentUser, checkUsage, refreshProfile, setIsUsageModalOpen } = useAuth();
 
   const [messages, setMessages] = useState([]);
   const [inputPrompt, setInputPrompt] = useState('');
@@ -524,7 +555,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
 
   const handleFileAttach = (e) => {
     const files = Array.from(e.target.files || []);
-    setAttachments(prev => [...prev, ...files.slice(0, 5 - prev.length)]);
+    setAttachments(prev => [...prev, ...files.filter(file => file.type.startsWith('image/')).slice(0, 3 - prev.length)]);
     e.target.value = '';
   };
 
@@ -532,11 +563,10 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     setAttachments(prev => prev.filter((_, i) => i !== idx));
   };
 
-  const readImageAttachments = files => Promise.all(files.filter(file => file.type.startsWith('image/')).map(file => new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve({ name: file.name, mimeType: file.type, base64: reader.result });
-    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
-    reader.readAsDataURL(file);
+  const readImageAttachments = files => Promise.all(files.filter(file => file.type.startsWith('image/')).map(async file => ({
+    name: file.name,
+    mimeType: 'image/jpeg',
+    base64: await imageFileToDataUrl(file)
   })));
 
   const buildContextMessages = useCallback(() => {
@@ -551,7 +581,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     if (!prompt || loading) return;
 
     // Usage check
-    const allowed = await checkAndIncrement('chat');
+    const allowed = await checkUsage('chat');
     if (!allowed.allowed) {
       setIsUsageModalOpen(true);
       return;
@@ -575,13 +605,13 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     try {
       const imageAttachments = await readImageAttachments(attachments);
       const contextMessages = buildContextMessages();
-      const result = await apiRouter.generateChat({
+      const result = await aiRouter.generateChat({
         messages: [...contextMessages, { role: 'user', content: prompt }],
         modelPreference,
         enableWebSearch,
         attachments: imageAttachments
       });
-      await recordUsage('chat');
+      await refreshProfile();
 
       const aiMsg = {
         id: (Date.now() + 1).toString(),
@@ -589,6 +619,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
         content: result.text || 'I encountered an issue generating a response. Please try again.',
         timestamp: Date.now(),
         model: result.model || 'Zulora AI',
+        sources: result.sources || [],
         tokensUsed: result.tokensUsed,
       };
 
@@ -614,6 +645,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
 
     } catch (err) {
       console.error('Chat error:', err);
+      if (err.status === 403) setIsUsageModalOpen(true);
       const errorMsg = {
         id: (Date.now() + 2).toString(),
         role: 'assistant',
@@ -621,11 +653,12 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
         timestamp: Date.now(),
         model: 'Error',
       };
+      errorMsg.content = err.message || errorMsg.content;
       setMessages(prev => [...prev, errorMsg]);
     } finally {
       setLoading(false);
     }
-  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, checkAndIncrement, recordUsage, setIsUsageModalOpen, buildContextMessages, onUpdateSession]);
+  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, checkUsage, refreshProfile, setIsUsageModalOpen, buildContextMessages, onUpdateSession]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -637,13 +670,13 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
   const selectedModel = MODEL_OPTIONS.find(m => m.id === modelPreference) || MODEL_OPTIONS[0];
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden relative">
+    <div className="flex-1 min-h-0 min-w-0 flex flex-col h-full overflow-hidden relative">
 
       {/* Messages Area */}
       <div
         ref={messagesContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-4 md:px-6 py-6 space-y-6 scroll-smooth"
+        className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-4 md:px-6 py-4 sm:py-6 space-y-6 scroll-smooth"
       >
         {messages.length === 0 ? (
           <WelcomeScreen user={currentUser} onSuggestion={(q) => sendMessage(q)} />
@@ -677,7 +710,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
       )}
 
       {/* ─── Input Area ─── */}
-      <div className="border-t border-slate-200/70 dark:border-slate-800/70 bg-white/80 dark:bg-[#070b14]/90 backdrop-blur-xl px-4 md:px-6 py-4">
+      <div className="shrink-0 border-t border-slate-200/70 dark:border-slate-800/70 bg-white/80 dark:bg-[#070b14]/90 backdrop-blur-xl px-3 sm:px-4 md:px-6 py-3 sm:py-4">
 
         {/* Attachments Preview */}
         {attachments.length > 0 && (
@@ -766,7 +799,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
               >
                 <Paperclip className="w-3.5 h-3.5" />
               </button>
-              <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileAttach} accept="image/*,.pdf,.txt,.md,.csv,.json,.js,.py,.ts,.jsx,.tsx" />
+          <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileAttach} accept="image/*" />
 
               {/* Mic */}
               <button

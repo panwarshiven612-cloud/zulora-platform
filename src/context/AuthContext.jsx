@@ -95,12 +95,6 @@ export const AuthProvider = ({ children }) => {
     return result;
   };
 
-  const recordUsage = async type => {
-    if (!currentUser) return;
-    await firestoreService.recordUsage(currentUser.uid, type);
-    await refreshProfile(currentUser.uid, currentUser);
-  };
-
   const storedTier = userProfile?.planTier || userProfile?.tier || TIERS.FREE;
   const currentTier = String(storedTier).toLowerCase() === 'ultrapro' || String(storedTier).toLowerCase() === 'ultra_pro_max'
     ? TIERS.ULTRA
@@ -121,9 +115,7 @@ export const AuthProvider = ({ children }) => {
     logout,
     refreshProfile: () => refreshProfile(currentUser?.uid, currentUser),
     isPro,
-    checkAndIncrement: checkUsage,
     checkUsage,
-    recordUsage,
     isUsageModalOpen,
     setIsUsageModalOpen,
     isPricingModalOpen,

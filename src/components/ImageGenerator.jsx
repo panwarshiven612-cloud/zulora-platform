@@ -16,7 +16,8 @@ import {
   Image as ImageIcon
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { apiRouter } from '../services/apiRouter';
+import { aiRouter } from '../services/aiRouter';
+import { imageFileToDataUrl } from '../services/imageUtils';
 import { firestoreService, TIERS } from '../services/firestoreService';
 import { downloadMedia } from '../services/downloadService';
 
@@ -38,7 +39,7 @@ const ASPECT_RATIOS = [
 ];
 
 export const ImageGenerator = () => {
-  const { currentUser, limits, usage, checkAndIncrement, recordUsage, setIsUsageModalOpen } = useAuth();
+  const { currentUser, limits, usage, checkUsage, refreshProfile, setIsUsageModalOpen } = useAuth();
 
   const [prompt, setPrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
@@ -66,7 +67,7 @@ export const ImageGenerator = () => {
     if (!prompt.trim() || loading) return;
 
     // 1. Check Usage Limits
-      const usageCheck = await checkAndIncrement('image');
+      const usageCheck = await checkUsage('image');
       if (!usageCheck.allowed) {
         return;
       }
@@ -74,7 +75,7 @@ export const ImageGenerator = () => {
     setLoading(true);
 
     try {
-      const result = await apiRouter.generateImage({
+      const result = await aiRouter.generateImage({
         prompt: prompt.trim(),
         negativePrompt: negativePrompt.trim(),
         style: selectedStyle,
@@ -83,7 +84,7 @@ export const ImageGenerator = () => {
       });
 
       if (!result?.url) throw new Error('Image provider returned no downloadable image.');
-      await recordUsage('image');
+      await refreshProfile();
 
       // Save asset in Firestore
       const assetData = {
@@ -101,18 +102,22 @@ export const ImageGenerator = () => {
       setGallery(prev => [saved, ...prev]);
     } catch (err) {
       console.error('Image generation error:', err);
-      alert('Encountered an issue generating image. Retrying with fallback engine.');
+      if (err.status === 403) setIsUsageModalOpen(true);
+      alert(err.message || 'Encountered an issue generating image.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSourceImage = event => {
+  const handleSourceImage = async event => {
     const file = event.target.files?.[0];
     if (!file || !file.type.startsWith('image/')) return;
-    const reader = new FileReader();
-    reader.onload = () => setSourceImage({ name: file.name, dataUrl: reader.result });
-    reader.readAsDataURL(file);
+    try {
+      const dataUrl = await imageFileToDataUrl(file, { maxDimension: 1536, maxBytes: 1_200_000 });
+      setSourceImage({ name: file.name, dataUrl });
+    } catch (error) {
+      alert(error.message);
+    }
     event.target.value = '';
   };
 
@@ -131,7 +136,7 @@ export const ImageGenerator = () => {
   };
 
   return (
-    <div className="flex-1 flex flex-col h-[calc(100vh-4rem)] overflow-y-auto px-4 py-6 sm:px-8 max-w-7xl mx-auto w-full space-y-8">
+    <div className="flex-1 min-h-0 flex flex-col h-full overflow-y-auto px-3 py-4 sm:px-8 sm:py-6 max-w-7xl mx-auto w-full space-y-5 sm:space-y-8">
       
       {/* Header Banner */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-6 rounded-3xl glass-pearl dark:glass-dark border border-slate-200/90 dark:border-slate-800 shadow-glass">

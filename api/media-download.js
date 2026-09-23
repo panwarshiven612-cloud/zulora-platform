@@ -1,5 +1,6 @@
 const ALLOWED_HOSTS = [
-  'image.pollinations.ai', 'assets.mixkit.co', 'fal.media', 'fal.run',
+  'image.pollinations.ai', 'media.pollinations.ai', 'assets.mixkit.co', 'fal.media', 'fal.run',
+  'replicate.delivery',
   'picsum.photos', 'images.unsplash.com', 'firebasestorage.googleapis.com',
   'storage.googleapis.com', 'googleusercontent.com', 'firebasestorage.app'
 ];
@@ -17,11 +18,17 @@ export default async function handler(req, res) {
   }
 
   try {
-    const upstream = await fetch(source.href, { redirect: 'follow' });
-    const finalUrl = new URL(upstream.url);
-    if (!upstream.ok || finalUrl.protocol !== 'https:' || !isAllowedHost(finalUrl.hostname)) {
-      return res.status(502).send('Media provider did not return a downloadable file');
+    let upstream;
+    let target = source;
+    for (let redirects = 0; redirects <= 4; redirects += 1) {
+      if (target.protocol !== 'https:' || !isAllowedHost(target.hostname)) return res.status(400).send('Invalid media URL');
+      upstream = await fetch(target.href, { redirect: 'manual' });
+      if (![301, 302, 303, 307, 308].includes(upstream.status)) break;
+      const location = upstream.headers.get('location');
+      if (!location || redirects === 4) return res.status(502).send('Media provider returned an invalid redirect');
+      target = new URL(location, target);
     }
+    if (!upstream?.ok) return res.status(502).send('Media provider did not return a downloadable file');
     const requestedName = String(req.query.filename || 'zulora-download').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100);
     const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
     if (contentType.includes('xml') || contentType.includes('text/html')) return res.status(502).send('Media provider returned an error document');

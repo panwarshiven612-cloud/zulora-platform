@@ -15,7 +15,7 @@ import {
   Layers
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { apiRouter } from '../services/apiRouter';
+import { aiRouter } from '../services/aiRouter';
 import { firestoreService } from '../services/firestoreService';
 import { downloadMedia } from '../services/downloadService';
 
@@ -29,7 +29,7 @@ const CAMERA_ANGLES = [
 ];
 
 export const VideoGenerator = () => {
-  const { currentUser, limits, usage, checkAndIncrement, recordUsage, setIsUsageModalOpen } = useAuth();
+  const { currentUser, limits, usage, checkUsage, refreshProfile, setIsUsageModalOpen } = useAuth();
 
   const [prompt, setPrompt] = useState('');
   const [motionSpeed, setMotionSpeed] = useState(5);
@@ -58,7 +58,7 @@ export const VideoGenerator = () => {
     if (!prompt.trim() || loading) return;
 
     // 1. Check Usage Limits
-    const usageCheck = await checkAndIncrement('video');
+    const usageCheck = await checkUsage('video');
     if (!usageCheck.allowed) {
       return;
     }
@@ -66,14 +66,14 @@ export const VideoGenerator = () => {
     setLoading(true);
 
     try {
-      const result = await apiRouter.generateVideo({
+      const result = await aiRouter.generateVideo({
         prompt: prompt.trim(),
         motionSpeed,
         cameraAngle,
         duration
       });
       if (!result?.url) throw new Error('Video provider returned no video.');
-      await recordUsage('video');
+      await refreshProfile();
 
       const videoAsset = {
         type: 'video',
@@ -92,7 +92,8 @@ export const VideoGenerator = () => {
       setIsPlaying(true);
     } catch (err) {
       console.error('Video generation error:', err);
-      alert('Encountered an issue generating video. Please try again.');
+      if (err.status === 403) setIsUsageModalOpen(true);
+      alert(err.message || 'Encountered an issue generating video. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -107,7 +108,7 @@ export const VideoGenerator = () => {
   };
 
   return (
-    <div className="flex-1 flex flex-col h-[calc(100vh-4rem)] overflow-y-auto px-4 py-6 sm:px-8 max-w-7xl mx-auto w-full space-y-8">
+    <div className="flex-1 min-h-0 flex flex-col h-full overflow-y-auto px-3 py-4 sm:px-8 sm:py-6 max-w-7xl mx-auto w-full space-y-5 sm:space-y-8">
       
       {/* Header Banner */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-6 rounded-3xl glass-pearl dark:glass-dark border border-slate-200/90 dark:border-slate-800 shadow-glass">

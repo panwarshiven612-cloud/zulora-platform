@@ -87,13 +87,14 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar }) => {
         </div>
 
         {/* ── Studio Tabs ── */}
-        <nav className="flex-1 flex items-center justify-center gap-1 mx-2">
-          <div className="flex items-center gap-1 glass-pearl dark:glass-dark rounded-xl border border-white/70 dark:border-slate-700/50 p-1">
+        <nav className="flex-1 min-w-0 flex items-center justify-center gap-1 mx-1 sm:mx-2 overflow-x-auto">
+          <div className="flex shrink-0 items-center gap-0.5 sm:gap-1 glass-pearl dark:glass-dark rounded-xl border border-white/70 dark:border-slate-700/50 p-1">
             {TAB_CONFIG.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 onClick={() => setActiveTab(id)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 whitespace-nowrap ${
+                aria-label={label}
+                className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 whitespace-nowrap ${
                   activeTab === id
                     ? 'bg-sky-500 text-white shadow-sm shadow-sky-500/40'
                     : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/50'

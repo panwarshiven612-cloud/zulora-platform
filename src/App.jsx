@@ -1,16 +1,16 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { useAuth } from './context/AuthContext';
-import Navbar from './components/Navbar';
-import Sidebar from './components/Sidebar';
-import ChatInterface from './components/ChatInterface';
-import ImageGenerator from './components/ImageGenerator';
-import VideoGenerator from './components/VideoGenerator';
 import UsageLimitsModal from './components/UsageLimitsModal';
 import PricingModal from './components/PricingModal';
-import Footer from './components/Footer';
 import LandingPage from './components/LandingPage';
 import SignIn from './pages/SignIn';
 import { Sparkles } from 'lucide-react';
+
+const Navbar = lazy(() => import('./components/Navbar'));
+const Sidebar = lazy(() => import('./components/Sidebar'));
+const ChatInterface = lazy(() => import('./components/ChatInterface'));
+const ImageGenerator = lazy(() => import('./components/ImageGenerator'));
+const VideoGenerator = lazy(() => import('./components/VideoGenerator'));
 
 export const App = () => {
   const { 
@@ -99,47 +99,40 @@ export const App = () => {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#f8fafc] dark:bg-[#070b14] text-slate-900 dark:text-slate-100 transition-colors duration-200">
+    <div className="h-dvh min-h-0 flex flex-col overflow-hidden bg-[#f8fafc] dark:bg-[#070b14] text-slate-900 dark:text-slate-100 transition-colors duration-200">
       
-      {/* Top Navbar */}
-      <Navbar 
-        activeTab={activeTab} 
-        setActiveTab={setActiveTab} 
-        onOpenMobileSidebar={() => setIsMobileSidebarOpen(true)}
-      />
-
-      {/* Main Workspace with Sidebar & Active Studio */}
-      <div className="flex-1 flex overflow-hidden max-w-full">
-        
-        {/* Left Sidebar */}
-        <Sidebar
-          currentChatId={activeSession?.id}
-          onSelectChat={handleSelectChat}
-          onNewChat={handleNewChat}
-          isMobileOpen={isMobileSidebarOpen}
-          onCloseMobile={() => setIsMobileSidebarOpen(false)}
+      <Suspense fallback={<div className="flex-1 min-h-0 grid place-items-center text-sm text-slate-500">Loading Zulora workspace…</div>}>
+        {/* Top Navbar */}
+        <Navbar
+          activeTab={activeTab}
           setActiveTab={setActiveTab}
+          onOpenMobileSidebar={() => setIsMobileSidebarOpen(true)}
         />
 
-        {/* Studio Viewport */}
-        <main className="flex-1 flex flex-col overflow-hidden relative">
-          {activeTab === 'chat' && (
-            <ChatInterface
-              activeSession={activeSession}
-              onUpdateSession={handleUpdateSession}
-              onNewChat={handleNewChat}
-            />
-          )}
+        {/* Main Workspace with Sidebar & Active Studio */}
+        <div className="flex-1 min-h-0 flex overflow-hidden max-w-full">
+          <Sidebar
+            currentChatId={activeSession?.id}
+            onSelectChat={handleSelectChat}
+            onNewChat={handleNewChat}
+            isMobileOpen={isMobileSidebarOpen}
+            onCloseMobile={() => setIsMobileSidebarOpen(false)}
+            setActiveTab={setActiveTab}
+          />
 
-          {activeTab === 'image' && <ImageGenerator />}
-
-          {activeTab === 'video' && <VideoGenerator />}
-        </main>
-
-      </div>
-
-      {/* Footer */}
-      <Footer />
+          <main className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden relative">
+            {activeTab === 'chat' && (
+              <ChatInterface
+                activeSession={activeSession}
+                onUpdateSession={handleUpdateSession}
+                onNewChat={handleNewChat}
+              />
+            )}
+            {activeTab === 'image' && <ImageGenerator />}
+            {activeTab === 'video' && <VideoGenerator />}
+          </main>
+        </div>
+      </Suspense>
 
       {/* Usage Limits Dedicated Modal */}
       <UsageLimitsModal

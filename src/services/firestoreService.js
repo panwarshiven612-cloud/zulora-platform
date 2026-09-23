@@ -10,8 +10,7 @@ import {
   getDocs,
   addDoc,
   deleteDoc,
-  serverTimestamp,
-  runTransaction
+  serverTimestamp
 } from 'firebase/firestore';
 import { db, storage } from './firebase';
 import { ref, uploadString, getDownloadURL } from 'firebase/storage';
@@ -221,8 +220,8 @@ export const firestoreService = {
   },
 
   /**
-   * Check the current allowance without consuming it. Call recordUsage only
-   * after a generation has returned a usable result.
+   * Check the current allowance for early UI feedback. The server performs
+   * the authoritative check and increments usage after successful generation.
    */
   async checkUsageAllowance(uid, type = 'chat') {
     let profile = await this.getUserProfile(uid);
@@ -255,42 +254,6 @@ export const firestoreService = {
       remaining: maxLimit - currentCount,
       tier: profile.planTier || profile.tier || TIERS.FREE
     };
-  },
-
-  async recordUsage(uid, type = 'chat') {
-    const counter = `${type}Count`;
-    const startKey = `${type}WindowStart`;
-    const localKey = `${STORAGE_PREFIX}user_${uid}`;
-    try {
-      const userRef = doc(db, 'users', uid);
-      let committedProfile;
-      await runTransaction(db, async transaction => {
-        const snap = await transaction.get(userRef);
-        const profile = snap.exists() ? snap.data() : { usage: {} };
-        const profileWithUsage = this.evaluateUsageWindows({ ...profile, usage: profile.usage || {} });
-        const topLevelCounter = type === 'chat' ? 'textUsed' : `${type}Used`;
-        const count = Number(profileWithUsage[topLevelCounter] ?? profileWithUsage.usage?.[counter] ?? 0);
-        transaction.set(userRef, { [topLevelCounter]: count + 1, usage: { ...profileWithUsage.usage, [counter]: count + 1, [startKey]: profileWithUsage.usage[startKey] || Date.now() } }, { merge: true });
-        profileWithUsage[topLevelCounter] = count + 1;
-        profileWithUsage.usage[counter] = count + 1;
-        committedProfile = profileWithUsage;
-      });
-      if (committedProfile) localStorage.setItem(localKey, JSON.stringify(committedProfile));
-    } catch (err) {
-      console.warn('Firestore recordUsage fallback:', err.message);
-      const profile = JSON.parse(localStorage.getItem(localKey) || '{}');
-      const topLevelCounter = type === 'chat' ? 'textUsed' : `${type}Used`;
-      const nextCount = Number(profile[topLevelCounter] ?? profile.usage?.[counter] ?? 0) + 1;
-      profile[topLevelCounter] = nextCount;
-      profile.usage = { ...(profile.usage || {}), [counter]: nextCount, [startKey]: profile.usage?.[startKey] || Date.now() };
-      localStorage.setItem(localKey, JSON.stringify(profile));
-    }
-  },
-
-  async checkAndIncrementUsage(uid, type = 'chat') {
-    const result = await this.checkUsageAllowance(uid, type);
-    if (result.allowed) await this.recordUsage(uid, type);
-    return result;
   },
 
   /**
