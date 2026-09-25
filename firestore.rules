@@ -22,7 +22,7 @@ service cloud.firestore {
       allow create: if isOwner(uid) && hasFreeDefaults();
       allow update: if isOwner(uid)
         && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['displayName', 'photoURL', 'welcomeEmailSent']);
+          .hasOnly(['displayName', 'photoURL', 'welcomeEmailSent', 'ai_brain']);
       allow delete: if false;
 
       match /chats/{chatId} {

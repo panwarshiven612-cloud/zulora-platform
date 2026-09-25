@@ -246,7 +246,7 @@ function attachmentParts(attachments = []) {
 function plainMessages(messages, systemPrompt) {
   return [
     { role: 'system', content: systemPrompt },
-    ...messages.slice(-16).map(item => ({ role: item.role === 'assistant' ? 'assistant' : 'user', content: String(item.content || '').slice(0, 20_000) }))
+    ...messages.map(item => ({ role: item.role === 'assistant' ? 'assistant' : 'user', content: String(item.content || '') }))
   ];
 }
 
@@ -370,14 +370,14 @@ function chooseChatOrder(preference, vision, search, autoSelected = false) {
 }
 
 async function generateChat(body) {
-  const systemPrompt = buildSystemPrompt(body.contextMemory);
+  const systemPrompt = buildSystemPrompt(body.contextMemory, new Date(), body.aiBrain);
   const messages = plainMessages(body.messages, systemPrompt);
   const attachments = attachmentParts(body.attachments);
   if (body.attachments?.length && !attachments.length) throw new Error('The attached image format is unsupported. Use PNG, JPEG, WebP, or GIF.');
   const vision = attachments.length > 0;
   const requestedPreference = normalizeModelPreference(body.modelPreference || body.model);
   const latestUserPrompt = [...messages].reverse().find(message => message.role === 'user')?.content || '';
-  const coding = Boolean(body.coding) || /(?:\bcode\b|\bhtml\b|\bcss\b|\bjs\b|\bjavascript\b|\breact\b|\bfunction\b|\bbuild\s+(?:a\s+)?ui\b)/i.test(latestUserPrompt);
+  const coding = Boolean(body.coding) || /(?:\bcode\b|\bhtml\b|\bcss\b|\bjs\b|\bjavascript\b|\breact\b|\bfunction\b|\bbuild\s+(?:a\s+)?ui\b|\b(?:1000|\d{4,})\s*(?:\+\s*)?lines?\b|\bfull\s+(?:landing\s+page|website|web\s+app|application)\b|\binteractive\s+app\b|\bcomplete\s+(?:landing\s+page|website|web\s+app|application)\b)/i.test(latestUserPrompt);
   const complex = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(requestedPreference) ||
     /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(latestUserPrompt);
   const preference = requestedPreference === 'auto' ? (coding ? 'llama' : complex ? 'pro' : 'flash') : requestedPreference;
@@ -676,8 +676,8 @@ async function pollinationsVideo(prompt, duration, aspectRatio, deadline) {
         }
       }
       if (bytes.length <= 2_500_000) return `data:${mimeType};base64,${bytes.toString('base64')}`;
-      if (!key) return url;
-      throw new Error('Could not store the generated video for playback.');
+      // Let the browser stream or download the provider's MP4 when upload hosting is unavailable.
+      return url;
     } catch (error) {
       lastError = error;
     }

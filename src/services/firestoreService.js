@@ -52,6 +52,22 @@ const DAY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // LocalStorage fallback prefix
 const STORAGE_PREFIX = 'zulora_store_';
+const AI_BRAIN_STORAGE_KEY = 'zulora_user_memory';
+const normalizeAiBrain = brain => ({
+  talkStyle: String(brain?.talkStyle || ''),
+  customInstructions: String(brain?.customInstructions || ''),
+  domainContext: String(brain?.domainContext || ''),
+  updatedAt: Number(brain?.updatedAt) || 0
+});
+
+function readCachedAiBrain(uid) {
+  try {
+    const cached = JSON.parse(localStorage.getItem(AI_BRAIN_STORAGE_KEY) || 'null');
+    if (!cached || cached.uid !== uid) return null;
+    return normalizeAiBrain(cached);
+  } catch { return null; }
+}
+
 const getTier = profile => {
   const tiers = [profile?.planTier, profile?.tier].map(value => String(value || '').toLowerCase().replace(/[ _-]/g, ''));
   if (tiers.some(tier => tier.includes('ultra'))) return TIERS.ULTRA;
@@ -86,6 +102,41 @@ const normalizeChatSession = session => {
 };
 
 export const firestoreService = {
+  getCachedAiBrain(uid) {
+    return uid ? readCachedAiBrain(uid) : null;
+  },
+
+  async getAiBrain(uid) {
+    if (!uid) return null;
+    const cached = readCachedAiBrain(uid);
+    try {
+      const snapshot = await getDoc(doc(db, 'users', uid));
+      const remoteBrain = snapshot.exists() ? snapshot.data()?.ai_brain : null;
+      if (remoteBrain && typeof remoteBrain === 'object') {
+        const brain = normalizeAiBrain(remoteBrain);
+        if (cached && cached.updatedAt > brain.updatedAt) return cached;
+        localStorage.setItem(AI_BRAIN_STORAGE_KEY, JSON.stringify({ uid, ...brain }));
+        return brain;
+      }
+    } catch (error) {
+      console.warn('Firestore getAiBrain fallback to LocalStorage:', error.message);
+    }
+    return cached || normalizeAiBrain({});
+  },
+
+  async saveAiBrain(uid, value) {
+    if (!uid) throw new Error('Sign in to save your AI Brain preferences.');
+    const brain = normalizeAiBrain({ ...value, updatedAt: Date.now() });
+    localStorage.setItem(AI_BRAIN_STORAGE_KEY, JSON.stringify({ uid, ...brain }));
+    try {
+      await updateDoc(doc(db, 'users', uid), { ai_brain: brain });
+      return { brain, synced: true };
+    } catch (error) {
+      console.warn('Firestore saveAiBrain fallback to LocalStorage:', error.message);
+      return { brain, synced: false };
+    }
+  },
+
   /**
    * Get maximum limits for a given tier
    */

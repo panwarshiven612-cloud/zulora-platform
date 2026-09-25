@@ -569,7 +569,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
   };
 
   const buildContextMessages = useCallback(() => {
-    return messages.slice(-12).map(m => ({ role: m.role, content: m.content }));
+    return messages.map(m => ({ role: m.role, content: m.content }));
   }, [messages]);
 
   const sendMessage = useCallback(async (promptOverride = null) => {
@@ -633,6 +633,19 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     };
 
     const newMessages = [...messages, userMsg];
+    const sessionId = activeSession?.id || `chat_${Date.now()}`;
+    const firstUserPrompt = newMessages.find(message => message.role === 'user')?.displayContent || newMessages.find(message => message.role === 'user')?.content || basePrompt;
+    const sessionTitle = activeSession?.title && !['Untitled Chat', 'New Chat'].includes(activeSession.title)
+      ? activeSession.title
+      : deriveChatTitle(firstUserPrompt);
+    const pendingSession = {
+      id: sessionId,
+      title: sessionTitle,
+      messages: newMessages,
+      updatedAt: Date.now(),
+      model: modelPreference,
+      pending: true
+    };
     setMessages(newMessages);
     setInputPrompt('');
     setAttachments([]);
@@ -642,10 +655,18 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     const startTime = Date.now();
 
     try {
+      // Save the user turn before inference so navigation or reloads do not lose it.
+      if (currentUser?.uid) {
+        onUpdateSession?.(pendingSession);
+        await firestoreService.saveChatSession(currentUser.uid, sessionId, pendingSession);
+      }
       const contextMessages = buildContextMessages();
       const contextMemory = currentUser?.uid
         ? firestoreService.getRecentQueryContext(currentUser.uid)
         : [];
+      const aiBrain = currentUser?.uid
+        ? await firestoreService.getAiBrain(currentUser.uid)
+        : null;
       const result = await apiRouter.generateChat(
         fullPrompt,
         contextMessages,
@@ -655,6 +676,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
           userId: currentUser?.uid,
           currentUser,
           contextMemory,
+          aiBrain,
           attachments: imagePayloads,
         }
       );
@@ -679,17 +701,13 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
       if (currentUser?.uid) firestoreService.recordQueryContext(currentUser.uid, basePrompt, enableWebSearch ? 'search' : 'chat');
 
       // Persist to Firestore
-      const sessionId = activeSession?.id || `chat_${Date.now()}`;
-      const firstUserPrompt = finalMessages.find(message => message.role === 'user')?.displayContent || finalMessages.find(message => message.role === 'user')?.content || basePrompt;
-      const sessionTitle = activeSession?.title && !['Untitled Chat', 'New Chat'].includes(activeSession.title)
-        ? activeSession.title
-        : deriveChatTitle(firstUserPrompt);
       const updatedSession = {
         id: sessionId,
         title: sessionTitle,
         messages: finalMessages,
         updatedAt: Date.now(),
         model: result.model,
+        pending: false,
       };
       if (currentUser?.uid) {
         await firestoreService.saveChatSession(currentUser.uid, sessionId, updatedSession).catch(console.warn);
@@ -709,7 +727,13 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
         timestamp: Date.now(),
         model: 'Error',
       };
-      setMessages(prev => [...prev, errorMsg]);
+      const failedMessages = [...newMessages, errorMsg];
+      setMessages(failedMessages);
+      if (currentUser?.uid) {
+        const failedSession = { ...pendingSession, messages: failedMessages, pending: false, updatedAt: Date.now() };
+        await firestoreService.saveChatSession(currentUser.uid, sessionId, failedSession).catch(console.warn);
+        onUpdateSession?.(failedSession);
+      }
     } finally {
       setLoading(false);
       sendingRef.current = false;

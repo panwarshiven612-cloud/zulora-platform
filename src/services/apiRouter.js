@@ -152,9 +152,9 @@ const fetchWithTimeout = async (url, options = {}, timeoutMs = 15000) => {
 };
 
 const buildHistory = (contextMessages = []) =>
-  contextMessages.slice(-16).map((m) => ({ role: m.role, content: m.content }));
+  contextMessages.map((m) => ({ role: m.role, content: m.content }));
 
-const isCodingPrompt = prompt => /(?:\bcode\b|\bhtml\b|\bcss\b|\bjs\b|\bjavascript\b|\breact\b|\bfunction\b|\bbuild\s+(?:a\s+)?ui\b)/i.test(String(prompt || ''));
+const isCodingPrompt = prompt => /(?:\bcode\b|\bhtml\b|\bcss\b|\bjs\b|\bjavascript\b|\breact\b|\bfunction\b|\bbuild\s+(?:a\s+)?ui\b|\b(?:1000|\d{4,})\s*(?:\+\s*)?lines?\b|\bfull\s+(?:landing\s+page|website|web\s+app|application)\b|\binteractive\s+app\b|\bcomplete\s+(?:landing\s+page|website|web\s+app|application)\b)/i.test(String(prompt || ''));
 const isComplexPrompt = prompt => /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(String(prompt || ''));
 const normalizeModelPreference = value => {
   const selected = String(value || 'auto').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
@@ -204,7 +204,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
   const model = tierConfig.geminiModel;
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory) },
+    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt },
   ];
@@ -256,13 +256,13 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [
-          ...contextMessages.slice(-12).map((m) => ({
+          ...contextMessages.map((m) => ({
             role: m.role === 'assistant' ? 'model' : 'user',
             parts: [{ text: m.content }]
           })),
           { role: 'user', parts: [{ text: prompt }, ...imageParts] }
         ],
-        system_instruction: { parts: [{ text: buildSystemPrompt(options.contextMemory) }] },
+        system_instruction: { parts: [{ text: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain) }] },
         generationConfig: {
           maxOutputTokens: options.coding ? 8192 : tierConfig.maxTokens,
           temperature: 0.7
@@ -297,7 +297,7 @@ const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
   const model = tierConfig.groqModel;
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory) },
+    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt }
   ];
@@ -346,7 +346,7 @@ const tryCerebras = async (prompt, contextMessages, tier = 'pro', options = {}) 
   const model = tierConfig.cerebrasModel;
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory) },
+    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt }
   ];
@@ -391,7 +391,7 @@ const tryOpenRouter = async (prompt, contextMessages, tier = 'pro', keyIdx = 0, 
   const model = tierConfig.openrouterModel;
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory) },
+    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt }
   ];
@@ -436,7 +436,7 @@ const tryMistral = async (prompt, contextMessages, tier = 'pro', options = {}) =
   const model = tierConfig.mistralModel;
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory) },
+    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt }
   ];
@@ -473,16 +473,29 @@ const tryMistral = async (prompt, contextMessages, tier = 'pro', options = {}) =
 /**
  * Pollinations Text Adapter (Free zero-config fallback)
  */
-const tryPollinationsText = async (prompt, options = {}) => {
-  const fullPrompt = `${buildSystemPrompt(options.contextMemory)}\n\nUser request: ${prompt}`;
-  const enc = encodeURIComponent(fullPrompt.slice(0, 4000));
-  const res = await fetchWithTimeout(
-    `https://text.pollinations.ai/${enc}?model=mistral&seed=${Date.now() % 10000}`,
-    {},
-    15000
-  );
+const tryPollinationsText = async (prompt, options = {}, contextMessages = []) => {
+  const messages = [
+    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain) },
+    ...buildHistory(contextMessages),
+    { role: 'user', content: prompt }
+  ];
+  const res = POLLINATIONS_KEY
+    ? await fetchWithTimeout('https://gen.pollinations.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${POLLINATIONS_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'mistralai/mistral-small-3.2', messages, max_tokens: options.coding ? 8192 : 4096 })
+    }, 20_000)
+    : await fetchWithTimeout(
+      `https://text.pollinations.ai/${encodeURIComponent(messages.map(message => `${message.role}: ${message.content}`).join('\n\n'))}?model=mistral&seed=${Date.now() % 10000}`,
+      {},
+      20_000
+    );
   if (!res.ok) throw new Error(`Pollinations HTTP ${res.status}`);
-  const text = await res.text();
+  const contentType = res.headers.get('content-type') || '';
+  const data = contentType.includes('json') ? await res.json() : null;
+  const text = data
+    ? data.choices?.[0]?.message?.content || data.output_text || data.output?.[0]?.content?.[0]?.text || ''
+    : await res.text();
   if (!text || text.trim().length < 5) throw new Error('Pollinations returned empty text');
 
   return {
@@ -513,6 +526,7 @@ export const apiRouter = {
         userId: arg1.userId,
         currentUser: arg1.currentUser,
         contextMemory: arg1.contextMemory || [],
+        aiBrain: arg1.aiBrain || null,
         attachments: arg1.attachments || []
       };
     } else {
@@ -538,6 +552,7 @@ export const apiRouter = {
       const serverResult = await requestGeneration('chat', {
         messages,
         contextMemory: options.contextMemory,
+        aiBrain: options.aiBrain || null,
         modelPreference: requestedTier === 'auto' ? 'auto' : tier,
         enableWebSearch: Boolean(options.webSearch),
         attachments: options.attachments || [],
@@ -639,7 +654,7 @@ export const apiRouter = {
 
     // ── 6. POLLINATIONS TEXT FAILOVER ──
     try {
-      return await syncUsage(await tryPollinationsText(prompt, options), 'chat', options.currentUser);
+      return await syncUsage(await tryPollinationsText(prompt, options, contextMessages), 'chat', options.currentUser);
     } catch (err) {
       errors.push(`Pollinations: ${err.message}`);
     }

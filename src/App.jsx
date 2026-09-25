@@ -11,6 +11,7 @@ const Sidebar       = lazy(() => import('./components/Sidebar'));
 const ChatInterface = lazy(() => import('./components/ChatInterface'));
 const ImageGenerator = lazy(() => import('./components/ImageGenerator'));
 const VideoGenerator = lazy(() => import('./components/VideoGenerator'));
+const AiBrain = lazy(() => import('./components/AiBrain'));
 
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 
@@ -60,6 +61,28 @@ export const App = () => {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
+  useEffect(() => {
+    const uid = currentUser?.uid;
+    if (!uid) {
+      setActiveSession(null);
+      return undefined;
+    }
+    let active = true;
+    const activeChatKey = `zulora_active_chat_${uid}`;
+    const sessionId = localStorage.getItem(activeChatKey);
+    if (!sessionId) {
+      setActiveSession(null);
+      return undefined;
+    }
+    import('./services/firestoreService').then(({ firestoreService }) => firestoreService.getChatSession(uid, sessionId)).then(session => {
+      if (active) setActiveSession(session || null);
+    }).catch(error => {
+      console.warn('Could not restore the active chat:', error.message);
+      if (active) setActiveSession(null);
+    });
+    return () => { active = false; };
+  }, [currentUser?.uid]);
+
   // ── Post-login redirect logic ──────────────────────────────────────────────
   useEffect(() => {
     if (loading) return;
@@ -88,9 +111,20 @@ export const App = () => {
   }
 
   // ── Authenticated: Dashboard ───────────────────────────────────────────────
-  const handleNewChat = () => { setActiveSession(null); setActiveTab('chat'); };
-  const handleSelectChat = (session) => { setActiveSession(session); setActiveTab('chat'); };
-  const handleUpdateSession = (updatedSession) => setActiveSession(updatedSession);
+  const handleNewChat = () => {
+    if (currentUser?.uid) localStorage.removeItem(`zulora_active_chat_${currentUser.uid}`);
+    setActiveSession(null);
+    setActiveTab('chat');
+  };
+  const handleSelectChat = (session) => {
+    if (currentUser?.uid && session?.id) localStorage.setItem(`zulora_active_chat_${currentUser.uid}`, session.id);
+    setActiveSession(session);
+    setActiveTab('chat');
+  };
+  const handleUpdateSession = (updatedSession) => {
+    if (currentUser?.uid && updatedSession?.id) localStorage.setItem(`zulora_active_chat_${currentUser.uid}`, updatedSession.id);
+    setActiveSession(updatedSession);
+  };
   const handleSidebarSessionUpdate = (updatedSession) => setActiveSession(previous =>
     previous?.id === updatedSession.id ? { ...previous, ...updatedSession } : previous
   );
@@ -130,6 +164,7 @@ export const App = () => {
             )}
             {activeTab === 'image' && <ImageGenerator />}
             {activeTab === 'video' && <VideoGenerator />}
+            {activeTab === 'brain' && <AiBrain />}
           </main>
         </div>
 

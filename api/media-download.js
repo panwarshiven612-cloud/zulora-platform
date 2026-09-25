@@ -1,5 +1,5 @@
 const ALLOWED_HOSTS = [
-  'image.pollinations.ai', 'media.pollinations.ai', 'assets.mixkit.co', 'fal.media', 'fal.run',
+  'image.pollinations.ai', 'gen.pollinations.ai', 'media.pollinations.ai', 'assets.mixkit.co', 'fal.media', 'fal.run',
   'replicate.delivery',
   'picsum.photos', 'images.unsplash.com', 'firebasestorage.googleapis.com',
   'storage.googleapis.com', 'googleusercontent.com', 'firebasestorage.app'
@@ -22,7 +22,11 @@ export default async function handler(req, res) {
     let target = source;
     for (let redirects = 0; redirects <= 4; redirects += 1) {
       if (target.protocol !== 'https:' || !isAllowedHost(target.hostname)) return res.status(400).send('Invalid media URL');
-      upstream = await fetch(target.href, { redirect: 'manual' });
+      const pollinationsKey = process.env.POLLINATIONS_API_KEY || process.env.POLLINATIONS_KEY || process.env.VITE_POLLINATIONS_KEY;
+      const headers = target.hostname === 'gen.pollinations.ai' && pollinationsKey
+        ? { Authorization: `Bearer ${pollinationsKey}` }
+        : {};
+      upstream = await fetch(target.href, { redirect: 'manual', headers });
       if (![301, 302, 303, 307, 308].includes(upstream.status)) break;
       const location = upstream.headers.get('location');
       if (!location || redirects === 4) return res.status(502).send('Media provider returned an invalid redirect');

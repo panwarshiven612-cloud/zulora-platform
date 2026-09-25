@@ -36,6 +36,7 @@ export const VideoGenerator = () => {
   const [cameraAngle, setCameraAngle] = useState('Cinematic Pan');
   const [duration, setDuration] = useState(6);
   const [loading, setLoading] = useState(false);
+  const [generationError, setGenerationError] = useState('');
   const [gallery, setGallery] = useState([]);
   const [activeVideo, setActiveVideo] = useState(null);
   const [isPlaying, setIsPlaying] = useState(true);
@@ -71,6 +72,7 @@ export const VideoGenerator = () => {
       return;
     }
 
+    setGenerationError('');
     setLoading(true);
 
     try {
@@ -102,7 +104,7 @@ export const VideoGenerator = () => {
     } catch (err) {
       console.error('Video generation error:', err);
       if (err.status === 403) setIsUsageModalOpen(true);
-      alert(err.message || 'Encountered an issue generating video. Please try again.');
+      setGenerationError(err.message || 'Video generation could not finish. Please try again.');
     } finally {
       setLoading(false);
       generatingRef.current = false;
@@ -260,6 +262,11 @@ export const VideoGenerator = () => {
                 </>
               )}
             </button>
+            {generationError && (
+              <p role="alert" aria-live="polite" className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs leading-5 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300">
+                {generationError}
+              </p>
+            )}
           </div>
 
         </div>

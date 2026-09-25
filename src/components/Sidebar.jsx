@@ -15,7 +15,8 @@ import {
   ChevronLeft, 
   ChevronRight,
   ExternalLink,
-  MessageCircle
+  MessageCircle,
+  Brain
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { firestoreService, TIERS } from '../services/firestoreService';
@@ -254,6 +255,16 @@ export const Sidebar = ({
             <span>Video Studio</span>
           </button>
         </div>
+        <button
+          onClick={() => {
+            setActiveTab('brain');
+            if (onCloseMobile) onCloseMobile();
+          }}
+          className="mt-2 flex w-full items-center gap-2 rounded-xl border border-sky-200/70 bg-sky-50/70 p-2.5 text-left text-xs font-semibold text-slate-700 transition-colors hover:border-sky-300 hover:bg-sky-100/80 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-slate-300 dark:hover:bg-sky-950/60"
+        >
+          <Brain className="h-4 w-4 text-sky-500" />
+          <span>AI Training &amp; Personal Brain</span>
+        </button>
       </div>
 
       {/* History List */}
