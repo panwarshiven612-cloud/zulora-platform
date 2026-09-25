@@ -46,7 +46,9 @@ export const AuthProvider = ({ children }) => {
       }
       const profile = firestoreService.recordLocalUsage(currentUser.uid, type);
       if (profile) setUserProfile(profile);
-      return profile;
+      const syncedProfile = await firestoreService.syncLocalUsageToFirestore(currentUser.uid, profile, type);
+      if (syncedProfile) setUserProfile(syncedProfile);
+      return syncedProfile || profile;
     } catch (error) {
       console.warn('Could not update the usage display:', error.message);
       return null;

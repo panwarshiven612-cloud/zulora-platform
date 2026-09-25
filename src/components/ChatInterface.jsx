@@ -766,7 +766,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
       )}
 
       {/* ─── Input Area ─── */}
-      <div className="shrink-0 border-t border-slate-200/70 dark:border-slate-800/70 bg-white/80 dark:bg-[#070b14]/90 backdrop-blur-xl px-2.5 sm:px-4 md:px-6 pt-3 sm:py-4 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-4">
+      <div className={`shrink-0 border-t border-slate-200/70 dark:border-slate-800/70 bg-white/80 dark:bg-[#070b14]/90 backdrop-blur-xl px-2.5 sm:px-4 md:px-6 pt-3 sm:py-4 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-4 ${showModelMenu ? 'relative z-[60]' : ''}`}>
 
         {/* Attachments Preview */}
         {attachments.length > 0 && (
@@ -804,9 +804,16 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
             {/* Left Tools */}
             <div className="flex items-center gap-1 min-w-0">
               {/* Model Selector */}
-              <div className="relative">
+              <div className="relative" id="model-selector">
                 <button
-                  onClick={() => setShowModelMenu(v => !v)}
+                  type="button"
+                  aria-haspopup="menu"
+                  aria-expanded={showModelMenu}
+                  aria-controls="model-selector-menu"
+                  onClick={event => {
+                    event.stopPropagation();
+                    setShowModelMenu(v => !v);
+                  }}
                   className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700/50 transition-all"
                 >
                   <selectedModel.icon className={`w-3.5 h-3.5 ${selectedModel.color}`} />
@@ -814,9 +821,12 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
                   <ChevronDown className="w-3 h-3 text-slate-400" />
                 </button>
                 {showModelMenu && (
-                  <div className="absolute bottom-full mb-2 left-0 glass-elevated dark:glass-dark rounded-xl border border-white/80 dark:border-slate-700/60 shadow-2xl z-50 p-1.5 w-[min(15rem,calc(100vw-1.5rem))] sm:w-auto sm:min-w-[180px] max-h-[min(60vh,24rem)] overflow-y-auto animate-scale-in">
+                  <div id="model-selector-menu" role="menu" onClick={event => event.stopPropagation()} className="absolute bottom-full mb-2 left-0 glass-elevated dark:glass-dark rounded-xl border border-white/80 dark:border-slate-700/60 shadow-2xl z-50 p-1.5 w-[min(15rem,calc(100vw-1.5rem))] sm:w-auto sm:min-w-[180px] max-h-[min(60vh,24rem)] overflow-y-auto animate-scale-in">
                     {MODEL_OPTIONS.map(opt => (
                       <button
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={modelPreference === opt.id}
                         key={opt.id}
                         onClick={() => {
                           if (opt.id === 'think' && !isPro) {
@@ -908,7 +918,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
 
       {/* Click outside model menu */}
       {showModelMenu && (
-        <div className="fixed inset-0 z-40" onClick={() => setShowModelMenu(false)} />
+        <div aria-hidden="true" className="fixed inset-0 z-40" onClick={() => setShowModelMenu(false)} />
       )}
     </div>
   );

@@ -156,6 +156,12 @@ export async function generateVideo(arg1, arg2 = {}) {
     aspectRatio: options.aspectRatio || '16:9'
   };
 
+  const allowance = await checkGenerationAllowance('video', options.currentUser);
+  if (allowance && !allowance.allowed) {
+    const error = new GenerationApiError('Video limit reached. Upgrade your subscription to continue.', 403, allowance);
+    throw error;
+  }
+
   const finishBrowserGeneration = async result => {
     result.usage = await trackSuccessfulUsage('video', options.currentUser);
     return result;
@@ -168,14 +174,6 @@ export async function generateVideo(arg1, arg2 = {}) {
     } catch (error) {
       if (error instanceof GenerationApiError && (error.status === 403 || error.status === 401)) throw error;
       console.warn('[Video] Server generation route unavailable:', error.message);
-    }
-  }
-
-  if (FAL_KEY || HUGGINGFACE_KEY) {
-    const allowance = await checkGenerationAllowance('video', options.currentUser);
-    if (allowance && !allowance.allowed) {
-      const error = new GenerationApiError('Video limit reached. Upgrade your subscription to continue.', 403, allowance);
-      throw error;
     }
   }
 

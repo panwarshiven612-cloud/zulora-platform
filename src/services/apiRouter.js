@@ -534,6 +534,8 @@ export const apiRouter = {
     const geminiPool = getGeminiKeyPool();
     const messages = [...buildHistory(contextMessages), { role: 'user', content: prompt }];
 
+    await ensureGenerationAllowance('chat', options.currentUser);
+
     try {
       const serverResult = await requestGeneration('chat', {
         messages,
@@ -548,8 +550,6 @@ export const apiRouter = {
       if (isQuotaAuthorityError(error) || (tier === 'think' && error instanceof GenerationApiError && error.status === 503)) throw error;
       console.warn('[Chat] Server generation route unavailable; trying browser providers:', error.message);
     }
-
-    await ensureGenerationAllowance('chat', options.currentUser);
 
     // Vision requests are restricted to Gemini 2.5 Flash/Pro. Never send image bytes to text-only providers.
     if (!vision && tier === 'llama') {
@@ -641,6 +641,8 @@ export const apiRouter = {
       currentUser
     } = options;
 
+    await ensureGenerationAllowance('image', currentUser);
+
     try {
       const serverResult = await requestGeneration('image', {
         prompt,
@@ -654,9 +656,6 @@ export const apiRouter = {
       if (isQuotaAuthorityError(error)) throw error;
       console.warn('[Image] Server generation route unavailable; trying browser providers:', error.message);
     }
-
-    // If serverless API is available, perform an authoritative preflight before direct provider calls.
-    await ensureGenerationAllowance('image', currentUser);
 
     let targetWidth = width;
     let targetHeight = height;

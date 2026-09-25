@@ -10,7 +10,8 @@ import {
   getDocs,
   addDoc,
   deleteDoc,
-  serverTimestamp
+  serverTimestamp,
+  runTransaction
 } from 'firebase/firestore';
 import { db, storage } from './firebase';
 import { ref, uploadString, getDownloadURL } from 'firebase/storage';
@@ -356,6 +357,43 @@ export const firestoreService = {
     };
     localStorage.setItem(localKey, JSON.stringify(profile));
     return profile;
+  },
+
+  /** Mirror a locally counted successful action to Firestore using the signed-in client's SDK. */
+  async syncLocalUsageToFirestore(uid, localProfile, type) {
+    if (!uid || !['chat', 'image', 'video'].includes(type) || !localProfile) return null;
+    const userRef = doc(db, 'users', uid);
+    const countKey = `${type}Count`;
+    const startKey = `${type}WindowStart`;
+    const usedKey = type === 'chat' ? 'textUsed' : `${type}Used`;
+    const localCount = Number(localProfile[usedKey] ?? localProfile.usage?.[countKey] ?? 0);
+    const localStart = Number(localProfile.usage?.[startKey]) || Date.now();
+
+    try {
+      const synced = await runTransaction(db, async transaction => {
+        const snapshot = await transaction.get(userRef);
+        const remote = snapshot.exists() ? snapshot.data() : {};
+        const current = this.evaluateUsageWindows({ ...remote });
+        const remoteStart = Number(current.usage?.[startKey]) || localStart;
+        const remoteCount = Number(current[usedKey] ?? current.usage?.[countKey] ?? 0);
+        const sameWindow = remoteStart === localStart;
+        const nextCount = sameWindow ? Math.max(localCount, remoteCount + 1) : localCount;
+        const usage = { ...(current.usage || {}), [startKey]: localStart, [countKey]: nextCount };
+        const update = { [usedKey]: nextCount, usage };
+        if (snapshot.exists()) transaction.update(userRef, update);
+        else transaction.set(userRef, { uid, ...update }, { merge: true });
+        return { ...current, ...update, usageLocalOnly: false };
+      });
+
+      const localKey = `${STORAGE_PREFIX}user_${uid}`;
+      const merged = { ...localProfile, ...synced };
+      delete merged.usageLocalOnly;
+      localStorage.setItem(localKey, JSON.stringify(merged));
+      return merged;
+    } catch (error) {
+      console.warn('Firestore client usage sync fell back to LocalStorage:', error.message);
+      return null;
+    }
   },
 
   clearLocalUsage(uid) {

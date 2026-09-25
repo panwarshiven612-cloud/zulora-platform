@@ -22,8 +22,14 @@ const bearer = req => String(req.headers.authorization || '').match(/^Bearer\s+(
 const safeError = (res, status, message, extra = {}) => json(res, status, { error: message, ...extra });
 
 function firestoreAdminCredentials() {
-  const email = process.env.FIREBASE_ADMIN_CLIENT_EMAIL || process.env.FIREBASE_CLIENT_EMAIL;
-  const privateKey = (process.env.FIREBASE_ADMIN_PRIVATE_KEY || process.env.FIREBASE_PRIVATE_KEY)?.replace(/\\n/g, '\n');
+  const serviceAccountValue = process.env.FIREBASE_SERVICE_ACCOUNT || process.env.FIREBASE_ADMIN_KEY || '';
+  let serviceAccount = {};
+  try { serviceAccount = JSON.parse(serviceAccountValue); }
+  catch { /* The admin key may be supplied as a separate PEM value. */ }
+  const email = process.env.FIREBASE_ADMIN_CLIENT_EMAIL || process.env.FIREBASE_CLIENT_EMAIL || serviceAccount.client_email;
+  const rawPrivateKey = process.env.FIREBASE_ADMIN_PRIVATE_KEY || process.env.FIREBASE_PRIVATE_KEY || serviceAccount.private_key ||
+    (serviceAccountValue.includes('BEGIN PRIVATE KEY') ? serviceAccountValue : '');
+  const privateKey = rawPrivateKey.replace(/\\n/g, '\n');
   return email && privateKey ? { email, privateKey } : null;
 }
 
@@ -702,49 +708,53 @@ export default async function handler(req, res) {
 
   try {
     if (allowanceOnly) {
-      if (!firestoreAdminCredentials()) return safeError(res, 503, 'Secure Firestore quota validation is unavailable. Configure Firebase Admin credentials and retry.');
-      const before = await checkUsage(uid, type);
-      if (before.error) return safeError(res, 503, before.error);
+      if (!firestoreAdminCredentials()) return json(res, 200, { allowance: null, quotaSource: 'client' });
+      let before;
+      try { before = await checkUsage(uid, type); }
+      catch (error) {
+        console.warn('Server quota preflight fell back to the client store:', error.message);
+        return json(res, 200, { allowance: null, quotaSource: 'client' });
+      }
+      if (before.error) return json(res, 200, { allowance: null, quotaSource: 'client' });
       if (!before.allowed) return safeError(res, 403, `${type} limit reached. Upgrade your subscription to continue.`, { limit: before.limit, used: before.current, planTier: before.planTier });
       return json(res, 200, { allowance: { type, allowed: true, used: before.current, limit: before.limit, planTier: before.planTier } });
     }
 
     if (usageOnly) {
-      if (!firestoreAdminCredentials()) return safeError(res, 503, 'Secure Firestore usage tracking is unavailable. Configure Firebase Admin credentials and retry.');
-      const before = await checkUsage(uid, type);
-      if (before.error) return safeError(res, 503, before.error);
-      if (!before.allowed) return safeError(res, 403, `${type} limit reached. Upgrade your subscription to continue.`, { limit: before.limit, used: before.current, planTier: before.planTier });
-      const updated = await incrementUsage(uid, type);
-      if (!updated.allowed) return safeError(res, 403, `${type} limit reached. Upgrade your subscription to continue.`, { limit: updated.limit, used: updated.current, planTier: updated.planTier });
-      return json(res, 200, { usage: { type, tracked: true, used: updated.current, limit: updated.limit } });
+      if (!firestoreAdminCredentials()) return json(res, 200, { usage: { type, tracked: false, source: 'client' } });
+      try {
+        const before = await checkUsage(uid, type);
+        if (before.error || !before.allowed) return json(res, 200, { usage: { type, tracked: false, source: 'client' } });
+        const updated = await incrementUsage(uid, type);
+        if (!updated.allowed) return json(res, 200, { usage: { type, tracked: false, source: 'client' } });
+        return json(res, 200, { usage: { type, tracked: true, used: updated.current, limit: updated.limit } });
+      } catch (error) {
+        console.warn('Server usage write fell back to the client store:', error.message);
+        return json(res, 200, { usage: { type, tracked: false, source: 'client' } });
+      }
     }
 
     let usageTrackingAvailable = false;
     let profileTier = null;
-    if (!firestoreAdminCredentials()) {
-      return safeError(res, 503, 'Secure Firestore quota validation is unavailable. Configure Firebase Admin credentials and retry.');
-    } else {
+    if (firestoreAdminCredentials()) {
       try {
         const before = await checkUsage(uid, type);
         profileTier = before.planTier;
         if (before.error) {
-          return safeError(res, 503, before.error);
+          console.warn('Server quota check fell back to the client store:', before.error);
         } else if (!before.allowed) {
           return safeError(res, 403, `${type} limit reached. Upgrade your subscription to continue.`, { limit: before.limit, used: before.current, planTier: before.planTier });
         } else {
           usageTrackingAvailable = true;
         }
       } catch (error) {
-        return safeError(res, 503, `Could not validate Firestore usage limits. ${error?.message || 'Please retry.'}`);
+        console.warn('Server quota check fell back to the client store:', error?.message || 'Could not read usage.');
       }
     }
 
     if (type === 'chat' && ['think', 'high_reason', 'pro_314', 'pro_ultra'].includes(String(body.modelPreference || '').toLowerCase())) {
       const normalizedTier = String(profileTier || '').toLowerCase().replace(/[ _-]/g, '');
-      if (!profileTier) {
-        return safeError(res, 503, 'The premium model requires server-side plan validation. Configure Firestore Admin credentials and retry.');
-      }
-      if (!normalizedTier.includes('pro') && !normalizedTier.includes('ultra')) {
+      if (profileTier && !normalizedTier.includes('pro') && !normalizedTier.includes('ultra')) {
         return safeError(res, 403, 'The Zulora 3.5 Pro Ultra model requires a Pro or Ultra subscription.', { upgradeRequired: true });
       }
     }
@@ -755,11 +765,12 @@ export default async function handler(req, res) {
       try {
         const updated = await incrementUsage(uid, type);
         if (!updated.allowed) {
-          return safeError(res, 403, `${type} limit reached. Upgrade your subscription to continue.`, { limit: updated.limit, used: updated.current, planTier: updated.planTier });
+          usage = { type, tracked: false, source: 'client' };
+        } else {
+          usage = { type, tracked: true, used: updated.current, limit: updated.limit };
         }
-        usage = { type, tracked: true, used: updated.current, limit: updated.limit };
       } catch (error) {
-        return safeError(res, 503, `Could not save the Firestore usage update. ${error?.message || 'Please retry.'}`);
+        console.warn('Server usage write fell back to the client store:', error?.message || 'Could not save usage.');
       }
     }
     return json(res, 200, { ...output, usage });

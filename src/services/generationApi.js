@@ -1,3 +1,5 @@
+import { firestoreService } from './firestoreService';
+
 export class GenerationApiError extends Error {
   constructor(message, status, payload = {}) {
     super(message);
@@ -44,7 +46,10 @@ export async function requestGeneration(action, payload, currentUser) {
 
 export async function checkGenerationAllowance(type, currentUser) {
   const result = await requestGeneration('allowance', { usageType: type }, currentUser);
-  return result?.allowance || null;
+  if (!currentUser?.uid) return result?.allowance || null;
+  const clientAllowance = await firestoreService.checkUsageAllowance(currentUser.uid, type);
+  if (clientAllowance && !clientAllowance.allowed) return clientAllowance;
+  return result?.allowance || clientAllowance || null;
 }
 
 export async function trackSuccessfulUsage(type, currentUser) {
