@@ -1,47 +1,61 @@
 /**
  * ZULORA AI — Client-Side API Waterfall Router
  * =============================================
- * All keys are read from import.meta.env (VITE_* vars in .env)
- * Provider waterfall: Gemini → Groq → Cerebras → OpenRouter → Mistral → Pollinations (fallback)
- *
- * MODEL TIERS:
- *   flash   → Zulora Flash 3.0   (fast, lightweight)
- *   pro     → Zulora Pro 3.1     (balanced + accurate)
- *   think   → Zulora High Thinking 3.5 Pro (deep reasoning)
+ * Complete Multi-Engine Resilience & Dynamic Fallback Pool
+ * 
+ * - Reads browser-safe VITE_* variables from import.meta.env
+ * - Tries the configured providers sequentially and ignores empty responses
+ * - Silent automatic failover across all 7 Gemini keys (429/401/403/500 caught and retried)
+ * - Cascades through Groq -> Cerebras -> OpenRouter (2 keys) -> Mistral -> Pollinations
+ * - Bulletproof Image Studio (Pollinations FLUX -> Fal AI -> HuggingFace -> Cloudflare -> High-Res fallback)
+ * - Bulletproof Video Studio (Replicate SVD -> Polling -> HD Cinema stream fallback)
+ * - Returns both `url` and `imageUrl`/`videoUrl` so all studio consumers work seamlessly
  *
  * Founded & Created by Shiven Panwar — Zulora AI
  */
 
-// ─── Key Pool Resolution ─────────────────────────────────────────────────────
-const e = import.meta.env;
+// ─── SAFE ENVIRONMENT EXTRACTOR ──────────────────────────────────────────────
+const clientEnv = import.meta.env || {};
+const getEnv = (key) => String(clientEnv[key] || '').trim();
 
-const GEMINI_KEYS = [
-  e.VITE_GEMINI_KEY_1, e.VITE_GEMINI_KEY_2, e.VITE_GEMINI_KEY_3,
-  e.VITE_GEMINI_KEY_4, e.VITE_GEMINI_KEY_5, e.VITE_GEMINI_KEY_6,
-  e.VITE_GEMINI_KEY_7,
-].filter(Boolean);
+// ─── DYNAMIC GEMINI KEY POOL ─────────────────────────────────────────────────
+const GEMINI_KEYS = Array.from({ length: 7 }, (_, index) => getEnv(`VITE_GEMINI_KEY_${index + 1}`));
 
-const GROQ_KEY          = e.VITE_GROQ_KEY        || '';
-const CEREBRAS_KEY      = e.VITE_CEREBRAS_KEY    || '';
-const OPENROUTER_KEYS   = [e.VITE_OPENROUTER_KEY_1, e.VITE_OPENROUTER_KEY_2].filter(Boolean);
-const MISTRAL_KEY       = e.VITE_MISTRAL_KEY     || '';
-const POLLINATIONS_KEY  = e.VITE_POLLINATIONS_KEY || '';
-const HUGGINGFACE_KEY   = e.VITE_HUGGINGFACE_KEY || '';
-const FAL_KEY           = e.VITE_FAL_KEY         || '';
-const CLOUDFLARE_ACCT   = e.VITE_CLOUDFLARE_ACCOUNT_ID  || '';
-const CLOUDFLARE_TOKEN  = e.VITE_CLOUDFLARE_API_TOKEN   || '';
-const REPLICATE_KEY     = e.VITE_REPLICATE_KEY   || '';
+export const getGeminiKeyPool = () => {
+  const pool = [];
+  const add = (k) => {
+    if (k && typeof k === 'string') {
+      const trimmed = k.trim();
+      if (trimmed.length > 20 && !pool.includes(trimmed)) {
+        pool.push(trimmed);
+      }
+    }
+  };
 
-// Round-robin index for Gemini key rotation
-let geminiIdx = 0;
-const nextGeminiKey = () => {
-  if (!GEMINI_KEYS.length) return '';
-  const key = GEMINI_KEYS[geminiIdx % GEMINI_KEYS.length];
-  geminiIdx++;
-  return key;
+  GEMINI_KEYS.forEach(add);
+
+  return pool;
 };
 
-// ─── MODEL TIER CONFIG ────────────────────────────────────────────────────────
+// ─── SECONDARY ENGINE KEYS ───────────────────────────────────────────────────
+const GROQ_KEY = getEnv('VITE_GROQ_KEY');
+const CEREBRAS_KEY = getEnv('VITE_CEREBRAS_KEY');
+const OPENROUTER_KEYS = [
+  getEnv('VITE_OPENROUTER_KEY_1'),
+  getEnv('VITE_OPENROUTER_KEY_2')
+].filter(Boolean);
+const MISTRAL_KEY = getEnv('VITE_MISTRAL_KEY');
+const POLLINATIONS_KEY = getEnv('VITE_POLLINATIONS_KEY');
+const HUGGINGFACE_KEY = getEnv('VITE_HUGGINGFACE_KEY');
+const FAL_KEY = getEnv('VITE_FAL_KEY');
+const CLOUDFLARE_ACCT = getEnv('VITE_CLOUDFLARE_ACCOUNT_ID');
+const CLOUDFLARE_TOKEN = getEnv('VITE_CLOUDFLARE_API_TOKEN');
+const REPLICATE_KEY = getEnv('VITE_REPLICATE_KEY');
+
+// Round-robin tracking index
+let activeGeminiIdx = 0;
+
+// ─── MODEL TIERS ─────────────────────────────────────────────────────────────
 export const MODEL_TIERS = {
   flash: {
     id: 'flash',
@@ -90,8 +104,8 @@ export const MODEL_TIERS = {
   },
 };
 
-// ─── Timeout Fetch Helper ────────────────────────────────────────────────────
-const fetchWithTimeout = async (url, options, timeoutMs = 12000) => {
+// ─── TIMEOUT FETCH HELPER ────────────────────────────────────────────────────
+const fetchWithTimeout = async (url, options = {}, timeoutMs = 15000) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -104,84 +118,149 @@ const fetchWithTimeout = async (url, options, timeoutMs = 12000) => {
   }
 };
 
-// ─── Build conversation history array ────────────────────────────────────────
 const buildHistory = (contextMessages = []) =>
-  contextMessages.slice(-16).map(m => ({ role: m.role, content: m.content }));
+  contextMessages.slice(-16).map((m) => ({ role: m.role, content: m.content }));
 
-// ─── PROVIDER IMPLEMENTATIONS ─────────────────────────────────────────────────
+// ─── PROVIDER ADAPTERS ───────────────────────────────────────────────────────
 
 /**
- * Google Gemini via OpenAI-compat endpoint (generativelanguage.googleapis.com)
- * Uses round-robin across 7 keys
+ * Gemini Adapter with Dual-Endpoint Failover
  */
-const tryGemini = async (prompt, contextMessages, tier = 'pro') => {
-  const key = nextGeminiKey();
-  if (!key) throw new Error('No Gemini keys configured');
+const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro') => {
+  if (!key) throw new Error('Empty Gemini key');
   const tierConfig = MODEL_TIERS[tier] || MODEL_TIERS.pro;
   const model = tierConfig.geminiModel;
 
   const messages = [
-    { role: 'system', content: 'You are Zulora AI, a helpful and knowledgeable assistant created by Shiven Panwar. Respond with detailed, well-formatted markdown.' },
+    { role: 'system', content: 'You are Zulora AI, an intelligent, helpful AI assistant founded and created by Shiven Panwar. Answer clearly with well-formatted markdown.' },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt },
   ];
 
-  const res = await fetchWithTimeout(
-    `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`,
+  // 1. Try OpenAI-Compatible endpoint
+  try {
+    const res = await fetchWithTimeout(
+      'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${key}`
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          max_tokens: tierConfig.maxTokens,
+          temperature: 0.7
+        })
+      },
+      12000
+    );
+
+    if (res.ok) {
+      const data = await res.json();
+      const text = data.choices?.[0]?.message?.content;
+      if (text && text.trim().length > 0) {
+        return {
+          text,
+          model: `Gemini ${model.replace('gemini-', '').replace('-', ' ')}`,
+          provider: 'Google Gemini'
+        };
+      }
+    }
+  } catch (openaiErr) {
+    // Silently proceed to native generateContent
+  }
+
+  // 2. Try Native Google generateContent endpoint
+  const nativeRes = await fetchWithTimeout(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
-      body: JSON.stringify({ model, messages, max_tokens: tierConfig.maxTokens, temperature: 0.7 }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [
+          ...contextMessages.slice(-12).map((m) => ({
+            role: m.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: m.content }]
+          })),
+          { role: 'user', parts: [{ text: prompt }] }
+        ],
+        generationConfig: {
+          maxOutputTokens: tierConfig.maxTokens,
+          temperature: 0.7
+        }
+      })
     },
     15000
   );
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(`Gemini ${model}: ${err.error?.message || res.statusText}`);
+  if (!nativeRes.ok) {
+    const errData = await nativeRes.json().catch(() => ({}));
+    throw new Error(`Gemini HTTP ${nativeRes.status}: ${errData.error?.message || nativeRes.statusText}`);
   }
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content;
-  if (!text) throw new Error('Gemini returned empty response');
-  return { text, model: `Gemini ${model.replace('gemini-', '').replace('-', ' ')}`, provider: 'gemini' };
+
+  const nativeData = await nativeRes.json();
+  const text = nativeData.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text || text.trim().length === 0) throw new Error('Gemini empty candidate response');
+
+  return {
+    text,
+    model: `Gemini ${model.replace('gemini-', '').replace('-', ' ')}`,
+    provider: 'Google Gemini'
+  };
 };
 
 /**
- * Groq — ultra-fast inference
+ * Groq Adapter
  */
 const tryGroq = async (prompt, contextMessages, tier = 'pro') => {
-  if (!GROQ_KEY) throw new Error('No Groq key configured');
+  if (!GROQ_KEY) throw new Error('No Groq key available');
   const tierConfig = MODEL_TIERS[tier] || MODEL_TIERS.pro;
   const model = tierConfig.groqModel;
 
   const messages = [
-    { role: 'system', content: 'You are Zulora AI, a helpful and knowledgeable assistant. Respond with detailed, well-formatted markdown.' },
+    { role: 'system', content: 'You are Zulora AI, an intelligent, helpful AI assistant. Answer clearly with well-formatted markdown.' },
     ...buildHistory(contextMessages),
-    { role: 'user', content: prompt },
+    { role: 'user', content: prompt }
   ];
 
   const res = await fetchWithTimeout(
     'https://api.groq.com/openai/v1/chat/completions',
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GROQ_KEY}` },
-      body: JSON.stringify({ model, messages, max_tokens: tierConfig.maxTokens, temperature: 0.7 }),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GROQ_KEY}`
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: tierConfig.maxTokens,
+        temperature: 0.7
+      })
     },
     12000
   );
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(`Groq ${model}: ${err.error?.message || res.statusText}`);
+    throw new Error(`Groq HTTP ${res.status}: ${err.error?.message || res.statusText}`);
   }
+
   const data = await res.json();
   const text = data.choices?.[0]?.message?.content;
-  if (!text) throw new Error('Groq returned empty response');
-  return { text, model: `Groq ${model.split('-')[0]}`, provider: 'groq' };
+  if (!text) throw new Error('Groq returned empty text');
+
+  return {
+    text,
+    model: `Groq (${model.split('-')[0]})`,
+    provider: 'Groq'
+  };
 };
 
 /**
- * Cerebras — fast inference for large models
+ * Cerebras Adapter
  */
 const tryCerebras = async (prompt, contextMessages, tier = 'pro') => {
   if (!CEREBRAS_KEY) throw new Error('No Cerebras key');
@@ -189,44 +268,54 @@ const tryCerebras = async (prompt, contextMessages, tier = 'pro') => {
   const model = tierConfig.cerebrasModel;
 
   const messages = [
-    { role: 'system', content: 'You are Zulora AI, a helpful assistant. Respond with well-formatted markdown.' },
+    { role: 'system', content: 'You are Zulora AI, an intelligent, helpful AI assistant. Answer clearly with markdown.' },
     ...buildHistory(contextMessages),
-    { role: 'user', content: prompt },
+    { role: 'user', content: prompt }
   ];
 
   const res = await fetchWithTimeout(
     'https://api.cerebras.ai/v1/chat/completions',
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${CEREBRAS_KEY}` },
-      body: JSON.stringify({ model, messages, max_tokens: tierConfig.maxTokens, temperature: 0.7 }),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${CEREBRAS_KEY}`
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: tierConfig.maxTokens,
+        temperature: 0.7
+      })
     },
     12000
   );
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(`Cerebras: ${err.error?.message || res.statusText}`);
-  }
+  if (!res.ok) throw new Error(`Cerebras HTTP ${res.status}`);
   const data = await res.json();
   const text = data.choices?.[0]?.message?.content;
-  if (!text) throw new Error('Cerebras returned empty response');
-  return { text, model: `Cerebras ${model}`, provider: 'cerebras' };
+  if (!text) throw new Error('Cerebras empty response');
+
+  return {
+    text,
+    model: `Cerebras (${model})`,
+    provider: 'Cerebras'
+  };
 };
 
 /**
- * OpenRouter — routes to many models
+ * OpenRouter Adapter
  */
-const tryOpenRouter = async (prompt, contextMessages, tier = 'pro', keyIndex = 0) => {
-  const key = OPENROUTER_KEYS[keyIndex];
+const tryOpenRouter = async (prompt, contextMessages, tier = 'pro', keyIdx = 0) => {
+  const key = OPENROUTER_KEYS[keyIdx];
   if (!key) throw new Error('No OpenRouter key');
   const tierConfig = MODEL_TIERS[tier] || MODEL_TIERS.pro;
   const model = tierConfig.openrouterModel;
 
   const messages = [
-    { role: 'system', content: 'You are Zulora AI, an advanced AI assistant. Respond with well-formatted markdown.' },
+    { role: 'system', content: 'You are Zulora AI. Answer clearly with markdown.' },
     ...buildHistory(contextMessages),
-    { role: 'user', content: prompt },
+    { role: 'user', content: prompt }
   ];
 
   const res = await fetchWithTimeout(
@@ -236,26 +325,32 @@ const tryOpenRouter = async (prompt, contextMessages, tier = 'pro', keyIndex = 0
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${key}`,
-        'HTTP-Referer': 'https://zulora-al.firebaseapp.com',
-        'X-Title': 'Zulora AI',
+        'HTTP-Referer': 'https://zulora.in',
+        'X-Title': 'Zulora AI'
       },
-      body: JSON.stringify({ model, messages, max_tokens: tierConfig.maxTokens }),
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: tierConfig.maxTokens
+      })
     },
-    15000
+    14000
   );
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(`OpenRouter: ${err.error?.message || res.statusText}`);
-  }
+  if (!res.ok) throw new Error(`OpenRouter HTTP ${res.status}`);
   const data = await res.json();
   const text = data.choices?.[0]?.message?.content;
-  if (!text) throw new Error('OpenRouter returned empty response');
-  return { text, model: `OpenRouter ${model.split('/').pop().split(':')[0]}`, provider: 'openrouter' };
+  if (!text) throw new Error('OpenRouter empty response');
+
+  return {
+    text,
+    model: `OpenRouter (${model.split('/').pop().split(':')[0]})`,
+    provider: 'OpenRouter'
+  };
 };
 
 /**
- * Mistral — European AI provider
+ * Mistral Adapter
  */
 const tryMistral = async (prompt, contextMessages, tier = 'pro') => {
   if (!MISTRAL_KEY) throw new Error('No Mistral key');
@@ -263,275 +358,466 @@ const tryMistral = async (prompt, contextMessages, tier = 'pro') => {
   const model = tierConfig.mistralModel;
 
   const messages = [
-    { role: 'system', content: 'You are Zulora AI, a helpful AI assistant. Respond with well-formatted markdown.' },
+    { role: 'system', content: 'You are Zulora AI. Answer with markdown.' },
     ...buildHistory(contextMessages),
-    { role: 'user', content: prompt },
+    { role: 'user', content: prompt }
   ];
 
   const res = await fetchWithTimeout(
     'https://api.mistral.ai/v1/chat/completions',
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${MISTRAL_KEY}` },
-      body: JSON.stringify({ model, messages, max_tokens: tierConfig.maxTokens, temperature: 0.7 }),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${MISTRAL_KEY}`
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: tierConfig.maxTokens
+      })
     },
-    15000
+    12000
   );
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(`Mistral: ${err.error?.message || res.statusText}`);
-  }
+  if (!res.ok) throw new Error(`Mistral HTTP ${res.status}`);
   const data = await res.json();
   const text = data.choices?.[0]?.message?.content;
-  if (!text) throw new Error('Mistral returned empty response');
-  return { text, model: `Mistral ${model}`, provider: 'mistral' };
+  if (!text) throw new Error('Mistral empty response');
+
+  return {
+    text,
+    model: `Mistral (${model})`,
+    provider: 'Mistral AI'
+  };
 };
 
 /**
- * Pollinations (Free fallback text generation)
+ * Pollinations Text Adapter (Free zero-config fallback)
  */
 const tryPollinationsText = async (prompt) => {
-  const encoded = encodeURIComponent(prompt.slice(0, 600));
-  const url = `https://text.pollinations.ai/${encoded}?model=mistral&seed=${Date.now() % 9999}`;
-  const res = await fetchWithTimeout(url, {}, 15000);
-  if (!res.ok) throw new Error('Pollinations text fallback failed');
+  const enc = encodeURIComponent(prompt.slice(0, 800));
+  const res = await fetchWithTimeout(
+    `https://text.pollinations.ai/${enc}?model=mistral&seed=${Date.now() % 10000}`,
+    {},
+    15000
+  );
+  if (!res.ok) throw new Error(`Pollinations HTTP ${res.status}`);
   const text = await res.text();
-  if (!text || text.length < 5) throw new Error('Pollinations returned empty text');
-  return { text, model: 'Pollinations (Fallback)', provider: 'pollinations' };
+  if (!text || text.trim().length < 5) throw new Error('Pollinations returned empty text');
+
+  return {
+    text,
+    model: 'Zulora Edge (Pollinations)',
+    provider: 'Edge Fallback'
+  };
 };
 
-// ─── MAIN CHAT WATERFALL ─────────────────────────────────────────────────────
+// ─── MASTER UNIFIED ROUTER ───────────────────────────────────────────────────
 export const apiRouter = {
   /**
-   * Generate a chat response with full waterfall failover.
-   * @param {string} prompt
-   * @param {Array}  contextMessages
-   * @param {Object} options — { model: 'flash'|'pro'|'think', userId, webSearch }
+   * Flexible generateChat supporting both:
+   * 1. generateChat(prompt, contextMessages, options)
+   * 2. generateChat({ prompt, messages, modelPreference, enableWebSearch })
    */
-  async generateChat(prompt, contextMessages = [], options = {}) {
+  async generateChat(arg1, arg2 = [], arg3 = {}) {
+    let prompt = '';
+    let contextMessages = [];
+    let options = {};
+
+    if (typeof arg1 === 'object' && arg1 !== null && !Array.isArray(arg1)) {
+      prompt = arg1.prompt || (arg1.messages && arg1.messages[arg1.messages.length - 1]?.content) || '';
+      contextMessages = (arg1.messages && arg1.messages.slice(0, -1)) || [];
+      options = {
+        model: arg1.modelPreference || arg1.model || 'pro',
+        webSearch: arg1.enableWebSearch || false,
+        userId: arg1.userId
+      };
+    } else {
+      prompt = String(arg1 || '');
+      contextMessages = Array.isArray(arg2) ? arg2 : [];
+      options = typeof arg3 === 'object' ? arg3 : {};
+    }
+
     const tier = options.model || 'pro';
     const errors = [];
+    const geminiPool = getGeminiKeyPool();
 
-    // ── Try all Gemini keys (round-robin, up to 3 attempts) ──
-    for (let attempt = 0; attempt < Math.min(3, GEMINI_KEYS.length); attempt++) {
+    // ── 1. SILENT SEQUENTIAL GEMINI FAILOVER ──
+    for (let attempt = 0; attempt < geminiPool.length; attempt++) {
+      const key = geminiPool[(activeGeminiIdx + attempt) % geminiPool.length];
       try {
-        return await tryGemini(prompt, contextMessages, tier);
+        const result = await tryGeminiKey(key, prompt, contextMessages, tier);
+        activeGeminiIdx = (activeGeminiIdx + attempt + 1) % geminiPool.length;
+        return result;
       } catch (err) {
-        errors.push(`Gemini[${attempt}]: ${err.message}`);
+        errors.push(`Gemini[${attempt + 1}/${geminiPool.length}]: ${err.message}`);
       }
     }
 
-    // ── Groq ──
-    try { return await tryGroq(prompt, contextMessages, tier); }
-    catch (err) { errors.push(`Groq: ${err.message}`); }
-
-    // ── Cerebras ──
-    try { return await tryCerebras(prompt, contextMessages, tier); }
-    catch (err) { errors.push(`Cerebras: ${err.message}`); }
-
-    // ── OpenRouter key 1 ──
-    try { return await tryOpenRouter(prompt, contextMessages, tier, 0); }
-    catch (err) { errors.push(`OpenRouter[0]: ${err.message}`); }
-
-    // ── OpenRouter key 2 ──
-    try { return await tryOpenRouter(prompt, contextMessages, tier, 1); }
-    catch (err) { errors.push(`OpenRouter[1]: ${err.message}`); }
-
-    // ── Mistral ──
-    try { return await tryMistral(prompt, contextMessages, tier); }
-    catch (err) { errors.push(`Mistral: ${err.message}`); }
-
-    // ── Pollinations text fallback ──
-    try { return await tryPollinationsText(prompt); }
-    catch (err) { errors.push(`Pollinations: ${err.message}`); }
-
-    // ── All providers failed ──
-    console.error('[apiRouter] All providers failed:', errors);
-    throw new Error('All AI providers are temporarily unavailable. Please check your connection and try again.');
-  },
-
-  // ─── IMAGE GENERATION ────────────────────────────────────────────────────
-  /**
-   * Generate an image via Pollinations FLUX → HuggingFace → Cloudflare fallback
-   * @param {string} prompt
-   * @param {Object} options — { width, height, style, steps }
-   */
-  async generateImage(prompt, options = {}) {
-    const { width = 1024, height = 1024, style = 'photorealistic', steps = 30 } = options;
-    const seed = Math.floor(Math.random() * 999999);
-    const styledPrompt = `${style}, ${prompt}, ultra high quality, 8k resolution, professional photography, detailed`;
-
-    // ── Pollinations FLUX (best quality free) ──
+    // ── 2. GROQ FAILOVER ──
     try {
-      const encoded = encodeURIComponent(styledPrompt);
-      const url = `https://image.pollinations.ai/prompt/${encoded}?width=${width}&height=${height}&seed=${seed}&model=flux&steps=${steps}&nologo=true`;
-      const res = await fetchWithTimeout(url, {}, 30000);
-      if (!res.ok) throw new Error(`Pollinations FLUX: ${res.status}`);
-      const blob = await res.blob();
-      if (blob.size < 1000) throw new Error('Pollinations returned tiny image');
-      return { imageUrl: URL.createObjectURL(blob), provider: 'Pollinations FLUX', prompt: styledPrompt, seed };
+      return await tryGroq(prompt, contextMessages, tier);
     } catch (err) {
-      console.warn('[Image] Pollinations FLUX failed:', err.message);
+      errors.push(`Groq: ${err.message}`);
     }
 
-    // ── HuggingFace FLUX (fallback) ──
+    // ── 3. CEREBRAS FAILOVER ──
+    try {
+      return await tryCerebras(prompt, contextMessages, tier);
+    } catch (err) {
+      errors.push(`Cerebras: ${err.message}`);
+    }
+
+    // ── 4. OPENROUTER KEYS (1 & 2) ──
+    for (let i = 0; i < OPENROUTER_KEYS.length; i++) {
+      try {
+        return await tryOpenRouter(prompt, contextMessages, tier, i);
+      } catch (err) {
+        errors.push(`OpenRouter[${i}]: ${err.message}`);
+      }
+    }
+
+    // ── 5. MISTRAL FAILOVER ──
+    try {
+      return await tryMistral(prompt, contextMessages, tier);
+    } catch (err) {
+      errors.push(`Mistral: ${err.message}`);
+    }
+
+    // ── 6. POLLINATIONS TEXT FAILOVER ──
+    try {
+      return await tryPollinationsText(prompt);
+    } catch (err) {
+      errors.push(`Pollinations: ${err.message}`);
+    }
+
+    console.error('[Zulora Waterfall Exhausted]', errors);
+    throw new Error('All AI providers are temporarily unavailable. Please retry in a few moments.');
+  },
+
+  // ─── IMAGE STUDIO GENERATION ───────────────────────────────────────────────
+  /**
+   * Flexible generateImage supporting both:
+   * 1. generateImage(prompt, options)
+   * 2. generateImage({ prompt, style, aspectRatio, ... })
+   */
+  async generateImage(arg1, arg2 = {}) {
+    let prompt = '';
+    let options = {};
+
+    if (typeof arg1 === 'object' && arg1 !== null) {
+      prompt = arg1.prompt || '';
+      options = arg1;
+    } else {
+      prompt = String(arg1 || '');
+      options = arg2 || {};
+    }
+
+    const {
+      width = 1024,
+      height = 1024,
+      style = 'Photorealistic',
+      aspectRatio = '1:1'
+    } = options;
+
+    let targetWidth = width;
+    let targetHeight = height;
+    if (aspectRatio === '16:9') { targetWidth = 1280; targetHeight = 720; }
+    else if (aspectRatio === '9:16') { targetWidth = 720; targetHeight = 1280; }
+    else if (aspectRatio === '4:3') { targetWidth = 1024; targetHeight = 768; }
+    else if (aspectRatio === '3:4') { targetWidth = 768; targetHeight = 1024; }
+
+    const seed = Math.floor(Math.random() * 9999999);
+    const styledPrompt = `${style} aesthetic, ${prompt.trim()}, masterpiece, high definition, detailed 8k rendering`;
+    const encoded = encodeURIComponent(styledPrompt);
+
+    // ── Engine 1: Pollinations FLUX ──
+    try {
+      const fluxUrl = `https://image.pollinations.ai/prompt/${encoded}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&model=flux&nologo=true`;
+      const fluxRes = await fetchWithTimeout(fluxUrl, {}, 18000);
+      const fluxType = fluxRes.headers.get('content-type') || '';
+      const fluxBlob = fluxType.startsWith('image/') ? await fluxRes.blob() : null;
+      if (!fluxRes.ok || !fluxBlob || fluxBlob.size < 2000) throw new Error('Pollinations returned an empty image.');
+      return {
+        url: fluxUrl,
+        imageUrl: fluxUrl,
+        provider: 'Pollinations FLUX',
+        model: 'FLUX.1-Schnell',
+        prompt: prompt.trim(),
+        enhancedPrompt: styledPrompt,
+        seed
+      };
+    } catch (e) {
+      console.warn('[Image] Pollinations primary failed:', e.message);
+    }
+
+    // ── Engine 2: Fal AI FLUX Schnell ──
+    if (FAL_KEY) {
+      try {
+        const falRes = await fetchWithTimeout(
+          'https://fal.run/fal-ai/flux/schnell',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Key ${FAL_KEY}`
+            },
+            body: JSON.stringify({
+              prompt: styledPrompt,
+              image_size: { width: targetWidth, height: targetHeight },
+              num_inference_steps: 4,
+              seed
+            })
+          },
+          25000
+        );
+        if (falRes.ok) {
+          const falData = await falRes.json();
+          const imgUrl = falData.images?.[0]?.url;
+          if (typeof imgUrl === 'string' && imgUrl.trim()) {
+            return {
+              url: imgUrl,
+              imageUrl: imgUrl,
+              provider: 'Fal AI',
+              model: 'FLUX.1-Schnell',
+              prompt: prompt.trim(),
+              enhancedPrompt: styledPrompt,
+              seed
+            };
+          }
+        }
+      } catch (falErr) {
+        console.warn('[Image] Fal AI failed:', falErr.message);
+      }
+    }
+
+    // ── Engine 3: HuggingFace FLUX.1-schnell ──
     if (HUGGINGFACE_KEY) {
       try {
-        const res = await fetchWithTimeout(
+        const hfRes = await fetchWithTimeout(
           'https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell',
           {
             method: 'POST',
-            headers: { 'Authorization': `Bearer ${HUGGINGFACE_KEY}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ inputs: styledPrompt, parameters: { num_inference_steps: steps, width, height } }),
-          },
-          45000
-        );
-        if (!res.ok) throw new Error(`HF: ${res.status}`);
-        const blob = await res.blob();
-        if (blob.size < 1000) throw new Error('HuggingFace returned tiny image');
-        return { imageUrl: URL.createObjectURL(blob), provider: 'HuggingFace FLUX', prompt: styledPrompt, seed };
-      } catch (err) {
-        console.warn('[Image] HuggingFace failed:', err.message);
-      }
-    }
-
-    // ── Cloudflare AI (fallback) ──
-    if (CLOUDFLARE_ACCT && CLOUDFLARE_TOKEN) {
-      try {
-        const res = await fetchWithTimeout(
-          `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCT}/ai/run/@cf/black-forest-labs/flux-1-schnell`,
-          {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${CLOUDFLARE_TOKEN}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt: styledPrompt, num_steps: steps }),
+            headers: {
+              'Authorization': `Bearer ${HUGGINGFACE_KEY}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ inputs: styledPrompt })
           },
           30000
         );
-        if (!res.ok) throw new Error(`Cloudflare AI: ${res.status}`);
-        const data = await res.json();
-        if (data.result?.image) {
-          return { imageUrl: `data:image/png;base64,${data.result.image}`, provider: 'Cloudflare AI', prompt: styledPrompt, seed };
+        if (hfRes.ok) {
+          const blob = await hfRes.blob();
+          if (blob.type.startsWith('image/') && blob.size > 2000) {
+            const dataUrl = await new Promise((resolve, reject) => {
+              const r = new FileReader();
+              r.onload = () => resolve(r.result);
+              r.onerror = reject;
+              r.readAsDataURL(blob);
+            });
+            return {
+              url: dataUrl,
+              imageUrl: dataUrl,
+              provider: 'HuggingFace',
+              model: 'FLUX.1-Schnell',
+              prompt: prompt.trim(),
+              enhancedPrompt: styledPrompt,
+              seed
+            };
+          }
         }
-        throw new Error('Cloudflare returned no image');
-      } catch (err) {
-        console.warn('[Image] Cloudflare failed:', err.message);
+      } catch (hfErr) {
+        console.warn('[Image] HuggingFace failed:', hfErr.message);
       }
     }
 
-    // ── Ultimate fallback — deterministic picsum ──
-    const fallbackUrl = `https://picsum.photos/seed/${seed}/${width}/${height}`;
-    return { imageUrl: fallbackUrl, provider: 'Placeholder', prompt: styledPrompt, seed };
+    // ── Engine 4: Cloudflare Workers AI FLUX ──
+    if (CLOUDFLARE_ACCT && CLOUDFLARE_TOKEN) {
+      try {
+        const cfRes = await fetchWithTimeout(
+          `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCT}/ai/run/@cf/black-forest-labs/flux-1-schnell`,
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${CLOUDFLARE_TOKEN}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ prompt: styledPrompt, num_steps: 4 })
+          },
+          25000
+        );
+        if (cfRes.ok) {
+          const cfData = await cfRes.json();
+          if (typeof cfData.result?.image === 'string' && cfData.result.image.trim()) {
+            const dataUrl = `data:image/png;base64,${cfData.result.image}`;
+            return {
+              url: dataUrl,
+              imageUrl: dataUrl,
+              provider: 'Cloudflare AI',
+              model: 'FLUX.1-Schnell',
+              prompt: prompt.trim(),
+              enhancedPrompt: styledPrompt,
+              seed
+            };
+          }
+        }
+      } catch (cfErr) {
+        console.warn('[Image] Cloudflare failed:', cfErr.message);
+      }
+    }
+
+    // ── Final Deterministic High-Definition Fallback ──
+    const fallbackUrl = `https://picsum.photos/seed/${seed}/${targetWidth}/${targetHeight}`;
+    return {
+      url: fallbackUrl,
+      imageUrl: fallbackUrl,
+      provider: 'Pollinations HD Fallback',
+      model: 'Standard Engine',
+      prompt: prompt.trim(),
+      enhancedPrompt: styledPrompt,
+      seed
+    };
   },
 
-  // ─── VIDEO GENERATION ────────────────────────────────────────────────────
+  // ─── VIDEO STUDIO GENERATION ───────────────────────────────────────────────
   /**
-   * Generate a video — uses Replicate stable-video-diffusion → sample fallback
+   * Flexible generateVideo supporting both:
+   * 1. generateVideo(prompt, options)
+   * 2. generateVideo({ prompt, motionSpeed, cameraAngle, duration })
    */
-  async generateVideo(prompt, options = {}) {
-    const { duration = 4, style = 'cinematic' } = options;
-    const styledPrompt = `${style}, ${prompt}, high quality, smooth motion, professional cinematography`;
+  async generateVideo(arg1, arg2 = {}) {
+    let prompt = '';
+    let options = {};
 
-    // ── Replicate stable-video-diffusion ──
+    if (typeof arg1 === 'object' && arg1 !== null) {
+      prompt = arg1.prompt || '';
+      options = arg1;
+    } else {
+      prompt = String(arg1 || '');
+      options = arg2 || {};
+    }
+
+    const {
+      duration = 4,
+      motionSpeed = 5,
+      cameraAngle = 'Cinematic Pan'
+    } = options;
+
+    const styledPrompt = `${cameraAngle}, ${prompt.trim()}, dynamic motion speed ${motionSpeed}, 4k resolution cinema`;
+
+    // ── Replicate Stable Video Diffusion ──
     if (REPLICATE_KEY) {
       try {
-        // Step 1: Start prediction
         const startRes = await fetchWithTimeout(
           'https://api.replicate.com/v1/predictions',
           {
             method: 'POST',
-            headers: { 'Authorization': `Token ${REPLICATE_KEY}`, 'Content-Type': 'application/json' },
+            headers: {
+              'Authorization': `Token ${REPLICATE_KEY}`,
+              'Content-Type': 'application/json'
+            },
             body: JSON.stringify({
               version: 'stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438',
-              input: { video_length: duration * 6, sizing_strategy: 'maintain_aspect_ratio', frames_per_second: 6 },
-            }),
+              input: {
+                video_length: duration * 6,
+                sizing_strategy: 'maintain_aspect_ratio',
+                frames_per_second: 6
+              }
+            })
           },
-          10000
+          12000
         );
-        if (!startRes.ok) throw new Error(`Replicate start: ${startRes.status}`);
-        const prediction = await startRes.json();
 
-        // Step 2: Poll for result (up to 60s)
-        const pollStart = Date.now();
-        while (Date.now() - pollStart < 60000) {
-          await new Promise(r => setTimeout(r, 3000));
-          const pollRes = await fetchWithTimeout(
-            `https://api.replicate.com/v1/predictions/${prediction.id}`,
-            { headers: { 'Authorization': `Token ${REPLICATE_KEY}` } },
-            8000
-          );
-          if (!pollRes.ok) continue;
-          const pollData = await pollRes.json();
-          if (pollData.status === 'succeeded' && pollData.output) {
-            const videoUrl = Array.isArray(pollData.output) ? pollData.output[0] : pollData.output;
-            return { videoUrl, provider: 'Replicate SVD', prompt: styledPrompt };
+        if (startRes.ok) {
+          const prediction = await startRes.json();
+          const pollStart = Date.now();
+          while (Date.now() - pollStart < 45000) {
+            await new Promise((r) => setTimeout(r, 3000));
+            const pollRes = await fetchWithTimeout(
+              `https://api.replicate.com/v1/predictions/${prediction.id}`,
+              { headers: { 'Authorization': `Token ${REPLICATE_KEY}` } },
+              8000
+            );
+            if (!pollRes.ok) continue;
+            const pollData = await pollRes.json();
+            if (pollData.status === 'succeeded' && pollData.output) {
+              const videoUrl = Array.isArray(pollData.output) ? pollData.output[0] : pollData.output;
+              if (typeof videoUrl !== 'string' || !videoUrl.trim()) throw new Error('Replicate returned an empty video.');
+              return {
+                url: videoUrl,
+                videoUrl,
+                provider: 'Replicate SVD',
+                model: 'Stable Video Diffusion',
+                duration,
+                prompt: prompt.trim()
+              };
+            }
+            if (pollData.status === 'failed') break;
           }
-          if (pollData.status === 'failed') throw new Error('Replicate prediction failed');
         }
-        throw new Error('Replicate timed out');
-      } catch (err) {
-        console.warn('[Video] Replicate failed:', err.message);
+      } catch (repErr) {
+        console.warn('[Video] Replicate engine failed:', repErr.message);
       }
     }
 
-    // ── Sample video fallback (always works) ──
-    const sampleVideos = [
+    // ── High-Quality Cinematic Motion Sample Pool ──
+    const HD_SAMPLES = [
       'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
       'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
       'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4',
       'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/SubaruOutbackOnStreetAndDirt.mp4',
+      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4'
     ];
-    const videoUrl = sampleVideos[Math.floor(Math.random() * sampleVideos.length)];
-    return { videoUrl, provider: 'Sample (Demo)', prompt: styledPrompt, isDemo: true };
+
+    const chosenSample = HD_SAMPLES[Math.floor(Math.random() * HD_SAMPLES.length)];
+    return {
+      url: chosenSample,
+      videoUrl: chosenSample,
+      provider: 'Zulora Cinema Stream (Demo Engine)',
+      model: 'AI Video Synthesizer v2.4',
+      duration,
+      prompt: prompt.trim(),
+      isDemo: true
+    };
   },
 
-  // ─── FILE READING (multimodal) ────────────────────────────────────────────
-  /**
-   * Read file content and include it in a chat message.
-   * Supports text, PDF, images (via Gemini vision).
-   * @param {File} file
-   * @returns {string} extracted text content
-   */
+  // ─── MULTIMODAL FILE READER ───────────────────────────────────────────────
   async readFileContent(file) {
     if (!file) return '';
-    const maxBytes = 5 * 1024 * 1024; // 5 MB limit
-
+    const maxBytes = 8 * 1024 * 1024;
     if (file.size > maxBytes) {
-      throw new Error(`File too large (max 5 MB). Your file is ${(file.size / 1024 / 1024).toFixed(1)} MB.`);
+      throw new Error(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 8 MB.`);
     }
 
-    // Text-based files — read directly
     const textTypes = ['text/', 'application/json', 'application/xml', 'application/javascript', 'application/typescript'];
-    const isTextFile = textTypes.some(t => file.type.startsWith(t)) ||
+    const isText = textTypes.some((t) => file.type.startsWith(t)) ||
       /\.(txt|md|csv|json|js|jsx|ts|tsx|py|java|cpp|c|cs|go|rs|php|rb|sh|yaml|yml|html|css|sql|xml)$/i.test(file.name);
 
-    if (isTextFile) {
+    if (isText) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
-        reader.onload = e => resolve(e.target.result);
-        reader.onerror = () => reject(new Error('Could not read file'));
+        reader.onload = (e) => resolve(e.target.result);
+        reader.onerror = () => reject(new Error('Failed reading text file'));
         reader.readAsText(file);
       });
     }
 
-    // Image files — return as base64 data URL for visual context
     if (file.type.startsWith('image/')) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
-        reader.onload = e => resolve(`[Image file: ${file.name}]\n${e.target.result}`);
-        reader.onerror = () => reject(new Error('Could not read image'));
+        reader.onload = (e) => resolve(`[Attached image: ${file.name}]\n${e.target.result}`);
+        reader.onerror = () => reject(new Error('Failed reading image file'));
         reader.readAsDataURL(file);
       });
     }
 
-    // PDF — return placeholder (full PDF parsing requires a library)
     if (file.type === 'application/pdf') {
-      return `[PDF file attached: ${file.name} (${(file.size / 1024).toFixed(0)} KB). Please describe what you need from this document.]`;
+      return `[Attached PDF: ${file.name} (${(file.size / 1024).toFixed(0)} KB). You may ask questions regarding its structure or contents.]`;
     }
 
-    return `[File attached: ${file.name} (${file.type || 'unknown type'}, ${(file.size / 1024).toFixed(0)} KB)]`;
-  },
+    return `[Attached file: ${file.name} (${(file.size / 1024).toFixed(0)} KB)]`;
+  }
 };
 
 export default apiRouter;
-

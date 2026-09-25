@@ -1,6 +1,6 @@
 /**
- * aiRouter.js — Re-exports the client-side apiRouter for backward compatibility.
- * All generation logic has moved to apiRouter.js (client-side waterfall).
+ * aiRouter.js — Client-side router compatibility entry point.
+ * Provider credentials are resolved by apiRouter.js from import.meta.env only.
  */
 import { apiRouter, MODEL_TIERS } from './apiRouter';
 
