@@ -37,6 +37,22 @@ export const AuthProvider = ({ children }) => {
     return profile;
   }, []);
 
+  const recordUsage = useCallback(async (type, serverTracked = false) => {
+    if (!currentUser?.uid) return null;
+    try {
+      if (serverTracked) {
+        firestoreService.clearLocalUsage(currentUser.uid);
+        return await refreshProfile(currentUser.uid, currentUser);
+      }
+      const profile = firestoreService.recordLocalUsage(currentUser.uid, type);
+      if (profile) setUserProfile(profile);
+      return profile;
+    } catch (error) {
+      console.warn('Could not update the usage display:', error.message);
+      return null;
+    }
+  }, [currentUser, refreshProfile]);
+
   // Resolve the first auth event and any OAuth redirect before exposing protected tools.
   useEffect(() => {
     let active = true;
@@ -117,10 +133,23 @@ export const AuthProvider = ({ children }) => {
     return result;
   };
 
+  useEffect(() => {
+    if (!currentUser?.uid) return undefined;
+    const key = `zulora_store_user_${currentUser.uid}`;
+    const syncFromStorage = event => {
+      if (event.key !== key || !event.newValue) return;
+      try { setUserProfile(JSON.parse(event.newValue)); }
+      catch { /* ignore malformed tab-local profile data */ }
+    };
+    window.addEventListener('storage', syncFromStorage);
+    return () => window.removeEventListener('storage', syncFromStorage);
+  }, [currentUser?.uid]);
+
   const storedTier = userProfile?.planTier || userProfile?.tier || TIERS.FREE;
-  const currentTier = String(storedTier).toLowerCase() === 'ultrapro' || String(storedTier).toLowerCase() === 'ultra_pro_max'
+  const normalizedTier = String(storedTier).toLowerCase().replace(/[ _-]/g, '');
+  const currentTier = normalizedTier.includes('ultra')
     ? TIERS.ULTRA
-    : String(storedTier).toLowerCase() === 'pro' ? TIERS.PRO : TIERS.FREE;
+    : normalizedTier.includes('pro') ? TIERS.PRO : TIERS.FREE;
   const isPro = currentTier !== TIERS.FREE;
   const currentLimits = firestoreService.getProfileLimits(userProfile || {});
 
@@ -138,6 +167,7 @@ export const AuthProvider = ({ children }) => {
     refreshProfile: () => refreshProfile(currentUser?.uid, currentUser),
     isPro,
     checkUsage,
+    recordUsage,
     isUsageModalOpen,
     setIsUsageModalOpen,
     isPricingModalOpen,

@@ -1,8 +1,9 @@
 /**
- * aiRouter.js — Client-side router compatibility entry point.
- * Provider credentials are resolved by apiRouter.js from import.meta.env only.
+ * aiRouter.js — Compatibility exports for the unified AI and video routers.
+ * The public aiRouter delegates video requests to videoService.js.
  */
 import { apiRouter, MODEL_TIERS } from './apiRouter';
 
 export { apiRouter as aiRouter, apiRouter, MODEL_TIERS };
+export { generateVideo } from './videoService';
 export default apiRouter;

@@ -24,6 +24,7 @@ export const Sidebar = ({
   currentChatId, 
   onSelectChat, 
   onNewChat, 
+  onUpdateSession,
   isMobileOpen, 
   onCloseMobile,
   setActiveTab
@@ -93,7 +94,11 @@ export const Sidebar = ({
   const handleSaveRename = async (sessionId, e) => {
     e?.stopPropagation();
     if (!editTitle.trim()) return;
-    await firestoreService.renameChatSession(currentUser.uid, sessionId, editTitle.trim());
+    const title = editTitle.trim();
+    await firestoreService.renameChatSession(currentUser.uid, sessionId, title);
+    setSessions(previous => previous.map(session => session.id === sessionId ? { ...session, title, updatedAt: Date.now() } : session));
+    const activeSession = sessions.find(session => session.id === sessionId);
+    if (activeSession) onUpdateSession?.({ ...activeSession, title });
     setEditingId(null);
     await loadSessions();
   };
@@ -128,8 +133,11 @@ export const Sidebar = ({
     return (
       <div
         key={session.id}
-        onClick={() => {
-          onSelectChat(session);
+        onClick={async () => {
+          const fullSession = currentUser?.uid
+            ? await firestoreService.getChatSession(currentUser.uid, session.id)
+            : null;
+          onSelectChat(fullSession || session);
           if (onCloseMobile) onCloseMobile();
         }}
         className={`group relative flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium cursor-pointer transition-all ${
@@ -324,6 +332,26 @@ export const Sidebar = ({
             </div>
           </div>
 
+          <div>
+            <div className="flex justify-between text-[10px] text-slate-500 dark:text-slate-400 mb-1">
+              <span>Images (24h)</span>
+              <span>{usage.imageCount || 0} / {limits.image}</span>
+            </div>
+            <div className="w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+              <div className="h-full bg-indigo-500 rounded-full transition-all duration-300" style={{ width: `${Math.min(100, ((usage.imageCount || 0) / limits.image) * 100)}%` }} />
+            </div>
+          </div>
+
+          <div>
+            <div className="flex justify-between text-[10px] text-slate-500 dark:text-slate-400 mb-1">
+              <span>Videos (24h)</span>
+              <span>{usage.videoCount || 0} / {limits.video}</span>
+            </div>
+            <div className="w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+              <div className="h-full bg-purple-500 rounded-full transition-all duration-300" style={{ width: `${Math.min(100, ((usage.videoCount || 0) / limits.video) * 100)}%` }} />
+            </div>
+          </div>
+
           {/* Action buttons */}
           <div className="flex items-center gap-2 pt-1">
             <button
@@ -453,4 +481,3 @@ export const Sidebar = ({
 };
 
 export default Sidebar;
-

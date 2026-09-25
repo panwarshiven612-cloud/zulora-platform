@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Sparkles, 
   Download, 
@@ -39,7 +39,7 @@ const ASPECT_RATIOS = [
 ];
 
 export const ImageGenerator = () => {
-  const { currentUser, limits, usage, refreshProfile, setIsUsageModalOpen } = useAuth();
+  const { currentUser, limits, usage, checkUsage, recordUsage, setIsUsageModalOpen } = useAuth();
 
   const [prompt, setPrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
@@ -51,6 +51,7 @@ export const ImageGenerator = () => {
   const [copiedPromptId, setCopiedPromptId] = useState(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [sourceImage, setSourceImage] = useState(null);
+  const generatingRef = useRef(false);
 
   // Load previous generated images from Firestore / LocalStorage
   const loadGallery = async () => {
@@ -64,7 +65,20 @@ export const ImageGenerator = () => {
   }, [currentUser?.uid]);
 
   const handleGenerate = async () => {
-    if (!prompt.trim() || loading) return;
+    if (!prompt.trim() || loading || generatingRef.current) return;
+    generatingRef.current = true;
+    let allowance;
+    try { allowance = await checkUsage('image'); }
+    catch (error) {
+      generatingRef.current = false;
+      console.warn('Could not check image usage:', error.message);
+      setIsUsageModalOpen(true);
+      return;
+    }
+    if (!allowance.allowed) {
+      generatingRef.current = false;
+      return;
+    }
 
     setLoading(true);
 
@@ -74,11 +88,12 @@ export const ImageGenerator = () => {
         negativePrompt: negativePrompt.trim(),
         style: selectedStyle,
         aspectRatio,
-        sourceImage: sourceImage?.dataUrl || ''
+        sourceImage: sourceImage?.dataUrl || '',
+        currentUser
       });
 
       if (!result?.url) throw new Error('Image provider returned no downloadable image.');
-      if (result.usage?.tracked) await refreshProfile();
+      await recordUsage('image', Boolean(result.usage?.tracked));
 
       // Save asset in Firestore
       const assetData = {
@@ -100,6 +115,7 @@ export const ImageGenerator = () => {
       alert(err.message || 'Encountered an issue generating image.');
     } finally {
       setLoading(false);
+      generatingRef.current = false;
     }
   };
 

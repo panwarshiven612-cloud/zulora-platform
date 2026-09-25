@@ -10,9 +10,9 @@ const cursors = Object.fromEntries(Object.keys(providers).map(name => [name, 0])
 const failures = Object.fromEntries(Object.keys(providers).map(name => [name, new Map()]));
 
 export const providerKeys = Object.freeze({
-  pollinations: process.env.POLLINATIONS_API_KEY || process.env.POLLINATIONS_KEY || '',
-  huggingface: process.env.HF_API_KEY || process.env.HUGGINGFACE_API_KEY || '',
-  fal: process.env.FAL_API_KEY || '',
+  pollinations: process.env.POLLINATIONS_API_KEY || process.env.POLLINATIONS_KEY || process.env.VITE_POLLINATIONS_KEY || '',
+  huggingface: process.env.HF_API_KEY || process.env.HUGGINGFACE_API_KEY || process.env.VITE_HUGGINGFACE_KEY || '',
+  fal: process.env.FAL_API_KEY || process.env.VITE_FAL_KEY || '',
   cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID || '',
   cloudflareToken: process.env.CLOUDFLARE_API_TOKEN || process.env.CLOUDFLARE_TOKEN || '',
   replicate: process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_API_KEY || ''

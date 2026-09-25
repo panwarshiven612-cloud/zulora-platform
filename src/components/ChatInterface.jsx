@@ -48,10 +48,11 @@ import {
   MoreHorizontal,
   ArrowDown,
   Plus,
+  Lock,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { apiRouter, MODEL_TIERS } from '../services/apiRouter';
-import { firestoreService } from '../services/firestoreService';
+import { firestoreService, deriveChatTitle } from '../services/firestoreService';
 
 /* ============================================================
    CONSTANTS
@@ -71,6 +72,7 @@ const MODEL_OPTIONS = Object.values(MODEL_TIERS).map(t => ({
   icon: t.id === 'flash' ? Zap : t.id === 'think' ? FlaskConical : Sparkles,
   color: t.color,
   badge: t.badge,
+  tier: t.tier,
 }));
 
 const SUGGESTION_CARDS = [
@@ -439,7 +441,7 @@ const WelcomeScreen = ({ user, onSuggestion }) => (
    MAIN CHAT INTERFACE
    ============================================================ */
 export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => {
-  const { currentUser, setIsUsageModalOpen, checkUsage } = useAuth();
+  const { currentUser, isPro, setIsUsageModalOpen, setIsPricingModalOpen, checkUsage, recordUsage } = useAuth();
 
   const [messages, setMessages] = useState([]);
   const [inputPrompt, setInputPrompt] = useState('');
@@ -461,6 +463,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
   const recognitionRef = useRef(null);
   const textareaRef = useRef(null);
   const speechRef = useRef(null);
+  const sendingRef = useRef(false);
 
   // Sync messages when activeSession changes
   useEffect(() => {
@@ -469,7 +472,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     } else {
       setMessages([]);
     }
-  }, [activeSession?.id]);
+  }, [activeSession?.id, activeSession?.messages]);
 
   // Scroll to bottom when messages update
   useEffect(() => {
@@ -570,7 +573,26 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
 
   const sendMessage = useCallback(async (promptOverride = null) => {
     const basePrompt = (promptOverride || inputPrompt).trim();
-    if (!basePrompt || loading) return;
+    if (!basePrompt || loading || sendingRef.current) return;
+
+    if (modelPreference === 'think' && !isPro) {
+      setIsPricingModalOpen(true);
+      return;
+    }
+    sendingRef.current = true;
+    let allowance;
+    try {
+      allowance = await checkUsage('chat');
+    } catch (error) {
+      sendingRef.current = false;
+      console.warn('Could not check chat usage:', error.message);
+      setIsUsageModalOpen(true);
+      return;
+    }
+    if (!allowance.allowed) {
+      sendingRef.current = false;
+      return;
+    }
 
     // Read any attached files and append their content to the prompt
     let fullPrompt = basePrompt;
@@ -608,6 +630,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
 
     try {
       const contextMessages = buildContextMessages();
+      const contextMemory = currentUser?.uid
+        ? firestoreService.getRecentQueryContext(currentUser.uid)
+        : [];
       const result = await apiRouter.generateChat(
         fullPrompt,
         contextMessages,
@@ -615,6 +640,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
           model: modelPreference,
           webSearch: enableWebSearch,
           userId: currentUser?.uid,
+          currentUser,
+          contextMemory,
         }
       );
 
@@ -628,30 +655,39 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
         timestamp: Date.now(),
         model: result.model || 'Zulora AI',
         provider: result.provider,
+        sources: result.sources || [],
         queryTime: elapsed,
       };
 
       const finalMessages = [...newMessages, aiMsg];
       setMessages(finalMessages);
+      await recordUsage('chat', Boolean(result.usage?.tracked));
+      if (currentUser?.uid) firestoreService.recordQueryContext(currentUser.uid, basePrompt, enableWebSearch ? 'search' : 'chat');
 
       // Persist to Firestore
       const sessionId = activeSession?.id || `chat_${Date.now()}`;
-      const sessionTitle = basePrompt.length > 50 ? basePrompt.slice(0, 47) + '...' : basePrompt;
+      const firstUserPrompt = finalMessages.find(message => message.role === 'user')?.displayContent || finalMessages.find(message => message.role === 'user')?.content || basePrompt;
+      const sessionTitle = activeSession?.title && !['Untitled Chat', 'New Chat'].includes(activeSession.title)
+        ? activeSession.title
+        : deriveChatTitle(firstUserPrompt);
       const updatedSession = {
         id: sessionId,
-        title: activeSession?.title || sessionTitle,
+        title: sessionTitle,
         messages: finalMessages,
         updatedAt: Date.now(),
         model: result.model,
       };
       if (currentUser?.uid) {
-        await firestoreService.saveChatSession(currentUser.uid, updatedSession).catch(console.warn);
+        await firestoreService.saveChatSession(currentUser.uid, sessionId, updatedSession).catch(console.warn);
       }
       onUpdateSession?.(updatedSession);
 
     } catch (err) {
       console.error('Chat error:', err);
-      if (err.status === 403) setIsUsageModalOpen(true);
+      if (err.status === 403) {
+        if (err.payload?.upgradeRequired) setIsPricingModalOpen(true);
+        else setIsUsageModalOpen(true);
+      }
       const errorMsg = {
         id: (Date.now() + 2).toString(),
         role: 'assistant',
@@ -662,8 +698,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
       setMessages(prev => [...prev, errorMsg]);
     } finally {
       setLoading(false);
+      sendingRef.current = false;
     }
-  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, buildContextMessages, setIsUsageModalOpen, onUpdateSession]);
+  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, buildContextMessages, isPro, checkUsage, recordUsage, setIsUsageModalOpen, setIsPricingModalOpen, onUpdateSession]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -767,7 +804,15 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
                     {MODEL_OPTIONS.map(opt => (
                       <button
                         key={opt.id}
-                        onClick={() => { setModelPreference(opt.id); setShowModelMenu(false); }}
+                        onClick={() => {
+                          if (opt.id === 'think' && !isPro) {
+                            setShowModelMenu(false);
+                            setIsPricingModalOpen(true);
+                            return;
+                          }
+                          setModelPreference(opt.id);
+                          setShowModelMenu(false);
+                        }}
                         className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
                           modelPreference === opt.id
                             ? 'bg-sky-50 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400'
@@ -775,7 +820,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
                         }`}
                       >
                         <opt.icon className={`w-3.5 h-3.5 ${opt.color}`} />
-                        {opt.label}
+                        <span className="truncate">{opt.label}</span>
+                        {opt.id === 'think' && !isPro && <Lock className="w-3 h-3 ml-auto text-amber-500" />}
                         {modelPreference === opt.id && <Check className="w-3 h-3 ml-auto" />}
                       </button>
                     ))}

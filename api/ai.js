@@ -9,6 +9,11 @@ const COUNTERS = {
   image: { used: 'imageUsed', limit: 'imageLimit', count: 'imageCount', window: 'imageWindowStart', duration: 24 * 60 * 60 * 1000 },
   video: { used: 'videoUsed', limit: 'videoLimit', count: 'videoCount', window: 'videoWindowStart', duration: 24 * 60 * 60 * 1000 }
 };
+const PLAN_LIMITS = {
+  free: { chat: 50, image: 30, video: 4 },
+  pro: { chat: 100, image: 60, video: 8 },
+  ultra: { chat: 250, image: 150, video: 20 }
+};
 let cachedFirestoreToken = null;
 let cachedFirebaseCertificates = null;
 let firestoreAdminWarningLogged = false;
@@ -34,6 +39,25 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 20_000) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try { return await fetch(url, { ...options, signal: controller.signal }); }
   finally { clearTimeout(timer); }
+}
+
+async function fetchProviderWithRetry(url, options, timeoutMs = 16_000) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let response;
+    try {
+      response = await fetchWithTimeout(url, options, timeoutMs);
+    } catch (error) {
+      if (attempt === 2) throw error;
+      await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+      continue;
+    }
+    const retryable = [408, 425, 429].includes(response.status) || response.status >= 500;
+    if (response.ok || !retryable || attempt === 2) return response;
+    const retryAfter = Number(response.headers.get('retry-after'));
+    const wait = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 4_000) : 350 * (attempt + 1);
+    await new Promise(resolve => setTimeout(resolve, wait));
+  }
+  throw new Error('Provider request retry limit exceeded.');
 }
 
 async function firebaseCertificates(forceRefresh = false) {
@@ -154,19 +178,23 @@ async function readUsageProfile(uid, token, transaction) {
 function usageState(profile, type, now = Date.now()) {
   const spec = COUNTERS[type];
   const usage = { ...(profile.usage || {}) };
+  const rawTiers = [profile.planTier, profile.tier].map(value => String(value || '').toLowerCase().replace(/[ _-]/g, ''));
+  const tier = rawTiers.some(value => value.includes('ultra'))
+    ? 'ultra'
+    : rawTiers.some(value => value.includes('pro')) ? 'pro' : 'free';
   const windowStart = Number(usage[spec.window]) || now;
   const expired = now - windowStart >= spec.duration;
   const current = expired ? 0 : Number(profile[spec.used] ?? usage[spec.count] ?? 0);
-  const limit = Number(profile[spec.limit]);
-  if (!Number.isFinite(limit) || limit < 0) return { error: `Firestore ${spec.limit} is missing or invalid.` };
-  return { usage: { ...usage, [spec.count]: current, [spec.window]: expired ? now : windowStart }, current, limit, allowed: current < limit };
+  const limit = PLAN_LIMITS[tier][type];
+  return { usage: { ...usage, [spec.count]: current, [spec.window]: expired ? now : windowStart }, current, limit, allowed: current < limit, normalizedTier: tier };
 }
 
 async function checkUsage(uid, type) {
   const adminToken = await firestoreAccessToken();
   const { profile, error } = await readUsageProfile(uid, adminToken);
   if (error) return { allowed: false, error };
-  return { ...usageState(profile, type), planTier: profile.planTier || profile.tier || 'Free' };
+  const state = usageState(profile, type);
+  return { ...state, planTier: state.normalizedTier };
 }
 
 async function incrementUsage(uid, type) {
@@ -224,7 +252,7 @@ function plainMessages(messages, systemPrompt) {
 
 async function tryOpenAiProvider(provider, messages, options = {}) {
   const configs = {
-    groq: { url: 'https://api.groq.com/openai/v1/chat/completions', model: 'llama-3.3-70b-versatile', label: 'Groq' },
+    groq: { url: 'https://api.groq.com/openai/v1/chat/completions', model: options.model || 'llama-3.3-70b-versatile', label: 'Groq' },
     openrouter: { url: 'https://openrouter.ai/api/v1/chat/completions', model: options.vision ? 'google/gemini-3.8-flash' : 'meta-llama/llama-3.3-70b-instruct', label: 'OpenRouter' },
     cerebras: { url: 'https://api.cerebras.ai/v1/chat/completions', model: 'gpt-oss-120b', label: 'Cerebras' },
     mistral: { url: 'https://api.mistral.ai/v1/chat/completions', model: 'mistral-small-latest', label: 'Mistral AI' }
@@ -244,7 +272,7 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
       });
       const headers = { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
       if (provider === 'openrouter') Object.assign(headers, { 'HTTP-Referer': 'https://zulora.in', 'X-Title': 'Zulora AI' });
-      const response = await fetchWithTimeout(config.url, {
+      const response = await fetchProviderWithRetry(config.url, {
         method: 'POST', headers,
         body: JSON.stringify({ model: config.model, messages: contentMessages, temperature: 0.7, max_tokens: 2048 })
       }, 15_000);
@@ -277,7 +305,8 @@ async function tryGemini(messages, options = {}) {
   if (!contents.length) contents.push({ role: 'user', parts: [{ text: 'Hello' }] });
   for (const { key, index } of apiKeyPool.candidates('gemini')) {
     try {
-      const response = await fetchWithTimeout('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent', {
+      const model = options.model || 'gemini-2.5-flash';
+      const response = await fetchProviderWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
         body: JSON.stringify({
           contents,
@@ -295,7 +324,7 @@ async function tryGemini(messages, options = {}) {
           const grounding = candidate.groundingMetadata || {};
           const chunks = grounding.groundingChunks || [];
           const sources = chunks.map(chunk => chunk.web && ({ title: chunk.web.title || chunk.web.uri, url: chunk.web.uri })).filter(Boolean);
-          return { text, provider: `Google Gemini (Key #${index + 1})`, model: 'gemini-3.8-flash', sources };
+          return { text, provider: `Google Gemini (Key #${index + 1})`, model, sources };
         }
       }
       console.warn(`Google Gemini text request failed with HTTP ${response.status}.`);
@@ -309,6 +338,10 @@ async function tryGemini(messages, options = {}) {
 }
 
 function chooseChatOrder(preference, vision, search) {
+  if (['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference)) {
+    return ['gemini', 'groq', 'openrouter', 'cerebras', 'mistral'];
+  }
+  if (['flash', 'pro'].includes(preference)) return ['gemini', 'groq', 'cerebras', 'openrouter', 'mistral'];
   const mapped = ['groq', 'openrouter', 'cerebras', 'gemini', 'mistral'].includes(preference) ? preference : null;
   if (vision || search) return ['gemini', 'openrouter', ...CHAT_ORDER.filter(provider => provider !== 'gemini' && provider !== 'openrouter')];
   return mapped ? [mapped, ...CHAT_ORDER.filter(provider => provider !== mapped)] : CHAT_ORDER;
@@ -319,11 +352,15 @@ async function generateChat(body) {
   const attachments = attachmentParts(body.attachments);
   if (body.attachments?.length && !attachments.length) throw new Error('The attached image format is unsupported. Use PNG, JPEG, WebP, or GIF.');
   const vision = attachments.length > 0;
-  const order = chooseChatOrder(String(body.modelPreference || 'auto'), vision, Boolean(body.enableWebSearch));
+  const preference = String(body.modelPreference || 'pro').toLowerCase();
+  const complex = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference);
+  const geminiModel = complex ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+  const groqModel = preference === 'flash' ? 'llama-3.1-8b-instant' : 'llama-3.3-70b-versatile';
+  const order = chooseChatOrder(preference, vision, Boolean(body.enableWebSearch));
   for (const provider of order) {
     let result = provider === 'gemini'
-      ? await tryGemini(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch) })
-      : await tryOpenAiProvider(provider, messages, { attachments: body.attachments, vision });
+      ? await tryGemini(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: geminiModel })
+      : await tryOpenAiProvider(provider, messages, { attachments: body.attachments, vision, model: provider === 'groq' ? groqModel : undefined });
     if (result) return result;
   }
   if (!availableProviders().length) throw new Error('No text-generation providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.');
@@ -471,6 +508,26 @@ async function huggingfaceImage(prompt) {
   return responseImage(response);
 }
 
+async function huggingfaceVideo(prompt, deadline) {
+  if (!providerKeys.huggingface) return null;
+  const remaining = Math.max(0, deadline - Date.now());
+  if (remaining < 2_000) return null;
+  const response = await fetchWithTimeout('https://router.huggingface.co/hf-inference/models/tencent/HunyuanVideo', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${providerKeys.huggingface}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ inputs: prompt, parameters: { num_frames: 49 } })
+  }, Math.min(35_000, remaining));
+  const contentType = response.headers.get('content-type') || '';
+  if (!response.ok) {
+    const detail = contentType.includes('json') ? await response.json().catch(() => ({})) : {};
+    throw new Error(detail.error || `Hugging Face video request failed (HTTP ${response.status}).`);
+  }
+  if (!contentType.startsWith('video/') && contentType !== 'application/octet-stream') throw new Error('Hugging Face returned an unsupported video response.');
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length < 10_000 || bytes.length > 2_500_000) throw new Error('Hugging Face video output is too large for the server response.');
+  return `data:${contentType.startsWith('video/') ? contentType.split(';')[0] : 'video/mp4'};base64,${bytes.toString('base64')}`;
+}
+
 function falImageSize(aspectRatio) {
   return ({
     '1:1': 'square',
@@ -548,11 +605,14 @@ async function replicateVideo(prompt, deadline) {
   return url;
 }
 
-async function falVideo(prompt, duration) {
-  const data = await falRequest('fal-ai/minimax/hailuo-2.3/standard/text-to-video', {
-    prompt, prompt_optimizer: true, duration: Number(duration) > 6 ? '10' : '6'
-  }, 16_000);
-  return data?.video?.url || null;
+async function falVideo(prompt, duration, modelId, deadline) {
+  const remaining = Math.max(0, deadline - Date.now());
+  if (remaining < 2_000) return null;
+  const modelInput = modelId.includes('hunyuan')
+    ? { prompt, aspect_ratio: '16:9', resolution: '480p', num_frames: Number(duration) > 6 ? 121 : 85 }
+    : { prompt };
+  const data = await falRequest(modelId, modelInput, Math.min(18_000, remaining));
+  return data?.video?.url || data?.video_url || null;
 }
 
 async function pollinationsVideo(prompt, duration, aspectRatio, deadline) {
@@ -587,25 +647,31 @@ async function pollinationsVideo(prompt, duration, aspectRatio, deadline) {
 async function generateVideo(body) {
   const prompt = String(body.prompt || '').trim();
   if (!prompt) throw new Error('Write a prompt before generating a video.');
-  if (!providerKeys.fal && !providerKeys.replicate && !providerKeys.pollinations) {
-    throw new Error('No video-generation providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.');
+  if (!providerKeys.fal && !providerKeys.huggingface && !providerKeys.replicate && !providerKeys.pollinations) {
+    throw new Error('No video-generation providers are configured. Add Fal AI or Hugging Face video credentials to the server environment.');
   }
   const enriched = [prompt, body.cameraAngle ? `Camera movement: ${body.cameraAngle}.` : '', body.motionSpeed ? `Motion intensity: ${body.motionSpeed}/10.` : ''].filter(Boolean).join(' ');
-  const deadline = Date.now() + 44_000;
-  const attempts = [
-    ['Fal AI', () => falVideo(enriched, body.duration)],
-    ['Replicate', () => replicateVideo(enriched, deadline)],
-    ['Pollinations', () => pollinationsVideo(enriched, body.duration, body.aspectRatio, deadline)]
+  const deadline = Date.now() + 48_000;
+  const falModels = [
+    ['fal-ai/luma-dream-machine/ray-2-flash', 'Luma Dream Machine Ray 2 Flash'],
+    ['fal-ai/hunyuan-video-v1.5/text-to-video', 'HunyuanVideo 1.5'],
+    ['fal-ai/cogvideox-5b', 'CogVideoX-5B']
   ];
-  for (const [provider, run] of attempts) {
+  const attempts = [
+    ...falModels.map(([modelId, model]) => ['Fal AI', model, () => falVideo(enriched, body.duration, modelId, deadline)]),
+    ['Hugging Face', 'HunyuanVideo', () => huggingfaceVideo(enriched, deadline)],
+    ['Replicate', 'minimax-video-01', () => replicateVideo(enriched, deadline)],
+    ['Pollinations', 'veo-3.1-fast', () => pollinationsVideo(enriched, body.duration, body.aspectRatio, deadline)]
+  ];
+  for (const [provider, model, run] of attempts) {
     if (Date.now() >= deadline) break;
     try {
       const url = await run();
       if (url) {
-        const generatedDuration = provider === 'Replicate' ? 6 : provider === 'Fal AI' ? (Number(body.duration) > 6 ? 10 : 6) : Math.min(Number(body.duration) || 6, 8);
-        return { url, provider, model: provider === 'Fal AI' ? 'hailuo-2.3' : provider === 'Replicate' ? 'minimax-video-01' : 'veo-3.1-fast', duration: generatedDuration };
+        const generatedDuration = provider === 'Replicate' ? 6 : Math.min(Number(body.duration) || 6, provider === 'Pollinations' ? 8 : 10);
+        return { url, provider, model, duration: generatedDuration };
       }
-    } catch (error) { console.warn(`${provider} video attempt failed:`, error.message); }
+    } catch (error) { console.warn(`${provider} ${model} video attempt failed:`, error.message); }
   }
   throw new Error('All configured video providers are unavailable.');
 }
@@ -617,7 +683,10 @@ export default async function handler(req, res) {
     try { body = JSON.parse(body); } catch { return safeError(res, 400, 'Invalid JSON request.'); }
   }
   if (!body || typeof body !== 'object') return safeError(res, 400, 'Invalid request.');
-  const type = body.action === 'chat' ? 'chat' : body.action === 'image' ? 'image' : body.action === 'video' ? 'video' : null;
+  const usageOnly = body.action === 'usage';
+  const type = usageOnly
+    ? (['chat', 'image', 'video'].includes(body.usageType) ? body.usageType : null)
+    : body.action === 'chat' ? 'chat' : body.action === 'image' ? 'image' : body.action === 'video' ? 'video' : null;
   if (!type) return safeError(res, 400, 'Unsupported generation action.');
   const token = bearer(req);
   if (!token) return safeError(res, 401, 'Sign in to use Zulora AI.');
@@ -627,12 +696,24 @@ export default async function handler(req, res) {
   if (!uid) return safeError(res, 401, 'Your sign-in session has expired. Sign in again.');
 
   try {
+    if (usageOnly) {
+      if (!firestoreAdminCredentials()) return json(res, 200, { usage: { type, tracked: false } });
+      const before = await checkUsage(uid, type);
+      if (before.error) return safeError(res, 503, before.error);
+      if (!before.allowed) return safeError(res, 403, `${type} limit reached. Upgrade your subscription to continue.`, { limit: before.limit, used: before.current, planTier: before.planTier });
+      const updated = await incrementUsage(uid, type);
+      if (!updated.allowed) return safeError(res, 403, `${type} limit reached. Upgrade your subscription to continue.`, { limit: updated.limit, used: updated.current, planTier: updated.planTier });
+      return json(res, 200, { usage: { type, tracked: true, used: updated.current, limit: updated.limit } });
+    }
+
     let usageTrackingAvailable = false;
+    let profileTier = null;
     if (!firestoreAdminCredentials()) {
       warnFirestoreTrackingUnavailable('Admin service-account email or private key is not configured.');
     } else {
       try {
         const before = await checkUsage(uid, type);
+        profileTier = before.planTier;
         if (before.error) {
           warnFirestoreTrackingUnavailable(before.error);
         } else if (!before.allowed) {
@@ -642,6 +723,16 @@ export default async function handler(req, res) {
         }
       } catch (error) {
         warnFirestoreTrackingUnavailable(error?.message || 'Could not read the user usage record.');
+      }
+    }
+
+    if (type === 'chat' && ['think', 'high_reason', 'pro_314', 'pro_ultra'].includes(String(body.modelPreference || '').toLowerCase())) {
+      const normalizedTier = String(profileTier || '').toLowerCase().replace(/[ _-]/g, '');
+      if (!profileTier) {
+        return safeError(res, 503, 'The premium model requires server-side plan validation. Configure Firestore Admin credentials and retry.');
+      }
+      if (!normalizedTier.includes('pro') && !normalizedTier.includes('ultra')) {
+        return safeError(res, 403, 'The Zulora 3.5 Pro Ultra model requires a Pro or Ultra subscription.', { upgradeRequired: true });
       }
     }
 

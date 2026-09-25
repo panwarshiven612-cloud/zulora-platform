@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Film, 
   Play, 
@@ -29,7 +29,7 @@ const CAMERA_ANGLES = [
 ];
 
 export const VideoGenerator = () => {
-  const { currentUser, limits, usage, refreshProfile, setIsUsageModalOpen } = useAuth();
+  const { currentUser, limits, usage, checkUsage, recordUsage, setIsUsageModalOpen } = useAuth();
 
   const [prompt, setPrompt] = useState('');
   const [motionSpeed, setMotionSpeed] = useState(5);
@@ -39,6 +39,7 @@ export const VideoGenerator = () => {
   const [gallery, setGallery] = useState([]);
   const [activeVideo, setActiveVideo] = useState(null);
   const [isPlaying, setIsPlaying] = useState(true);
+  const generatingRef = useRef(false);
 
   // Load user generated videos from Firestore / LocalStorage
   const loadVideos = async () => {
@@ -55,7 +56,20 @@ export const VideoGenerator = () => {
   }, [currentUser?.uid]);
 
   const handleGenerate = async () => {
-    if (!prompt.trim() || loading) return;
+    if (!prompt.trim() || loading || generatingRef.current) return;
+    generatingRef.current = true;
+    let allowance;
+    try { allowance = await checkUsage('video'); }
+    catch (error) {
+      generatingRef.current = false;
+      console.warn('Could not check video usage:', error.message);
+      setIsUsageModalOpen(true);
+      return;
+    }
+    if (!allowance.allowed) {
+      generatingRef.current = false;
+      return;
+    }
 
     setLoading(true);
 
@@ -64,10 +78,11 @@ export const VideoGenerator = () => {
         prompt: prompt.trim(),
         motionSpeed,
         cameraAngle,
-        duration
+        duration,
+        currentUser
       });
       if (!result?.url) throw new Error('Video provider returned no video.');
-      if (result.usage?.tracked) await refreshProfile();
+      await recordUsage('video', Boolean(result.usage?.tracked));
 
       const videoAsset = {
         type: 'video',
@@ -90,6 +105,7 @@ export const VideoGenerator = () => {
       alert(err.message || 'Encountered an issue generating video. Please try again.');
     } finally {
       setLoading(false);
+      generatingRef.current = false;
     }
   };
 

@@ -91,6 +91,9 @@ export const App = () => {
   const handleNewChat = () => { setActiveSession(null); setActiveTab('chat'); };
   const handleSelectChat = (session) => { setActiveSession(session); setActiveTab('chat'); };
   const handleUpdateSession = (updatedSession) => setActiveSession(updatedSession);
+  const handleSidebarSessionUpdate = (updatedSession) => setActiveSession(previous =>
+    previous?.id === updatedSession.id ? { ...previous, ...updatedSession } : previous
+  );
 
   return (
     <div className="h-dvh min-h-0 flex flex-col overflow-hidden bg-[#f8fafc] dark:bg-[#070b14] text-slate-900 dark:text-slate-100 transition-colors duration-200">
@@ -111,6 +114,7 @@ export const App = () => {
             currentChatId={activeSession?.id}
             onSelectChat={handleSelectChat}
             onNewChat={handleNewChat}
+            onUpdateSession={handleSidebarSessionUpdate}
             isMobileOpen={isMobileSidebarOpen}
             onCloseMobile={() => setIsMobileSidebarOpen(false)}
             setActiveTab={setActiveTab}
