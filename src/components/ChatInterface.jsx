@@ -50,8 +50,7 @@ import {
   Plus,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { aiRouter } from '../services/aiRouter';
-import { imageFileToDataUrl } from '../services/imageUtils';
+import { apiRouter, MODEL_TIERS } from '../services/apiRouter';
 import { firestoreService } from '../services/firestoreService';
 
 /* ============================================================
@@ -65,13 +64,14 @@ const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
   ['json', json], ['css', css], ['sql', sql], ['yaml', yaml], ['markdown', markdown]
 ].forEach(([name, language]) => SyntaxHighlighter.registerLanguage(name, language));
 
-const MODEL_OPTIONS = [
-  { id: 'auto',       label: 'Auto-Waterfall (Best / Default)',     shortLabel: 'Auto',      icon: Sparkles,     color: 'text-sky-500' },
-  { id: 'gemini',     label: 'Gemini 3.8 Flash (Google)',             shortLabel: 'Gemini',    icon: Zap,          color: 'text-emerald-500' },
-  { id: 'groq',       label: 'Llama 3.3 70B (Groq / Fast)',          shortLabel: 'Groq',      icon: Cpu,          color: 'text-violet-500' },
-  { id: 'mistral',    label: 'Mistral AI (European Engine)',         shortLabel: 'Mistral',   icon: FlaskConical, color: 'text-amber-500' },
-  { id: 'openrouter', label: 'DeepSeek V3 / Llama 3.3 (OpenRouter)', shortLabel: 'OpenRouter',icon: ExternalLink, color: 'text-cyan-500' },
-];
+const MODEL_OPTIONS = Object.values(MODEL_TIERS).map(t => ({
+  id: t.id,
+  label: t.label,
+  shortLabel: t.shortLabel,
+  icon: t.id === 'flash' ? Zap : t.id === 'think' ? FlaskConical : Sparkles,
+  color: t.color,
+  badge: t.badge,
+}));
 
 const SUGGESTION_CARDS = [
   {
@@ -439,12 +439,12 @@ const WelcomeScreen = ({ user, onSuggestion }) => (
    MAIN CHAT INTERFACE
    ============================================================ */
 export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => {
-  const { currentUser, refreshProfile, setIsUsageModalOpen } = useAuth();
+  const { currentUser, setIsUsageModalOpen, checkUsage } = useAuth();
 
   const [messages, setMessages] = useState([]);
   const [inputPrompt, setInputPrompt] = useState('');
   const [loading, setLoading] = useState(false);
-  const [modelPreference, setModelPreference] = useState('auto');
+  const [modelPreference, setModelPreference] = useState('pro');
   const [enableWebSearch, setEnableWebSearch] = useState(false);
   const [attachments, setAttachments] = useState([]);
   const [isListening, setIsListening] = useState(false);
@@ -453,6 +453,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const [queryTime, setQueryTime] = useState(null);
 
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
@@ -555,7 +556,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
 
   const handleFileAttach = (e) => {
     const files = Array.from(e.target.files || []);
-    setAttachments(prev => [...prev, ...files.filter(file => file.type.startsWith('image/')).slice(0, 3 - prev.length)]);
+    setAttachments(prev => [...prev, ...files.slice(0, 5 - prev.length)]);
     e.target.value = '';
   };
 
@@ -563,27 +564,35 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     setAttachments(prev => prev.filter((_, i) => i !== idx));
   };
 
-  const readImageAttachments = files => Promise.all(files.filter(file => file.type.startsWith('image/')).map(async file => ({
-    name: file.name,
-    mimeType: 'image/jpeg',
-    base64: await imageFileToDataUrl(file)
-  })));
-
   const buildContextMessages = useCallback(() => {
-    return messages.slice(-12).map(m => ({
-      role: m.role,
-      content: m.content,
-    }));
+    return messages.slice(-12).map(m => ({ role: m.role, content: m.content }));
   }, [messages]);
 
   const sendMessage = useCallback(async (promptOverride = null) => {
-    const prompt = (promptOverride || inputPrompt).trim();
-    if (!prompt || loading) return;
+    const basePrompt = (promptOverride || inputPrompt).trim();
+    if (!basePrompt || loading) return;
+
+    // Read any attached files and append their content to the prompt
+    let fullPrompt = basePrompt;
+    if (attachments.length > 0) {
+      const fileContents = await Promise.all(
+        attachments.map(async (file) => {
+          try {
+            const content = await apiRouter.readFileContent(file);
+            return `\n\n📎 **File: ${file.name}**\n\`\`\`\n${content}\n\`\`\``;
+          } catch (err) {
+            return `\n\n📎 [Could not read ${file.name}: ${err.message}]`;
+          }
+        })
+      );
+      fullPrompt = basePrompt + fileContents.join('');
+    }
 
     const userMsg = {
       id: Date.now().toString(),
       role: 'user',
-      content: prompt,
+      content: fullPrompt,
+      displayContent: basePrompt, // show original prompt in UI
       timestamp: Date.now(),
       attachments: attachments.map(f => f.name),
     };
@@ -594,17 +603,23 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     setAttachments([]);
     setLoading(true);
     setIsAtBottom(true);
+    setQueryTime(null);
+    const startTime = Date.now();
 
     try {
-      const imageAttachments = await readImageAttachments(attachments);
       const contextMessages = buildContextMessages();
-      const result = await aiRouter.generateChat({
-        messages: [...contextMessages, { role: 'user', content: prompt }],
-        modelPreference,
-        enableWebSearch,
-        attachments: imageAttachments
-      });
-      if (result.usage?.tracked) await refreshProfile();
+      const result = await apiRouter.generateChat(
+        fullPrompt,
+        contextMessages,
+        {
+          model: modelPreference,
+          webSearch: enableWebSearch,
+          userId: currentUser?.uid,
+        }
+      );
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      setQueryTime(elapsed);
 
       const aiMsg = {
         id: (Date.now() + 1).toString(),
@@ -612,8 +627,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
         content: result.text || 'I encountered an issue generating a response. Please try again.',
         timestamp: Date.now(),
         model: result.model || 'Zulora AI',
-        sources: result.sources || [],
-        tokensUsed: result.tokensUsed,
+        provider: result.provider,
+        queryTime: elapsed,
       };
 
       const finalMessages = [...newMessages, aiMsg];
@@ -621,8 +636,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
 
       // Persist to Firestore
       const sessionId = activeSession?.id || `chat_${Date.now()}`;
-      const sessionTitle = prompt.length > 50 ? prompt.slice(0, 47) + '...' : prompt;
-
+      const sessionTitle = basePrompt.length > 50 ? basePrompt.slice(0, 47) + '...' : basePrompt;
       const updatedSession = {
         id: sessionId,
         title: activeSession?.title || sessionTitle,
@@ -630,9 +644,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
         updatedAt: Date.now(),
         model: result.model,
       };
-
       if (currentUser?.uid) {
-        await firestoreService.saveChatSession(currentUser.uid, updatedSession);
+        await firestoreService.saveChatSession(currentUser.uid, updatedSession).catch(console.warn);
       }
       onUpdateSession?.(updatedSession);
 
@@ -642,16 +655,15 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
       const errorMsg = {
         id: (Date.now() + 2).toString(),
         role: 'assistant',
-        content: '⚠️ I ran into an issue processing your request. All AI providers seem unavailable right now. Please try again in a moment.',
+        content: `⚠️ **Generation failed**: ${err.message || 'All AI providers unavailable. Please check your connection and try again.'}`,
         timestamp: Date.now(),
         model: 'Error',
       };
-      errorMsg.content = err.message || errorMsg.content;
       setMessages(prev => [...prev, errorMsg]);
     } finally {
       setLoading(false);
     }
-  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, refreshProfile, setIsUsageModalOpen, buildContextMessages, onUpdateSession]);
+  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, buildContextMessages, setIsUsageModalOpen, onUpdateSession]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
