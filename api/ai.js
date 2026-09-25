@@ -1,5 +1,6 @@
 import { createPublicKey, createSign, verify as verifySignature } from 'node:crypto';
 import { apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
+import { buildSystemPrompt } from '../src/services/systemPrompt.js';
 
 export const config = { maxDuration: 60 };
 
@@ -252,7 +253,7 @@ function plainMessages(messages, systemPrompt) {
 async function tryOpenAiProvider(provider, messages, options = {}) {
   const configs = {
     groq: { url: 'https://api.groq.com/openai/v1/chat/completions', model: options.model || 'llama-3.3-70b-versatile', label: 'Groq' },
-    openrouter: { url: 'https://openrouter.ai/api/v1/chat/completions', model: options.vision ? 'google/gemini-3.8-flash' : 'meta-llama/llama-3.3-70b-instruct', label: 'OpenRouter' },
+    openrouter: { url: 'https://openrouter.ai/api/v1/chat/completions', model: options.model || (options.vision ? 'google/gemini-3.8-flash' : 'meta-llama/llama-3.3-70b-instruct'), label: 'OpenRouter' },
     cerebras: { url: 'https://api.cerebras.ai/v1/chat/completions', model: 'gpt-oss-120b', label: 'Cerebras' },
     mistral: { url: 'https://api.mistral.ai/v1/chat/completions', model: 'mistral-small-latest', label: 'Mistral AI' }
   };
@@ -271,9 +272,17 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
       });
       const headers = { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
       if (provider === 'openrouter') Object.assign(headers, { 'HTTP-Referer': 'https://zulora.in', 'X-Title': 'Zulora AI' });
+      const requestBody = {
+        model: config.model,
+        messages: contentMessages,
+        temperature: options.reasoning ? 0.6 : 0.7,
+        ...(options.reasoning && provider === 'groq'
+          ? { max_completion_tokens: options.maxTokens || 8192, reasoning_effort: 'high', reasoning_format: 'hidden' }
+          : { max_tokens: options.maxTokens || (options.coding ? 8192 : 4096) })
+      };
       const response = await fetchProviderWithRetry(config.url, {
         method: 'POST', headers,
-        body: JSON.stringify({ model: config.model, messages: contentMessages, temperature: 0.7, max_tokens: options.coding ? 8192 : 4096 })
+        body: JSON.stringify(requestBody)
       }, 15_000);
       if (response.ok) {
         const data = await response.json();
@@ -336,27 +345,37 @@ async function tryGemini(messages, options = {}) {
   return null;
 }
 
-function chooseChatOrder(preference, vision, search) {
+function normalizeModelPreference(value) {
+  const selected = String(value || 'auto').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+  if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra')) return 'think';
+  if (selected === 'llama' || (selected.includes('llama') && selected.includes('70b'))) return 'llama';
+  if (selected === 'pro 3.14' || selected === 'zulora pro 3.14' || selected === 'pro' || selected === 'pro 314') return 'pro';
+  if (selected === 'flash' || selected.includes('gemini 2.5 flash')) return 'flash';
+  if (selected === 'auto' || !selected) return 'auto';
+  if (['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'think';
+  return 'auto';
+}
+
+function chooseChatOrder(preference, vision, search, autoSelected = false) {
+  if (preference === 'llama') return autoSelected ? ['groq', 'openrouter', 'gemini', 'cerebras', 'mistral'] : ['groq', 'openrouter'];
+  if (preference === 'think') return ['openrouter', 'groq', 'gemini'];
   if (vision) return ['gemini'];
-  if (preference === 'llama') return ['groq', 'gemini', 'cerebras', 'openrouter', 'mistral'];
-  if (['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference)) {
+  if (['pro', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference)) {
     return ['gemini', 'groq', 'openrouter', 'cerebras', 'mistral'];
   }
-  if (['flash', 'auto', 'pro'].includes(preference)) return ['gemini', 'groq', 'cerebras', 'openrouter', 'mistral'];
+  if (['flash', 'auto'].includes(preference)) return ['gemini', 'groq', 'cerebras', 'openrouter', 'mistral'];
   const mapped = ['groq', 'openrouter', 'cerebras', 'gemini', 'mistral'].includes(preference) ? preference : null;
   if (search) return ['gemini', 'openrouter', ...CHAT_ORDER.filter(provider => provider !== 'gemini' && provider !== 'openrouter')];
   return mapped ? [mapped, ...CHAT_ORDER.filter(provider => provider !== mapped)] : CHAT_ORDER;
 }
 
 async function generateChat(body) {
-  const realTimeIso = new Date().toISOString();
-  const dateContext = `You are aware of the real-time calendar date. Today's date is dynamically provided in system parameters.\nCurrent real-time date and UTC timestamp: ${realTimeIso} (UTC year ${new Date(realTimeIso).getUTCFullYear()}).`;
-  const systemPrompt = `${String(body.systemPrompt || 'You are Zulora AI. Give accurate, helpful answers with clear formatting.').slice(0, 8_000)}\n\n${dateContext}`;
+  const systemPrompt = buildSystemPrompt(body.contextMemory);
   const messages = plainMessages(body.messages, systemPrompt);
   const attachments = attachmentParts(body.attachments);
   if (body.attachments?.length && !attachments.length) throw new Error('The attached image format is unsupported. Use PNG, JPEG, WebP, or GIF.');
   const vision = attachments.length > 0;
-  const requestedPreference = String(body.modelPreference || 'auto').toLowerCase();
+  const requestedPreference = normalizeModelPreference(body.modelPreference || body.model);
   const latestUserPrompt = [...messages].reverse().find(message => message.role === 'user')?.content || '';
   const coding = Boolean(body.coding) || /(?:\bcode\b|\bhtml\b|\bcss\b|\bjs\b|\bjavascript\b|\breact\b|\bfunction\b|\bbuild\s+(?:a\s+)?ui\b)/i.test(latestUserPrompt);
   const complex = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(requestedPreference) ||
@@ -364,12 +383,25 @@ async function generateChat(body) {
   const preference = requestedPreference === 'auto' ? (coding ? 'llama' : complex ? 'pro' : 'flash') : requestedPreference;
   const useProModel = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference);
   const geminiModel = useProModel ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
-  const groqModel = preference === 'flash' ? 'llama-3.1-8b-instant' : 'llama-3.3-70b-versatile';
-  const order = chooseChatOrder(preference, vision, Boolean(body.enableWebSearch));
+  const groqModel = preference === 'think' ? 'openai/gpt-oss-120b' : preference === 'flash' ? 'llama-3.1-8b-instant' : 'llama-3.3-70b-versatile';
+  const order = chooseChatOrder(preference, vision, Boolean(body.enableWebSearch), requestedPreference === 'auto');
   for (const provider of order) {
     let result = provider === 'gemini'
       ? await tryGemini(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: vision && !useProModel ? 'gemini-2.5-flash' : geminiModel, coding })
-      : await tryOpenAiProvider(provider, messages, { attachments: body.attachments, vision, coding, model: provider === 'groq' ? groqModel : undefined });
+      : await tryOpenAiProvider(provider, messages, {
+        attachments: body.attachments,
+        vision,
+        coding,
+        model: provider === 'groq'
+          ? groqModel
+          : provider === 'openrouter' && preference === 'think'
+            ? 'deepseek/deepseek-r1'
+            : provider === 'openrouter' && preference === 'llama'
+              ? 'meta-llama/llama-3.3-70b-instruct'
+              : undefined,
+        reasoning: preference === 'think' && provider === 'groq',
+        maxTokens: coding || useProModel ? 8192 : 4096
+      });
     if (result) return result;
   }
   if (!availableProviders().length) throw new Error('No text-generation providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.');
@@ -517,26 +549,6 @@ async function huggingfaceImage(prompt) {
   return responseImage(response);
 }
 
-async function huggingfaceVideo(prompt, deadline) {
-  if (!providerKeys.huggingface) return null;
-  const remaining = Math.max(0, deadline - Date.now());
-  if (remaining < 2_000) return null;
-  const response = await fetchWithTimeout('https://router.huggingface.co/hf-inference/models/tencent/HunyuanVideo', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${providerKeys.huggingface}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ inputs: prompt, parameters: { num_frames: 49 } })
-  }, Math.min(35_000, remaining));
-  const contentType = response.headers.get('content-type') || '';
-  if (!response.ok) {
-    const detail = contentType.includes('json') ? await response.json().catch(() => ({})) : {};
-    throw new Error(detail.error || `Hugging Face video request failed (HTTP ${response.status}).`);
-  }
-  if (!contentType.startsWith('video/') && contentType !== 'application/octet-stream') throw new Error('Hugging Face returned an unsupported video response.');
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length < 10_000 || bytes.length > 2_500_000) throw new Error('Hugging Face video output is too large for the server response.');
-  return `data:${contentType.startsWith('video/') ? contentType.split(';')[0] : 'video/mp4'};base64,${bytes.toString('base64')}`;
-}
-
 function falImageSize(aspectRatio) {
   return ({
     '1:1': 'square',
@@ -626,51 +638,66 @@ async function falVideo(prompt, duration, modelId, deadline) {
 
 async function pollinationsVideo(prompt, duration, aspectRatio, deadline) {
   const key = providerKeys.pollinations;
-  if (!key) return null;
   const remaining = () => Math.max(0, deadline - Date.now());
   if (remaining() < 2_000) return null;
-  const url = `https://gen.pollinations.ai/video/${encodeURIComponent(prompt)}?model=google/veo-3.1-fast&duration=${Math.min(Number(duration) || 4, 8)}&aspectRatio=${encodeURIComponent(aspectRatio || '16:9')}`;
-  const response = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${key}` } }, Math.min(20_000, remaining()));
-  if (!response.ok) throw new Error('Pollinations video generation failed.');
-  const contentType = response.headers.get('content-type') || '';
-  if (contentType.includes('json')) {
-    const data = await response.json();
-    if (data.url) return data.url;
-    throw new Error('Pollinations returned no video URL.');
+  const encodedPrompt = encodeURIComponent(prompt);
+  const common = `duration=${Math.min(Number(duration) || 4, 8)}&aspectRatio=${encodeURIComponent(aspectRatio || '16:9')}`;
+  const urls = [
+    ...(key ? [`https://gen.pollinations.ai/video/${encodedPrompt}?model=google/veo-3.1-fast&${common}`] : []),
+    `https://image.pollinations.ai/prompt/${encodedPrompt}?model=video&${common}`
+  ];
+  let lastError;
+  for (const url of urls) {
+    if (remaining() < 2_000) break;
+    try {
+      const headers = key && url.startsWith('https://gen.pollinations.ai/') ? { Authorization: `Bearer ${key}` } : {};
+      const response = await fetchWithTimeout(url, { headers }, Math.min(key ? 28_000 : 20_000, remaining()));
+      if (!response.ok) throw new Error(`Pollinations video generation failed (HTTP ${response.status}).`);
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('json')) {
+        const data = await response.json();
+        const candidate = data.video?.url || data.video_url || data.mediaUrl || data.url;
+        if (candidate && new URL(candidate).protocol === 'https:') return candidate;
+        throw new Error('Pollinations returned no valid video URL.');
+      }
+      if (!contentType.startsWith('video/')) throw new Error('Pollinations returned an unsupported video response.');
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length < 1 || bytes.length > 30 * 1024 * 1024) throw new Error('Pollinations video output is outside the supported size.');
+      const mimeType = contentType.split(';')[0];
+      const form = new FormData();
+      form.set('file', new Blob([bytes], { type: mimeType }), 'zulora-generated.mp4');
+      if (remaining() > 1_500) {
+        const uploadHeaders = key ? { Authorization: `Bearer ${key}` } : {};
+        const upload = await fetchWithTimeout('https://media.pollinations.ai/upload', { method: 'POST', headers: uploadHeaders, body: form }, Math.min(8_000, remaining()));
+        if (upload.ok) {
+          const stored = await upload.json();
+          const storedUrl = stored.url || stored.mediaUrl;
+          if (storedUrl && new URL(storedUrl).protocol === 'https:') return storedUrl;
+        }
+      }
+      if (bytes.length <= 2_500_000) return `data:${mimeType};base64,${bytes.toString('base64')}`;
+      if (!key) return url;
+      throw new Error('Could not store the generated video for playback.');
+    } catch (error) {
+      lastError = error;
+    }
   }
-  if (!contentType.startsWith('video/')) throw new Error('Pollinations returned an unsupported video response.');
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length < 1 || bytes.length > 30 * 1024 * 1024) throw new Error('Pollinations video output is outside the supported size.');
-  const form = new FormData();
-  form.set('file', new Blob([bytes], { type: contentType.split(';')[0] }), 'zulora-generated.mp4');
-  if (remaining() < 1_500) throw new Error('Could not store the generated video before the request deadline.');
-  const upload = await fetchWithTimeout('https://media.pollinations.ai/upload', { method: 'POST', headers: { Authorization: `Bearer ${key}` }, body: form }, Math.min(8_000, remaining()));
-  if (upload.ok) {
-    const stored = await upload.json();
-    if (stored.url || stored.mediaUrl) return stored.url || stored.mediaUrl;
-  }
-  if (bytes.length <= 2_500_000) return `data:${contentType.split(';')[0]};base64,${bytes.toString('base64')}`;
-  throw new Error('Could not store the generated video for playback.');
+  throw lastError || new Error('Pollinations video generation timed out.');
 }
 
 async function generateVideo(body) {
   const prompt = String(body.prompt || '').trim();
   if (!prompt) throw new Error('Write a prompt before generating a video.');
-  if (!providerKeys.fal && !providerKeys.huggingface && !providerKeys.replicate && !providerKeys.pollinations) {
-    throw new Error('No video-generation providers are configured. Add Fal AI or Hugging Face video credentials to the server environment.');
-  }
   const enriched = [prompt, body.cameraAngle ? `Camera movement: ${body.cameraAngle}.` : '', body.motionSpeed ? `Motion intensity: ${body.motionSpeed}/10.` : ''].filter(Boolean).join(' ');
   const deadline = Date.now() + 48_000;
   const falModels = [
     ['fal-ai/luma-dream-machine/ray-2-flash', 'Luma Dream Machine Ray 2 Flash'],
-    ['fal-ai/hunyuan-video-v1.5/text-to-video', 'HunyuanVideo 1.5'],
-    ['fal-ai/cogvideox-5b', 'CogVideoX-5B']
+    ['fal-ai/hunyuan-video-v1.5/text-to-video', 'HunyuanVideo 1.5']
   ];
   const attempts = [
+    ['Pollinations', 'veo-3.1-fast', () => pollinationsVideo(enriched, body.duration, body.aspectRatio, deadline)],
     ...falModels.map(([modelId, model]) => ['Fal AI', model, () => falVideo(enriched, body.duration, modelId, deadline)]),
-    ['Hugging Face', 'HunyuanVideo', () => huggingfaceVideo(enriched, deadline)],
-    ['Replicate', 'minimax-video-01', () => replicateVideo(enriched, deadline)],
-    ['Pollinations', 'veo-3.1-fast', () => pollinationsVideo(enriched, body.duration, body.aspectRatio, deadline)]
+    ['Replicate', 'minimax-video-01', () => replicateVideo(enriched, deadline)]
   ];
   for (const [provider, model, run] of attempts) {
     if (Date.now() >= deadline) break;
@@ -682,7 +709,7 @@ async function generateVideo(body) {
       }
     } catch (error) { console.warn(`${provider} ${model} video attempt failed:`, error.message); }
   }
-  throw new Error('All configured video providers are unavailable.');
+  throw new Error('Pollinations, Fal AI, and Replicate video providers are unavailable. Configure POLLINATIONS_API_KEY, FAL_API_KEY, or REPLICATE_API_TOKEN on the server, then retry.');
 }
 
 export default async function handler(req, res) {
@@ -752,7 +779,7 @@ export default async function handler(req, res) {
       }
     }
 
-    if (type === 'chat' && ['think', 'high_reason', 'pro_314', 'pro_ultra'].includes(String(body.modelPreference || '').toLowerCase())) {
+    if (type === 'chat' && normalizeModelPreference(body.modelPreference || body.model) === 'think') {
       const normalizedTier = String(profileTier || '').toLowerCase().replace(/[ _-]/g, '');
       if (profileTier && !normalizedTier.includes('pro') && !normalizedTier.includes('ultra')) {
         return safeError(res, 403, 'The Zulora 3.5 Pro Ultra model requires a Pro or Ultra subscription.', { upgradeRequired: true });

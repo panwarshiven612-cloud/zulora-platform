@@ -1,7 +1,17 @@
 const providers = {
-  gemini: Array.from({ length: 7 }, (_, index) => process.env[`GEMINI_API_KEY_${index + 1}`] || process.env[`GEMINI_KEY_${index + 1}`]),
-  groq: [process.env.GROQ_API_KEY],
-  openrouter: [process.env.OPENROUTER_API_KEY_1, process.env.OPENROUTER_API_KEY_2],
+  gemini: [
+    process.env.GEMINI_API_KEY,
+    process.env.GOOGLE_API_KEY,
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+    ...Array.from({ length: 7 }, (_, index) => process.env[`GEMINI_API_KEY_${index + 1}`] || process.env[`GEMINI_KEY_${index + 1}`])
+  ],
+  groq: [process.env.GROQ_API_KEY || process.env.GROQ_KEY],
+  openrouter: [
+    process.env.OPENROUTER_API_KEY,
+    process.env.OPEN_ROUTER_API_KEY,
+    process.env.OPENROUTER_API_KEY_1,
+    process.env.OPENROUTER_API_KEY_2
+  ],
   cerebras: [process.env.CEREBRAS_API_KEY],
   mistral: [process.env.MISTRAL_API_KEY]
 };
@@ -10,9 +20,9 @@ const cursors = Object.fromEntries(Object.keys(providers).map(name => [name, 0])
 const failures = Object.fromEntries(Object.keys(providers).map(name => [name, new Map()]));
 
 export const providerKeys = Object.freeze({
-  pollinations: process.env.POLLINATIONS_API_KEY || process.env.POLLINATIONS_KEY || process.env.VITE_POLLINATIONS_KEY || '',
+  pollinations: process.env.POLLINATIONS_API_KEY || process.env.POLLINATIONS_KEY || '',
   huggingface: process.env.HF_API_KEY || process.env.HUGGINGFACE_API_KEY || process.env.VITE_HUGGINGFACE_KEY || '',
-  fal: process.env.FAL_API_KEY || process.env.VITE_FAL_KEY || '',
+  fal: process.env.FAL_API_KEY || process.env.FAL_KEY || '',
   cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID || '',
   cloudflareToken: process.env.CLOUDFLARE_API_TOKEN || process.env.CLOUDFLARE_TOKEN || '',
   replicate: process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_API_KEY || ''
