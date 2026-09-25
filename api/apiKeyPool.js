@@ -1,31 +1,40 @@
+const readKeys = (...names) => [...new Set(names.map(name => String(process.env[name] || '').trim()).filter(Boolean))];
+const readFirstKey = (...names) => readKeys(...names)[0] || '';
+
+// Keep server-only names first. VITE_* fallbacks preserve older deployments, but Vite exposes them in browser builds.
+const numberedGeminiKeys = Array.from({ length: 7 }, (_, index) => [
+  `GEMINI_API_KEY_${index + 1}`,
+  `GEMINI_KEY_${index + 1}`,
+  `VITE_GEMINI_KEY_${index + 1}`,
+  `VITE_GEMINI_API_KEY_${index + 1}`
+]).flat();
+
 const providers = {
-  gemini: [
-    process.env.GEMINI_API_KEY,
-    process.env.GOOGLE_API_KEY,
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY,
-    ...Array.from({ length: 7 }, (_, index) => process.env[`GEMINI_API_KEY_${index + 1}`] || process.env[`GEMINI_KEY_${index + 1}`])
-  ],
-  groq: [process.env.GROQ_API_KEY || process.env.GROQ_KEY],
-  openrouter: [
-    process.env.OPENROUTER_API_KEY,
-    process.env.OPEN_ROUTER_API_KEY,
-    process.env.OPENROUTER_API_KEY_1,
-    process.env.OPENROUTER_API_KEY_2
-  ],
-  cerebras: [process.env.CEREBRAS_API_KEY],
-  mistral: [process.env.MISTRAL_API_KEY]
+  gemini: readKeys(
+    'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY',
+    'VITE_GEMINI_API_KEY', 'VITE_GOOGLE_API_KEY', 'VITE_GOOGLE_GENERATIVE_AI_API_KEY',
+    ...numberedGeminiKeys
+  ),
+  groq: readKeys('GROQ_API_KEY', 'GROQ_KEY', 'VITE_GROQ_API_KEY', 'VITE_GROQ_KEY'),
+  openrouter: readKeys(
+    'OPENROUTER_API_KEY', 'OPEN_ROUTER_API_KEY', 'OPENROUTER_API_KEY_1', 'OPENROUTER_API_KEY_2',
+    'VITE_OPENROUTER_API_KEY', 'VITE_OPENROUTER_KEY', 'VITE_OPENROUTER_API_KEY_1',
+    'VITE_OPENROUTER_API_KEY_2', 'VITE_OPENROUTER_KEY_1', 'VITE_OPENROUTER_KEY_2'
+  ),
+  cerebras: readKeys('CEREBRAS_API_KEY', 'VITE_CEREBRAS_API_KEY', 'VITE_CEREBRAS_KEY'),
+  mistral: readKeys('MISTRAL_API_KEY', 'VITE_MISTRAL_API_KEY', 'VITE_MISTRAL_KEY')
 };
 
 const cursors = Object.fromEntries(Object.keys(providers).map(name => [name, 0]));
 const failures = Object.fromEntries(Object.keys(providers).map(name => [name, new Map()]));
 
 export const providerKeys = Object.freeze({
-  pollinations: process.env.POLLINATIONS_API_KEY || process.env.POLLINATIONS_KEY || '',
+  pollinations: readFirstKey('POLLINATIONS_API_KEY', 'POLLINATIONS_KEY', 'VITE_POLLINATIONS_API_KEY', 'VITE_POLLINATIONS_KEY'),
   huggingface: process.env.HF_API_KEY || process.env.HUGGINGFACE_API_KEY || process.env.VITE_HUGGINGFACE_KEY || '',
-  fal: process.env.FAL_API_KEY || process.env.FAL_KEY || '',
+  fal: readFirstKey('FAL_API_KEY', 'FAL_KEY', 'VITE_FAL_API_KEY', 'VITE_FAL_KEY'),
   cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID || '',
   cloudflareToken: process.env.CLOUDFLARE_API_TOKEN || process.env.CLOUDFLARE_TOKEN || '',
-  replicate: process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_API_KEY || ''
+  replicate: readFirstKey('REPLICATE_API_TOKEN', 'REPLICATE_API_KEY', 'VITE_REPLICATE_API_TOKEN', 'VITE_REPLICATE_KEY')
 });
 
 export const apiKeyPool = {
