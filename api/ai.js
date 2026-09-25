@@ -16,7 +16,6 @@ const PLAN_LIMITS = {
 };
 let cachedFirestoreToken = null;
 let cachedFirebaseCertificates = null;
-let firestoreAdminWarningLogged = false;
 
 const json = (res, status, payload) => res.status(status).json(payload);
 const bearer = req => String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i)?.[1] || '';
@@ -26,12 +25,6 @@ function firestoreAdminCredentials() {
   const email = process.env.FIREBASE_ADMIN_CLIENT_EMAIL || process.env.FIREBASE_CLIENT_EMAIL;
   const privateKey = (process.env.FIREBASE_ADMIN_PRIVATE_KEY || process.env.FIREBASE_PRIVATE_KEY)?.replace(/\\n/g, '\n');
   return email && privateKey ? { email, privateKey } : null;
-}
-
-function warnFirestoreTrackingUnavailable(reason) {
-  if (firestoreAdminWarningLogged) return;
-  firestoreAdminWarningLogged = true;
-  console.warn(`Firestore usage tracking unavailable; generation will continue without server-side usage tracking. ${reason}`);
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 20_000) {
@@ -274,7 +267,7 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
       if (provider === 'openrouter') Object.assign(headers, { 'HTTP-Referer': 'https://zulora.in', 'X-Title': 'Zulora AI' });
       const response = await fetchProviderWithRetry(config.url, {
         method: 'POST', headers,
-        body: JSON.stringify({ model: config.model, messages: contentMessages, temperature: 0.7, max_tokens: 2048 })
+        body: JSON.stringify({ model: config.model, messages: contentMessages, temperature: 0.7, max_tokens: options.coding ? 8192 : 4096 })
       }, 15_000);
       if (response.ok) {
         const data = await response.json();
@@ -312,7 +305,7 @@ async function tryGemini(messages, options = {}) {
           contents,
           ...(systemPrompt ? { system_instruction: { parts: [{ text: systemPrompt }] } } : {}),
           ...(options.enableWebSearch ? { tools: [{ google_search: {} }] } : {}),
-          generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
+          generationConfig: { temperature: 0.7, maxOutputTokens: options.coding ? 8192 : (options.model === 'gemini-2.5-pro' ? 8192 : 4096) }
         })
       }, 16_000);
       if (response.ok) {
@@ -338,29 +331,39 @@ async function tryGemini(messages, options = {}) {
 }
 
 function chooseChatOrder(preference, vision, search) {
+  if (vision) return ['gemini'];
+  if (preference === 'llama') return ['groq', 'gemini', 'cerebras', 'openrouter', 'mistral'];
   if (['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference)) {
     return ['gemini', 'groq', 'openrouter', 'cerebras', 'mistral'];
   }
-  if (['flash', 'pro'].includes(preference)) return ['gemini', 'groq', 'cerebras', 'openrouter', 'mistral'];
+  if (['flash', 'auto', 'pro'].includes(preference)) return ['gemini', 'groq', 'cerebras', 'openrouter', 'mistral'];
   const mapped = ['groq', 'openrouter', 'cerebras', 'gemini', 'mistral'].includes(preference) ? preference : null;
-  if (vision || search) return ['gemini', 'openrouter', ...CHAT_ORDER.filter(provider => provider !== 'gemini' && provider !== 'openrouter')];
+  if (search) return ['gemini', 'openrouter', ...CHAT_ORDER.filter(provider => provider !== 'gemini' && provider !== 'openrouter')];
   return mapped ? [mapped, ...CHAT_ORDER.filter(provider => provider !== mapped)] : CHAT_ORDER;
 }
 
 async function generateChat(body) {
-  const messages = plainMessages(body.messages, String(body.systemPrompt || 'You are Zulora AI. Give accurate, helpful answers with clear formatting.').slice(0, 8_000));
+  const realTimeIso = new Date().toISOString();
+  const dateContext = `You are aware of the real-time calendar date. Today's date is dynamically provided in system parameters.\nCurrent real-time date and UTC timestamp: ${realTimeIso} (UTC year ${new Date(realTimeIso).getUTCFullYear()}).`;
+  const systemPrompt = `${String(body.systemPrompt || 'You are Zulora AI. Give accurate, helpful answers with clear formatting.').slice(0, 8_000)}\n\n${dateContext}`;
+  const messages = plainMessages(body.messages, systemPrompt);
   const attachments = attachmentParts(body.attachments);
   if (body.attachments?.length && !attachments.length) throw new Error('The attached image format is unsupported. Use PNG, JPEG, WebP, or GIF.');
   const vision = attachments.length > 0;
-  const preference = String(body.modelPreference || 'pro').toLowerCase();
-  const complex = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference);
-  const geminiModel = complex ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+  const requestedPreference = String(body.modelPreference || 'auto').toLowerCase();
+  const latestUserPrompt = [...messages].reverse().find(message => message.role === 'user')?.content || '';
+  const coding = Boolean(body.coding) || /(?:\bcode\b|\bhtml\b|\bcss\b|\bjs\b|\bjavascript\b|\breact\b|\bfunction\b|\bbuild\s+(?:a\s+)?ui\b)/i.test(latestUserPrompt);
+  const complex = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(requestedPreference) ||
+    /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(latestUserPrompt);
+  const preference = requestedPreference === 'auto' ? (coding ? 'llama' : complex ? 'pro' : 'flash') : requestedPreference;
+  const useProModel = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference);
+  const geminiModel = useProModel ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
   const groqModel = preference === 'flash' ? 'llama-3.1-8b-instant' : 'llama-3.3-70b-versatile';
   const order = chooseChatOrder(preference, vision, Boolean(body.enableWebSearch));
   for (const provider of order) {
     let result = provider === 'gemini'
-      ? await tryGemini(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: geminiModel })
-      : await tryOpenAiProvider(provider, messages, { attachments: body.attachments, vision, model: provider === 'groq' ? groqModel : undefined });
+      ? await tryGemini(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: vision && !useProModel ? 'gemini-2.5-flash' : geminiModel, coding })
+      : await tryOpenAiProvider(provider, messages, { attachments: body.attachments, vision, coding, model: provider === 'groq' ? groqModel : undefined });
     if (result) return result;
   }
   if (!availableProviders().length) throw new Error('No text-generation providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.');
@@ -408,7 +411,7 @@ async function geminiImageEdit(prompt, sourceImage, aspectRatio) {
       const response = await fetchWithTimeout('https://generativelanguage.googleapis.com/v1beta/interactions', {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
         body: JSON.stringify({ model: 'gemini-3.1-flash-image', input: [
-          { type: 'text', text: `Edit the supplied reference image according to this request. Keep the main subject recognizable unless asked otherwise. Request: ${prompt}` },
+          { type: 'text', text: `${prompt}` },
           { type: 'image', mime_type: source.mimeType, data: source.data }
         ], response_format: { type: 'image', aspect_ratio: aspectRatio || '1:1' } })
       }, 20_000);
@@ -564,7 +567,7 @@ async function generateImage(body) {
     ? availableProviders().includes('gemini') || Boolean(providerKeys.pollinations)
     : Boolean(providerKeys.pollinations || providerKeys.huggingface || providerKeys.fal || (providerKeys.cloudflareAccountId && providerKeys.cloudflareToken) || providerKeys.replicate);
   if (!hasImageProvider) throw new Error(`No image-${sourceImage ? 'editing' : 'generation'} providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.`);
-  const fullPrompt = [body.style && body.style !== 'Photorealistic' ? `Style: ${body.style}.` : '', prompt, body.negativePrompt ? `Avoid: ${String(body.negativePrompt).slice(0, 1000)}.` : ''].filter(Boolean).join(' ');
+  const fullPrompt = prompt;
   const attempts = [];
   if (sourceImage) attempts.push(['Gemini 3.1 Flash Image', () => geminiImageEdit(fullPrompt, sourceImage, body.aspectRatio)]);
   attempts.push(['Pollinations', () => pollinationsImage(fullPrompt, sourceImage, body.aspectRatio, body.seed)]);
@@ -684,7 +687,9 @@ export default async function handler(req, res) {
   }
   if (!body || typeof body !== 'object') return safeError(res, 400, 'Invalid request.');
   const usageOnly = body.action === 'usage';
-  const type = usageOnly
+  const allowanceOnly = body.action === 'allowance';
+  const quotaOnly = usageOnly || allowanceOnly;
+  const type = quotaOnly
     ? (['chat', 'image', 'video'].includes(body.usageType) ? body.usageType : null)
     : body.action === 'chat' ? 'chat' : body.action === 'image' ? 'image' : body.action === 'video' ? 'video' : null;
   if (!type) return safeError(res, 400, 'Unsupported generation action.');
@@ -696,8 +701,16 @@ export default async function handler(req, res) {
   if (!uid) return safeError(res, 401, 'Your sign-in session has expired. Sign in again.');
 
   try {
+    if (allowanceOnly) {
+      if (!firestoreAdminCredentials()) return safeError(res, 503, 'Secure Firestore quota validation is unavailable. Configure Firebase Admin credentials and retry.');
+      const before = await checkUsage(uid, type);
+      if (before.error) return safeError(res, 503, before.error);
+      if (!before.allowed) return safeError(res, 403, `${type} limit reached. Upgrade your subscription to continue.`, { limit: before.limit, used: before.current, planTier: before.planTier });
+      return json(res, 200, { allowance: { type, allowed: true, used: before.current, limit: before.limit, planTier: before.planTier } });
+    }
+
     if (usageOnly) {
-      if (!firestoreAdminCredentials()) return json(res, 200, { usage: { type, tracked: false } });
+      if (!firestoreAdminCredentials()) return safeError(res, 503, 'Secure Firestore usage tracking is unavailable. Configure Firebase Admin credentials and retry.');
       const before = await checkUsage(uid, type);
       if (before.error) return safeError(res, 503, before.error);
       if (!before.allowed) return safeError(res, 403, `${type} limit reached. Upgrade your subscription to continue.`, { limit: before.limit, used: before.current, planTier: before.planTier });
@@ -709,20 +722,20 @@ export default async function handler(req, res) {
     let usageTrackingAvailable = false;
     let profileTier = null;
     if (!firestoreAdminCredentials()) {
-      warnFirestoreTrackingUnavailable('Admin service-account email or private key is not configured.');
+      return safeError(res, 503, 'Secure Firestore quota validation is unavailable. Configure Firebase Admin credentials and retry.');
     } else {
       try {
         const before = await checkUsage(uid, type);
         profileTier = before.planTier;
         if (before.error) {
-          warnFirestoreTrackingUnavailable(before.error);
+          return safeError(res, 503, before.error);
         } else if (!before.allowed) {
           return safeError(res, 403, `${type} limit reached. Upgrade your subscription to continue.`, { limit: before.limit, used: before.current, planTier: before.planTier });
         } else {
           usageTrackingAvailable = true;
         }
       } catch (error) {
-        warnFirestoreTrackingUnavailable(error?.message || 'Could not read the user usage record.');
+        return safeError(res, 503, `Could not validate Firestore usage limits. ${error?.message || 'Please retry.'}`);
       }
     }
 
@@ -746,14 +759,14 @@ export default async function handler(req, res) {
         }
         usage = { type, tracked: true, used: updated.current, limit: updated.limit };
       } catch (error) {
-        warnFirestoreTrackingUnavailable(error?.message || 'Could not save the user usage record.');
+        return safeError(res, 503, `Could not save the Firestore usage update. ${error?.message || 'Please retry.'}`);
       }
     }
     return json(res, 200, { ...output, usage });
   } catch (error) {
     const message = error?.message || 'Generation failed. Please retry.';
     console.error('Zulora generation request failed:', type, message);
-    const isSetup = /FIREBASE_|Firestore Admin|Firestore .*missing|User profile was not found|No (?:text|video)-generation providers are configured|No image-(?:generation|editing) providers are configured/.test(message);
+    const isSetup = /FIREBASE_|Firebase|Firestore|usage service|User profile was not found|No (?:text|video)-generation providers are configured|No image-(?:generation|editing) providers are configured/.test(message);
     return safeError(res, isSetup ? 503 : 502, message);
   }
 }

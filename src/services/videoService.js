@@ -1,4 +1,4 @@
-import { requestGeneration, trackSuccessfulUsage, GenerationApiError } from './generationApi';
+import { requestGeneration, trackSuccessfulUsage, checkGenerationAllowance, GenerationApiError } from './generationApi';
 
 const clientEnv = import.meta.env || {};
 const FAL_KEY = String(clientEnv.VITE_FAL_KEY || '').trim();
@@ -171,6 +171,14 @@ export async function generateVideo(arg1, arg2 = {}) {
     }
   }
 
+  if (FAL_KEY || HUGGINGFACE_KEY) {
+    const allowance = await checkGenerationAllowance('video', options.currentUser);
+    if (allowance && !allowance.allowed) {
+      const error = new GenerationApiError('Video limit reached. Upgrade your subscription to continue.', 403, allowance);
+      throw error;
+    }
+  }
+
   const errors = [];
   if (FAL_KEY) {
     for (const model of FAL_MODELS) {
@@ -186,6 +194,7 @@ export async function generateVideo(arg1, arg2 = {}) {
           usage: { type: 'video', tracked: false }
         });
       } catch (error) {
+        if (error instanceof GenerationApiError) throw error;
         errors.push(`${model.model}: ${error.message}`);
         console.warn(`[Video] ${model.model} failed:`, error.message);
       }
@@ -206,6 +215,7 @@ export async function generateVideo(arg1, arg2 = {}) {
           usage: { type: 'video', tracked: false }
         });
       } catch (error) {
+        if (error instanceof GenerationApiError) throw error;
         errors.push(`${model.model}: ${error.message}`);
         console.warn(`[Video] Hugging Face ${model.model} failed:`, error.message);
       }

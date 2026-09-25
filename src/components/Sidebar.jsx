@@ -465,7 +465,7 @@ export const Sidebar = ({
             className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" 
             onClick={onCloseMobile}
           />
-          <div className="relative w-80 max-w-[85vw] h-full z-10 shadow-2xl animate-fade-in">
+          <div className="relative w-80 max-w-[85vw] h-dvh z-10 shadow-2xl animate-fade-in">
             {sidebarContent}
             <button
               onClick={onCloseMobile}

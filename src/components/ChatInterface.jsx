@@ -53,6 +53,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { apiRouter, MODEL_TIERS } from '../services/apiRouter';
 import { firestoreService, deriveChatTitle } from '../services/firestoreService';
+import { imageFileToDataUrl } from '../services/imageUtils';
 
 /* ============================================================
    CONSTANTS
@@ -65,11 +66,11 @@ const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
   ['json', json], ['css', css], ['sql', sql], ['yaml', yaml], ['markdown', markdown]
 ].forEach(([name, language]) => SyntaxHighlighter.registerLanguage(name, language));
 
-const MODEL_OPTIONS = Object.values(MODEL_TIERS).map(t => ({
+const MODEL_OPTIONS = ['auto', 'flash', 'llama', 'think'].map(id => MODEL_TIERS[id]).map(t => ({
   id: t.id,
   label: t.label,
   shortLabel: t.shortLabel,
-  icon: t.id === 'flash' ? Zap : t.id === 'think' ? FlaskConical : Sparkles,
+  icon: t.id === 'flash' ? Zap : t.id === 'think' ? FlaskConical : t.id === 'llama' ? Code2 : Sparkles,
   color: t.color,
   badge: t.badge,
   tier: t.tier,
@@ -446,7 +447,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
   const [messages, setMessages] = useState([]);
   const [inputPrompt, setInputPrompt] = useState('');
   const [loading, setLoading] = useState(false);
-  const [modelPreference, setModelPreference] = useState('pro');
+  const [modelPreference, setModelPreference] = useState('auto');
   const [enableWebSearch, setEnableWebSearch] = useState(false);
   const [attachments, setAttachments] = useState([]);
   const [isListening, setIsListening] = useState(false);
@@ -594,20 +595,32 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
       return;
     }
 
-    // Read any attached files and append their content to the prompt
+    // Keep image data separate from prompt text; only text document contents are appended.
     let fullPrompt = basePrompt;
-    if (attachments.length > 0) {
-      const fileContents = await Promise.all(
-        attachments.map(async (file) => {
+    let imagePayloads = [];
+    try {
+      const imageFiles = attachments.filter(file => file.type?.startsWith('image/'));
+      const textFiles = attachments.filter(file => !file.type?.startsWith('image/'));
+      imagePayloads = await Promise.all(imageFiles.map(async file => {
+        const base64 = await imageFileToDataUrl(file, { maxDimension: 1536, maxBytes: 1_200_000 });
+        const mimeType = base64.match(/^data:(image\/[^;]+);base64,/)?.[1] || 'image/jpeg';
+        return { name: file.name, mimeType, base64 };
+      }));
+      if (textFiles.length > 0) {
+        const fileContents = await Promise.all(textFiles.map(async file => {
           try {
             const content = await apiRouter.readFileContent(file);
-            return `\n\n📎 **File: ${file.name}**\n\`\`\`\n${content}\n\`\`\``;
+            return `\n\n**File: ${file.name}**\n\`\`\`\n${content}\n\`\`\``;
           } catch (err) {
-            return `\n\n📎 [Could not read ${file.name}: ${err.message}]`;
+            return `\n\n[Could not read ${file.name}: ${err.message}]`;
           }
-        })
-      );
-      fullPrompt = basePrompt + fileContents.join('');
+        }));
+        fullPrompt = basePrompt + fileContents.join('');
+      }
+    } catch (error) {
+      sendingRef.current = false;
+      alert(error.message || 'Could not read the attached image. Please choose another file.');
+      return;
     }
 
     const userMsg = {
@@ -642,6 +655,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
           userId: currentUser?.uid,
           currentUser,
           contextMemory,
+          attachments: imagePayloads,
         }
       );
 
@@ -752,7 +766,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
       )}
 
       {/* ─── Input Area ─── */}
-      <div className="shrink-0 border-t border-slate-200/70 dark:border-slate-800/70 bg-white/80 dark:bg-[#070b14]/90 backdrop-blur-xl px-3 sm:px-4 md:px-6 py-3 sm:py-4">
+      <div className="shrink-0 border-t border-slate-200/70 dark:border-slate-800/70 bg-white/80 dark:bg-[#070b14]/90 backdrop-blur-xl px-2.5 sm:px-4 md:px-6 pt-3 sm:py-4 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-4">
 
         {/* Attachments Preview */}
         {attachments.length > 0 && (
@@ -770,7 +784,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
         )}
 
         {/* Input Box */}
-        <div className="glass-pearl dark:glass-dark rounded-2xl border border-slate-200/70 dark:border-slate-700/60 overflow-hidden transition-all duration-200 focus-within:border-sky-400/50 dark:focus-within:border-sky-500/40 focus-within:shadow-[0_0_0_3px_rgba(14,165,233,0.1)]">
+        <div className="glass-pearl dark:glass-dark rounded-2xl border border-slate-200/70 dark:border-slate-700/60 overflow-visible transition-all duration-200 focus-within:border-sky-400/50 dark:focus-within:border-sky-500/40 focus-within:shadow-[0_0_0_3px_rgba(14,165,233,0.1)]">
 
           {/* Text Area */}
           <textarea
@@ -786,9 +800,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
           />
 
           {/* Toolbar */}
-          <div className="flex items-center justify-between px-3 pb-3 gap-2">
+          <div className="flex items-center justify-between px-2 sm:px-3 pb-3 gap-1.5 sm:gap-2 min-w-0">
             {/* Left Tools */}
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 min-w-0">
               {/* Model Selector */}
               <div className="relative">
                 <button
@@ -796,11 +810,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
                   className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700/50 transition-all"
                 >
                   <selectedModel.icon className={`w-3.5 h-3.5 ${selectedModel.color}`} />
-                  <span>{selectedModel.shortLabel}</span>
+                  <span className="max-w-[4.5rem] truncate sm:max-w-none">{selectedModel.shortLabel}</span>
                   <ChevronDown className="w-3 h-3 text-slate-400" />
                 </button>
                 {showModelMenu && (
-                  <div className="absolute bottom-full mb-2 left-0 glass-elevated dark:glass-dark rounded-xl border border-white/80 dark:border-slate-700/60 shadow-2xl z-50 p-1.5 min-w-[160px] animate-scale-in">
+                  <div className="absolute bottom-full mb-2 left-0 glass-elevated dark:glass-dark rounded-xl border border-white/80 dark:border-slate-700/60 shadow-2xl z-50 p-1.5 w-[min(15rem,calc(100vw-1.5rem))] sm:w-auto sm:min-w-[180px] max-h-[min(60vh,24rem)] overflow-y-auto animate-scale-in">
                     {MODEL_OPTIONS.map(opt => (
                       <button
                         key={opt.id}
@@ -850,7 +864,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
               >
                 <Paperclip className="w-3.5 h-3.5" />
               </button>
-          <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileAttach} accept="image/*" />
+          <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileAttach} accept="image/*,.txt,.md,.csv,.json,.pdf" />
 
               {/* Mic */}
               <button

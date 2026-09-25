@@ -42,12 +42,18 @@ export async function requestGeneration(action, payload, currentUser) {
   return data;
 }
 
+export async function checkGenerationAllowance(type, currentUser) {
+  const result = await requestGeneration('allowance', { usageType: type }, currentUser);
+  return result?.allowance || null;
+}
+
 export async function trackSuccessfulUsage(type, currentUser) {
   try {
     const result = await requestGeneration('usage', { usageType: type }, currentUser);
     return result?.usage || { type, tracked: false };
   } catch (error) {
-    if (error.status !== 403) console.warn(`[Usage] Could not sync ${type} quota to the server:`, error.message);
+    if (error instanceof GenerationApiError && (error.status === 401 || error.status === 403 || error.status >= 500)) throw error;
+    console.warn(`[Usage] Could not sync ${type} quota to the server:`, error.message);
     return { type, tracked: false };
   }
 }
