@@ -49,6 +49,7 @@ import {
   ArrowDown,
   Plus,
   Lock,
+  Pencil,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { apiRouter, MODEL_TIERS } from '../services/apiRouter';
@@ -286,7 +287,7 @@ const TypingIndicator = () => (
 /* ============================================================
    MESSAGE BUBBLE
    ============================================================ */
-const MessageBubble = memo(({ message, index, onCopy, onSpeak, isSpeaking, copiedIndex }) => {
+const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeaking, copiedIndex }) => {
   const isUser = message.role === 'user';
   const timestamp = message.timestamp
     ? new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -354,6 +355,19 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, isSpeaking, copie
                 <span className="truncate">{source.title || source.url}</span>
               </a>
             ))}
+          </div>
+        )}
+
+        {isUser && (
+          <div className={`flex items-center px-1 transition-opacity duration-200 ${showActions ? 'opacity-100' : 'opacity-100 sm:opacity-0'}`}>
+            <button
+              onClick={() => onEdit(message.displayContent || message.content)}
+              className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-medium text-slate-400 transition hover:bg-slate-100 hover:text-sky-600 dark:hover:bg-slate-800/60 dark:hover:text-sky-400"
+              title="Edit and resend this prompt"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              <span>✏️ Edit Prompt</span>
+            </button>
           </div>
         )}
 
@@ -552,6 +566,15 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     });
   }, []);
 
+  const handleEditPrompt = useCallback(text => {
+    const value = String(text || '');
+    setInputPrompt(value);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(value.length, value.length);
+    });
+  }, []);
+
   const handleSpeak = useCallback((text, index) => {
     if (!window.speechSynthesis) return;
     if (isSpeakingIndex === index) {
@@ -736,6 +759,13 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
               streaming: true
             }]);
           },
+          onReset: () => {
+            streamedText = '';
+            clearTimeout(thinkingTimerRef.current);
+            setShowThinking(true);
+            thinkingTimerRef.current = setTimeout(() => setShowThinking(false), 7000);
+            setMessages(newMessages);
+          },
         }
       );
 
@@ -763,6 +793,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
         .join('\n\n');
       if (currentUser?.uid && generatedCode) {
         firestoreService.recordUserHistory(currentUser.uid, { type: 'code', prompt: basePrompt, code: generatedCode, model: result.model });
+        firestoreService.saveGeneratedCodeProject(currentUser.uid, { prompt: basePrompt, code: generatedCode, model: result.model })
+          .catch(error => console.warn('Generated chat code could not be saved to Studio projects:', error.message));
       }
 
       // Persist to Firestore
@@ -844,6 +876,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
                 index={i}
                 onCopy={handleCopy}
                 onSpeak={handleSpeak}
+                onEdit={handleEditPrompt}
                 isSpeaking={isSpeakingIndex}
                 copiedIndex={copiedIndex}
               />

@@ -180,6 +180,48 @@ export const firestoreService = {
     }
   },
 
+  setActiveCodeProject(uid, project) {
+    if (!uid || !project) return;
+    try { localStorage.setItem('zulora_active_code', JSON.stringify({ uid, project })); }
+    catch (error) { console.warn('Active code cache save failed:', error.message); }
+  },
+
+  getActiveCodeProject(uid) {
+    try {
+      const saved = JSON.parse(localStorage.getItem('zulora_active_code') || 'null');
+      if (!saved) return null;
+      if (saved.project) return !saved.uid || saved.uid === uid ? saved.project : null;
+      if (saved.uid && saved.uid !== uid) return null;
+      return saved.html || saved.code ? saved : null;
+    } catch { return null; }
+  },
+
+  async saveGeneratedCodeProject(uid, { prompt, code, model, projectId } = {}) {
+    if (!uid || !code) return null;
+    const source = String(code);
+    const files = { html: '', css: '', js: '', svg: '' };
+    for (const [, language = '', content = ''] of source.matchAll(/```([^\r\n]*)\r?\n([\s\S]*?)```/g)) {
+      const languageKey = language.trim().toLowerCase();
+      const key = ({ htm: 'html', javascript: 'js', mjs: 'js', xml: 'svg' })[languageKey] || languageKey;
+      if (key in files && !files[key]) files[key] = content.trim();
+    }
+    if (!files.html && !files.svg) {
+      files.html = source.match(/<!doctype html[\s\S]*|<html[\s\S]*/i)?.[0]?.replace(/```\s*$/, '').trim() || '';
+    }
+    if (files.svg && !files.html) files.html = files.svg;
+    if (files.html && !files.css) files.css = [...files.html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)].map(match => match[1].trim()).join('\n\n');
+    if (files.html && !files.js) files.js = [...files.html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)].map(match => match[1].trim()).filter(Boolean).join('\n\n');
+    if (!files.html) {
+      const escaped = source.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      files.html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Generated code</title></head><body><pre style="white-space:pre-wrap;overflow-wrap:anywhere;padding:24px">${escaped}</pre></body></html>`;
+    }
+    const id = projectId || `chat-code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const project = { id, title: deriveChatTitle(prompt), prompt: String(prompt || ''), code: source, ...files, model: String(model || ''), updatedAt: Date.now() };
+    this.setActiveCodeProject(uid, project);
+    await this.saveStudioProject(uid, project);
+    return project;
+  },
+
   async deleteStudioProject(uid, projectId) {
     if (!uid || !projectId) return;
     const key = `zulora_studio_projects_${uid}`;

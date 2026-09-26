@@ -10,7 +10,7 @@ export class GenerationApiError extends Error {
 }
 
 /** Calls the authenticated server route when it is available (production/Vercel). */
-export async function requestGeneration(action, payload, currentUser) {
+export async function requestGeneration(action, payload, currentUser, endpoint = '/api/ai') {
   if (!currentUser?.getIdToken) return null;
 
   let token;
@@ -22,7 +22,7 @@ export async function requestGeneration(action, payload, currentUser) {
 
   let response;
   try {
-    response = await fetch('/api/ai', {
+    response = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -57,7 +57,7 @@ export async function requestLimits(currentUser) {
 }
 
 /** Requests chat output as authenticated server-sent events and forwards each token to the UI. */
-export async function requestGenerationStream(payload, currentUser, onToken) {
+export async function requestGenerationStream(payload, currentUser, onToken, onReset) {
   if (!currentUser?.getIdToken) return null;
   let token;
   try { token = await currentUser.getIdToken(); }
@@ -102,6 +102,10 @@ export async function requestGenerationStream(payload, currentUser, onToken) {
       const tokenValue = String(value.token || '');
       if (tokenValue) receivedTokens = true;
       onToken?.(tokenValue);
+    }
+    if (event === 'reset') {
+      receivedTokens = false;
+      onReset?.();
     }
     if (event === 'done') finalResult = value;
     if (event === 'error') throw new GenerationApiError(value.error || 'The streamed response failed.', value.status || 502, value);

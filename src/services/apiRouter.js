@@ -564,6 +564,9 @@ export const apiRouter = {
         ? await requestGenerationStream(chatPayload, options.currentUser, token => {
           if (token) emittedStreamTokens = true;
           options.onToken(token);
+        }, () => {
+          emittedStreamTokens = false;
+          options.onReset?.();
         })
         : await requestGeneration('chat', chatPayload, options.currentUser);
       if (serverResult?.text) return await syncUsage(serverResult, 'chat', options.currentUser);

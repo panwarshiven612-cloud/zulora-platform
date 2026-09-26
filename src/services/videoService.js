@@ -27,16 +27,18 @@ async function pollinationsVideo(prompt, duration, aspectRatio) {
   const contentType = response.headers.get('content-type') || '';
   if (contentType.includes('json')) {
     const data = await response.json();
-    const videoUrl = data.video?.url || data.video_url || data.mediaUrl || data.url;
-    if (videoUrl && new URL(videoUrl).protocol === 'https:') return videoUrl;
+    const videoUrl = data.video?.url || data.video_url || data.videoUrl || data.mediaUrl || data.url || data.output?.url;
+    if (videoUrl && ['https:', 'http:'].includes(new URL(videoUrl).protocol)) return videoUrl;
     throw new Error('Pollinations returned no video URL.');
   }
-  if (!contentType.startsWith('video/')) throw new Error('Pollinations returned an unsupported video response.');
-
   const blob = await response.blob();
   if (!blob.size) throw new Error('Pollinations returned an empty video.');
+  const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
+  const isMp4 = head.length >= 8 && String.fromCharCode(...head.slice(4, 8)) === 'ftyp';
+  if (!contentType.startsWith('video/') && !isMp4) throw new Error('Pollinations returned an unsupported video response.');
+  const videoBlob = contentType.startsWith('video/') ? blob : new Blob([blob], { type: 'video/mp4' });
   const form = new FormData();
-  form.set('file', blob, 'zulora-generated.mp4');
+  form.set('file', videoBlob, 'zulora-generated.mp4');
   try {
     const upload = await fetchWithTimeout('https://media.pollinations.ai/upload', { method: 'POST', body: form }, 12_000);
     if (upload.ok) {
@@ -46,12 +48,12 @@ async function pollinationsVideo(prompt, duration, aspectRatio) {
     }
   } catch { /* Use a compact inline result or the generation URL if media hosting is unavailable. */ }
 
-  if (blob.size <= 1_000_000) {
+  if (videoBlob.size <= 1_000_000) {
     return await new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result);
       reader.onerror = () => reject(new Error('Could not prepare the generated video for playback.'));
-      reader.readAsDataURL(blob);
+      reader.readAsDataURL(videoBlob);
     });
   }
   return url;
@@ -78,7 +80,8 @@ export async function generateVideo(arg1, arg2 = {}) {
   }
 
   try {
-    const serverResult = await requestGeneration('video', serverBody, options.currentUser);
+    let serverResult = await requestGeneration('video', serverBody, options.currentUser, '/api/video');
+    if (!serverResult) serverResult = await requestGeneration('video', serverBody, options.currentUser);
     if (serverResult?.url || serverResult?.videoUrl) return serverResult;
   } catch (error) {
     if (error instanceof GenerationApiError && (error.status === 401 || error.status === 403)) throw error;

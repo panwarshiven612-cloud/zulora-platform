@@ -2,7 +2,8 @@ import { createPublicKey, createSign, verify as verifySignature } from 'node:cry
 import { apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
 import { buildSystemPrompt } from '../src/services/systemPrompt.js';
 
-export const config = { maxDuration: 60 };
+export const maxDuration = 60;
+export const config = { maxDuration };
 
 const CHAT_ORDER = ['gemini', 'groq', 'cerebras', 'openrouter', 'mistral'];
 const TOKEN_LIMITS = { free: 10_000, pro: 50_000, ultra: 100_000 };
@@ -33,18 +34,18 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 20_000) {
   finally { clearTimeout(timer); }
 }
 
-async function fetchProviderWithRetry(url, options, timeoutMs = 16_000) {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+async function fetchProviderWithRetry(url, options, timeoutMs = 16_000, maxAttempts = 3) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     let response;
     try {
       response = await fetchWithTimeout(url, options, timeoutMs);
     } catch (error) {
-      if (attempt === 2) throw error;
+      if (attempt === maxAttempts - 1) throw error;
       await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
       continue;
     }
     const retryable = [408, 425, 429].includes(response.status) || response.status >= 500;
-    if (response.ok || !retryable || attempt === 2) return response;
+    if (response.ok || !retryable || attempt === maxAttempts - 1) return response;
     const retryAfter = Number(response.headers.get('retry-after'));
     const wait = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 4_000) : 350 * (attempt + 1);
     await new Promise(resolve => setTimeout(resolve, wait));
@@ -271,9 +272,25 @@ async function readProviderEventStream(response, readToken, onToken, streamState
     }
     if (event.error?.message) throw new Error(event.error.message);
   };
+  const readChunk = async () => {
+    let timer;
+    try {
+      return await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('The model stream stalled. Switching to a fallback model.')), 10_000);
+        })
+      ]);
+    } catch (error) {
+      try { await reader.cancel(error); } catch { /* The provider may already have closed the stream. */ }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   try {
     while (true) {
-      const { value, done } = await reader.read();
+      const { value, done } = await readChunk();
       buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
       const frames = buffer.split(/\r?\n\r?\n/);
       buffer = frames.pop() || '';
@@ -296,7 +313,8 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
   };
   const config = configs[provider];
   const parts = attachmentParts(options.attachments);
-  for (const { key, index } of apiKeyPool.candidates(provider)) {
+  const keys = apiKeyPool.candidates(provider);
+  for (const { key, index } of (options.stream ? keys.slice(0, 1) : keys)) {
     try {
       const contentMessages = messages.map((message, messageIndex) => {
         if (provider === 'openrouter' && parts.length && messageIndex === messages.length - 1) {
@@ -321,7 +339,7 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
       const response = await fetchProviderWithRetry(config.url, {
         method: 'POST', headers,
         body: JSON.stringify(requestBody)
-      }, 15_000);
+      }, options.stream ? 12_000 : 15_000, options.stream ? 1 : 3);
       if (response.ok) {
         const text = options.stream
           ? await readProviderEventStream(response, event => event.choices?.[0]?.delta?.content, options.onToken, options.streamState)
@@ -351,7 +369,8 @@ async function tryGemini(messages, options = {}) {
       ? parts.map(part => ({ inline_data: { mime_type: part.mimeType, data: part.data } })) : [])]
   }));
   if (!contents.length) contents.push({ role: 'user', parts: [{ text: 'Hello' }] });
-  for (const { key, index } of apiKeyPool.candidates('gemini')) {
+  const keys = apiKeyPool.candidates('gemini');
+  for (const { key, index } of (options.stream ? keys.slice(0, 1) : keys)) {
     try {
       const model = options.model || 'gemini-2.5-flash';
       const endpoint = options.stream ? 'streamGenerateContent?alt=sse' : 'generateContent';
@@ -363,7 +382,7 @@ async function tryGemini(messages, options = {}) {
           ...(options.enableWebSearch ? { tools: [{ google_search: {} }] } : {}),
           generationConfig: { temperature: 0.7, maxOutputTokens: options.coding ? 8192 : (options.model === 'gemini-2.5-pro' ? 8192 : 4096) }
         })
-      }, 16_000);
+      }, options.stream ? 12_000 : 16_000, options.stream ? 1 : 3);
       if (response.ok) {
         let data;
         let text;
@@ -441,24 +460,34 @@ async function generateChat(body, streamOptions = {}) {
         ? ['openrouter', 'gemini-pro', 'gemini', 'groq', 'cerebras', 'mistral']
         : chooseChatOrder(preference, vision, Boolean(body.enableWebSearch), requestedPreference === 'auto');
   for (const provider of order) {
-    let result = provider === 'gemini' || provider === 'gemini-pro'
-      ? await tryGemini(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: provider === 'gemini-pro' ? 'gemini-2.5-pro' : vision || useProModel ? 'gemini-2.5-flash' : geminiModel, coding, ...streamOptions })
-      : await tryOpenAiProvider(provider, messages, {
-        attachments: body.attachments,
-        vision,
-        coding,
-        model: provider === 'groq'
-          ? groqModel
-          : provider === 'openrouter' && useProModel
-            ? 'deepseek/deepseek-r1'
-            : provider === 'openrouter' && preference === 'llama'
-              ? 'meta-llama/llama-3.3-70b-instruct'
-              : undefined,
-        reasoning: preference === 'think' && provider === 'groq',
-        maxTokens: coding || useProModel ? 8192 : 4096,
-        ...streamOptions
-      });
-    if (result) return result;
+    try {
+      const result = provider === 'gemini' || provider === 'gemini-pro'
+        ? await tryGemini(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: provider === 'gemini-pro' ? 'gemini-2.5-pro' : vision || useProModel ? 'gemini-2.5-flash' : geminiModel, coding, maxTokens: coding || useProModel ? 8192 : 4096, ...streamOptions })
+        : await tryOpenAiProvider(provider, messages, {
+          attachments: body.attachments,
+          vision,
+          coding,
+          model: provider === 'groq'
+            ? groqModel
+            : provider === 'openrouter' && useProModel
+              ? 'deepseek/deepseek-r1'
+              : provider === 'openrouter' && preference === 'llama'
+                ? 'meta-llama/llama-3.3-70b-instruct'
+                : undefined,
+          reasoning: preference === 'think' && provider === 'groq',
+          maxTokens: coding || useProModel ? 8192 : 4096,
+          ...streamOptions
+        });
+      if (result) return result;
+    } catch (error) {
+      if (streamOptions.stream && streamOptions.streamState?.sent) {
+        console.warn(`${provider} stream failed after output began; restarting with the next fallback:`, error.message);
+        streamOptions.onReset?.();
+        streamOptions.streamState.sent = false;
+        continue;
+      }
+      throw error;
+    }
   }
   if (!availableProviders().length) throw new Error('No text-generation providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.');
   throw new Error(vision ? 'Image analysis providers are unavailable. Please retry shortly.' : 'All configured AI providers are unavailable. Check the server provider keys and retry.');
@@ -633,16 +662,12 @@ async function replicateImage(prompt, aspectRatio) {
   return url;
 }
 
-async function generateImage(body, profileTier = null) {
+async function generateImage(body) {
   const prompt = String(body.prompt || '').trim();
   const sourceImage = String(body.sourceImage || '');
   const imageEngine = String(body.imageEngine || 'flux-quick');
   if (!prompt) throw new Error('Write a prompt before generating an image.');
   if (['hf-flux-dev', 'hf-sdxl'].includes(imageEngine)) {
-    const normalizedTier = String(profileTier || '').toLowerCase().replace(/[ _-]/g, '');
-    if (!normalizedTier.includes('pro') && !normalizedTier.includes('ultra')) {
-      throw new Error('Hugging Face image models require a verified Pro or Ultra subscription.');
-    }
     if (sourceImage) throw new Error('The selected Hugging Face model supports text-to-image generation, not reference-image editing.');
     const modelId = imageEngine === 'hf-flux-dev'
       ? 'black-forest-labs/FLUX.1-dev'
@@ -732,14 +757,15 @@ async function pollinationsVideo(prompt, duration, aspectRatio, deadline) {
       const contentType = response.headers.get('content-type') || '';
       if (contentType.includes('json')) {
         const data = await response.json();
-        const candidate = data.video?.url || data.video_url || data.mediaUrl || data.url;
-        if (candidate && new URL(candidate).protocol === 'https:') return candidate;
+        const candidate = data.video?.url || data.video_url || data.videoUrl || data.mediaUrl || data.url || data.output?.url;
+        if (candidate && ['https:', 'http:'].includes(new URL(candidate).protocol)) return candidate;
         throw new Error('Pollinations returned no valid video URL.');
       }
-      if (!contentType.startsWith('video/')) throw new Error('Pollinations returned an unsupported video response.');
       const bytes = Buffer.from(await response.arrayBuffer());
+      const isMp4 = bytes.length >= 12 && bytes.toString('ascii', 4, 8) === 'ftyp';
+      if (!contentType.startsWith('video/') && !isMp4) throw new Error('Pollinations returned an unsupported video response.');
       if (bytes.length < 1 || bytes.length > 30 * 1024 * 1024) throw new Error('Pollinations video output is outside the supported size.');
-      const mimeType = contentType.split(';')[0];
+      const mimeType = contentType.startsWith('video/') ? contentType.split(';')[0] : 'video/mp4';
       const form = new FormData();
       form.set('file', new Blob([bytes], { type: mimeType }), 'zulora-generated.mp4');
       if (remaining() > 1_500) {
@@ -872,18 +898,6 @@ export default async function handler(req, res) {
       }
     }
 
-    const imageEngine = String(body.imageEngine || 'flux-quick');
-    const huggingFaceEngine = ['hf-flux-dev', 'hf-sdxl'].includes(imageEngine);
-    if (type === 'image' && huggingFaceEngine) {
-      const normalizedTier = String(profileTier || '').toLowerCase().replace(/[ _-]/g, '');
-      if (!normalizedTier.includes('pro') && !normalizedTier.includes('ultra')) {
-        return safeError(res, profileTier ? 403 : 503, profileTier
-          ? 'Hugging Face image models require a Pro or Ultra subscription.'
-          : 'Your Pro subscription could not be verified for Hugging Face image generation.',
-        { upgradeRequired: Boolean(profileTier) });
-      }
-    }
-
     if (streamChat) {
       res.statusCode = 200;
       res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -900,7 +914,8 @@ export default async function handler(req, res) {
         const output = await generateChat(body, {
           stream: true,
           streamState,
-          onToken: tokenValue => sendEvent('token', { token: tokenValue })
+          onToken: tokenValue => sendEvent('token', { token: tokenValue }),
+          onReset: () => sendEvent('reset', {})
         });
         let usage = { type, tracked: false };
         if (usageTrackingAvailable) {
@@ -919,7 +934,7 @@ export default async function handler(req, res) {
       return res.end();
     }
 
-    const output = type === 'chat' ? await generateChat(body) : type === 'image' ? await generateImage(body, profileTier) : await generateVideo(body);
+    const output = type === 'chat' ? await generateChat(body) : type === 'image' ? await generateImage(body) : await generateVideo(body);
     let usage = { type, tracked: false };
     if (usageTrackingAvailable) {
       try {

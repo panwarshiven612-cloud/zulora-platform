@@ -96,6 +96,7 @@ export default function AIStudio({ onExitDashboard }) {
   const promptRef = useRef(null);
   const streamRef = useRef('');
   const streamTimerRef = useRef(null);
+  const restoredUidRef = useRef('');
 
   const currentHtml = artifact?.html || '<!doctype html><html><body style="margin:0;background:#0b1020;color:#e2e8f0;font:16px system-ui;display:grid;min-height:100vh;place-items:center"><main style="text-align:center"><div style="font-size:36px">✦</div><h2>Your live preview appears here</h2><p>Describe the site you want to build.</p></main></body></html>';
   const activeCode = artifact?.[codeTab] || (codeTab === 'html' ? artifact?.html : '') || '';
@@ -111,7 +112,29 @@ export default function AIStudio({ onExitDashboard }) {
     if (!currentUser?.uid) return;
     setProjects(await firestoreService.getStudioProjects(currentUser.uid));
   }, [currentUser?.uid]);
-  useEffect(() => { loadProjects(); }, [loadProjects]);
+  useEffect(() => {
+    const uid = currentUser?.uid;
+    if (!uid || restoredUidRef.current === uid) return undefined;
+    let active = true;
+    restoredUidRef.current = uid;
+    const restoreWorkspace = async () => {
+      const savedProjects = await firestoreService.getStudioProjects(uid);
+      if (!active) return;
+      setProjects(savedProjects);
+      const savedActive = firestoreService.getActiveCodeProject(uid);
+      const project = savedActive || savedProjects[0];
+      if (!project) return;
+      const parsed = parseArtifact(project.html || project.code || project.svg || '');
+      setArtifact({ ...parsed, ...project, html: project.html || parsed.html, title: project.title || 'Saved project' });
+      setPrompt(project.prompt || '');
+      setProjectId(project.id || null);
+      setMessages(project.prompt
+        ? [{ role: 'user', text: project.prompt }, { role: 'assistant', text: project.code || 'Saved website project restored.' }]
+        : []);
+    };
+    restoreWorkspace().catch(error => console.warn('Could not restore the previous Studio session:', error.message));
+    return () => { active = false; };
+  }, [currentUser?.uid]);
   useEffect(() => { localStorage.setItem('zulora_studio_model', preferredModel); }, [preferredModel]);
   useEffect(() => { localStorage.setItem('zulora_studio_appearance', appearance); }, [appearance]);
 
@@ -162,6 +185,16 @@ export default function AIStudio({ onExitDashboard }) {
         userVault,
         aiBrain,
         attachments: inputAttachment,
+        onReset: () => {
+          streamRef.current = '';
+          setArtifact(null);
+          setMessages(previous => {
+            const next = [...previous];
+            const last = next[next.length - 1];
+            if (last?.role === 'assistant') next[next.length - 1] = { ...last, text: '', streaming: true };
+            return next;
+          });
+        },
         onToken: token => {
           streamRef.current += token;
           if (!streamTimerRef.current) streamTimerRef.current = window.setTimeout(() => {
@@ -193,6 +226,7 @@ export default function AIStudio({ onExitDashboard }) {
         return next;
       });
       await firestoreService.saveStudioProject(currentUser.uid, { id: nextId, title: nextArtifact.title, prompt: request, ...parsed, model: result.model || preferredModel });
+      firestoreService.setActiveCodeProject(currentUser.uid, { id: nextId, title: nextArtifact.title, prompt: request, code: source, ...parsed, model: result.model || preferredModel, updatedAt: Date.now() });
       firestoreService.recordUserHistory(currentUser.uid, { type: 'code', prompt: request, code: source, model: result.model || preferredModel });
       if (!result?.usage?.tracked) firestoreService.recordLocalUsage(currentUser.uid, 'chat', Math.max(512, Math.ceil((fullPrompt.length + source.length) / 4)));
       await refreshProfile();
@@ -243,6 +277,7 @@ export default function AIStudio({ onExitDashboard }) {
 
   const openProject = project => {
     setArtifact({ ...project }); setPrompt(project.prompt || ''); setProjectId(project.id);
+    firestoreService.setActiveCodeProject(currentUser.uid, project);
     setMessages([{ role: 'user', text: project.prompt || project.title }, { role: 'assistant', text: 'Project loaded from your workspace.' }]);
     setModal(''); setArtifactTab('preview');
   };

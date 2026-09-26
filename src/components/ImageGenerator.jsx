@@ -46,7 +46,7 @@ const IMAGE_MODELS = [
 ];
 
 export const ImageGenerator = () => {
-  const { currentUser, tier, usage, checkUsage, recordUsage, isPro, setIsUsageModalOpen, setIsPricingModalOpen } = useAuth();
+  const { currentUser, tier, usage, checkUsage, recordUsage, setIsUsageModalOpen, setIsPricingModalOpen } = useAuth();
   const usagePercent = getTokenUsagePercent(usage, tier);
 
   const [prompt, setPrompt] = useState('');
@@ -235,17 +235,10 @@ export const ImageGenerator = () => {
           <select
             id="image-model"
             value={imageEngine}
-            onChange={event => {
-              const nextEngine = event.target.value;
-              if (IMAGE_MODELS.find(model => model.id === nextEngine)?.pro && !isPro) {
-                setIsPricingModalOpen(true);
-                return;
-              }
-              setImageEngine(nextEngine);
-            }}
+            onChange={event => setImageEngine(event.target.value)}
             className="w-full sm:max-w-sm px-3 py-2 rounded-xl bg-white/80 dark:bg-slate-900/80 border border-slate-300 dark:border-slate-700 text-sm text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500/30"
           >
-            {IMAGE_MODELS.map(model => <option key={model.id} value={model.id}>{model.label}{model.pro && !isPro ? ' · Pro' : ''}</option>)}
+            {IMAGE_MODELS.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
           </select>
           {IMAGE_MODELS.find(model => model.id === imageEngine)?.pro && (
             <span className="text-[11px] text-slate-500 dark:text-slate-400">Generated securely with a server-side Hugging Face key.</span>
