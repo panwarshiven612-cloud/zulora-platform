@@ -5,6 +5,7 @@ import markup from 'react-syntax-highlighter/dist/esm/languages/prism/markup';
 import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javascript';
 import css from 'react-syntax-highlighter/dist/esm/languages/prism/css';
 import { Check, Code2, Copy, Download, Eye, Maximize2, X } from 'lucide-react';
+import { preparePreviewDocument } from '../services/previewDocument';
 
 SyntaxHighlighter.registerLanguage('markup', markup);
 SyntaxHighlighter.registerLanguage('javascript', javascript);
@@ -18,22 +19,13 @@ const LANGUAGE_CONFIG = {
   svg: { highlighter: 'markup', filename: 'graphic.svg' }
 };
 
-const CONTENT_POLICY = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline' data:; script-src 'unsafe-inline'; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none';">`;
-
-function secureDocument(html) {
-  if (/<head(?:\s[^>]*)?>/i.test(html)) return html.replace(/<head(?:\s[^>]*)?>/i, match => `${match}${CONTENT_POLICY}`);
-  if (/<html(?:\s[^>]*)?>/i.test(html)) return html.replace(/<html(?:\s[^>]*)?>/i, match => `${match}<head>${CONTENT_POLICY}</head>`);
-  return `<!doctype html><html><head><meta charset="utf-8">${CONTENT_POLICY}</head><body>${html}</body></html>`;
-}
-
 function createPreview(code, language) {
-  if (language === 'html') return secureDocument(code);
-  if (language === 'svg') return secureDocument(code);
+  if (language === 'html' || language === 'svg') return preparePreviewDocument(code);
   if (language === 'css') {
-    return secureDocument(`<!doctype html><html><head><meta charset="utf-8">${CONTENT_POLICY}<style>body{margin:0;min-height:100vh;padding:2rem;box-sizing:border-box;font:15px system-ui;background:#0b1120;color:#e2e8f0}.preview-sample{max-width:520px;margin:2rem auto;padding:2rem;border:1px solid #ffffff22;border-radius:24px;background:#ffffff0d;backdrop-filter:blur(18px)}${code}</style></head><body><main class="preview-sample"><h1>Style preview</h1><p>This sample shows the CSS from the code block.</p><button>Example action</button></main></body></html>`);
+    return preparePreviewDocument(`<!doctype html><html><head><style>body{margin:0;min-height:100vh;padding:2rem;box-sizing:border-box;font:15px system-ui;background:#0b1120;color:#e2e8f0}.preview-sample{max-width:520px;margin:2rem auto;padding:2rem;border:1px solid #ffffff22;border-radius:24px;background:#ffffff0d;backdrop-filter:blur(18px)}${code}</style></head><body><main class="preview-sample"><h1>Style preview</h1><p>This sample shows the CSS from the code block.</p><button>Example action</button></main></body></html>`);
   }
   const safeScript = code.replace(/<\/script/gi, '<\\/script');
-  return secureDocument(`<!doctype html><html><head><meta charset="utf-8">${CONTENT_POLICY}<style>body{margin:0;min-height:100vh;padding:2rem;box-sizing:border-box;font:15px system-ui;background:#0b1120;color:#e2e8f0}#app{max-width:720px;margin:auto;padding:2rem;border:1px solid #ffffff22;border-radius:24px;background:#ffffff0d}</style></head><body><main id="app"><h1>JavaScript preview</h1><p>Script output appears in this sandbox.</p></main><script>${safeScript}\n</script></body></html>`);
+  return preparePreviewDocument(`<!doctype html><html><head><style>body{margin:0;min-height:100vh;padding:2rem;box-sizing:border-box;font:15px system-ui;background:#0b1120;color:#e2e8f0}#app{max-width:720px;margin:auto;padding:2rem;border:1px solid #ffffff22;border-radius:24px;background:#ffffff0d}</style></head><body><main id="app"><h1>JavaScript preview</h1><p>Script output appears in this sandbox.</p></main><script>${safeScript}\n</script></body></html>`);
 }
 
 function CodeView({ code, language }) {

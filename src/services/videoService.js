@@ -1,4 +1,4 @@
-import { requestGeneration, trackSuccessfulUsage, checkGenerationAllowance, GenerationApiError } from './generationApi';
+import { requestVideoGeneration, trackSuccessfulUsage, checkGenerationAllowance, GenerationApiError } from './generationApi';
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 60_000) {
   const controller = new AbortController();
@@ -59,114 +59,6 @@ async function pollinationsVideo(prompt, duration, aspectRatio) {
   return url;
 }
 
-function promptSeed(prompt) {
-  let hash = 2166136261;
-  for (const character of String(prompt || '')) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
-  return hash >>> 0;
-}
-
-async function canvasMotionVideo(prompt, duration, aspectRatio) {
-  if (typeof document === 'undefined' || typeof MediaRecorder === 'undefined') throw new Error('Canvas video recording is not supported in this browser.');
-  const vertical = aspectRatio === '9:16';
-  const square = aspectRatio === '1:1';
-  const canvas = document.createElement('canvas');
-  canvas.width = vertical ? 360 : square ? 480 : 640;
-  canvas.height = vertical ? 640 : square ? 480 : 360;
-  const context = canvas.getContext('2d');
-  if (!context || !canvas.captureStream) throw new Error('Canvas video recording is not supported in this browser.');
-  const stream = canvas.captureStream(24);
-  const supportedTypes = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'];
-  const mimeType = supportedTypes.find(type => MediaRecorder.isTypeSupported?.(type)) || '';
-  const recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond: 520_000 } : { videoBitsPerSecond: 520_000 });
-  const seed = promptSeed(prompt);
-  const blobs = [];
-  const title = String(prompt || 'A cinematic motion study').trim().replace(/\s+/g, ' ').slice(0, 58);
-  const palette = [`hsl(${seed % 360} 78% 55%)`, `hsl(${(seed >>> 9) % 360} 78% 60%)`, '#080d1c'];
-  let frame = 0;
-  let animation = 0;
-  const draw = () => {
-    const { width, height } = canvas;
-    const phase = frame++ / 24;
-    const gradient = context.createLinearGradient(0, 0, width, height);
-    gradient.addColorStop(0, palette[0]);
-    gradient.addColorStop(0.52, palette[1]);
-    gradient.addColorStop(1, palette[2]);
-    context.fillStyle = gradient;
-    context.fillRect(0, 0, width, height);
-    const centerX = width / 2 + Math.sin(phase * 0.7) * width * 0.15;
-    const centerY = height / 2 + Math.cos(phase * 0.55) * height * 0.11;
-    const glow = context.createRadialGradient(centerX, centerY, 3, centerX, centerY, Math.min(width, height) * 0.56);
-    glow.addColorStop(0, 'rgba(255,255,255,.62)');
-    glow.addColorStop(0.28, 'rgba(255,255,255,.12)');
-    glow.addColorStop(1, 'rgba(4,8,24,0)');
-    context.fillStyle = glow;
-    context.fillRect(0, 0, width, height);
-    for (let index = 0; index < 8; index += 1) {
-      const angle = (index / 8) * Math.PI * 2 + phase * (index % 2 ? 0.4 : -0.3);
-      const radius = Math.min(width, height) * (0.16 + (index % 3) * 0.08);
-      const x = centerX + Math.cos(angle) * radius;
-      const y = centerY + Math.sin(angle) * radius;
-      const size = 8 + ((seed >>> (index % 16)) % 18);
-      context.beginPath();
-      context.arc(x, y, size + Math.sin(phase + index) * 3, 0, Math.PI * 2);
-      context.fillStyle = index % 2 ? 'rgba(255,255,255,.68)' : 'rgba(5,12,38,.55)';
-      context.fill();
-    }
-    const fontSize = vertical ? 23 : square ? 25 : 29;
-    context.textAlign = 'center';
-    context.textBaseline = 'middle';
-    context.shadowColor = 'rgba(3,7,18,.7)';
-    context.shadowBlur = 18;
-    context.fillStyle = '#fff';
-    context.font = `700 ${fontSize}px system-ui, sans-serif`;
-    const words = title.split(' ');
-    const lines = [];
-    let line = '';
-    for (const word of words) {
-      const next = line ? `${line} ${word}` : word;
-      if (context.measureText(next).width > width * 0.82 && line) { lines.push(line); line = word; }
-      else line = next;
-    }
-    if (line) lines.push(line);
-    const visibleLines = lines.slice(0, 3);
-    visibleLines.forEach((text, index) => context.fillText(text, width / 2, height / 2 + (index - (visibleLines.length - 1) / 2) * (fontSize + 9), width * 0.84));
-    context.shadowBlur = 0;
-    animation = requestAnimationFrame(draw);
-  };
-  draw();
-  return new Promise((resolve, reject) => {
-    recorder.ondataavailable = event => { if (event.data?.size) blobs.push(event.data); };
-    recorder.onerror = () => {
-      cancelAnimationFrame(animation);
-      stream.getTracks().forEach(track => track.stop());
-      reject(new Error('Canvas video could not be recorded.'));
-    };
-    recorder.onstop = async () => {
-      cancelAnimationFrame(animation);
-      stream.getTracks().forEach(track => track.stop());
-      const blob = new Blob(blobs, { type: recorder.mimeType || 'video/webm' });
-      if (!blob.size) return reject(new Error('Canvas video output was empty.'));
-      try {
-        const dataUrl = await new Promise((readResolve, readReject) => {
-          const reader = new FileReader();
-          reader.onload = () => readResolve(reader.result);
-          reader.onerror = () => readReject(new Error('Could not package the canvas video.'));
-          reader.readAsDataURL(blob);
-        });
-        resolve(dataUrl);
-      } catch (error) { reject(error); }
-    };
-    try {
-      recorder.start(300);
-      window.setTimeout(() => { if (recorder.state !== 'inactive') recorder.stop(); }, Math.min(8, Math.max(3, Number(duration) || 6)) * 1000);
-    } catch (error) {
-      cancelAnimationFrame(animation);
-      stream.getTracks().forEach(track => track.stop());
-      reject(error);
-    }
-  });
-}
-
 export async function generateVideo(arg1, arg2 = {}) {
   const options = typeof arg1 === 'object' && arg1 !== null ? arg1 : { ...arg2, prompt: String(arg1 || '') };
   const prompt = String(options.prompt || '').trim();
@@ -194,26 +86,25 @@ export async function generateVideo(arg1, arg2 = {}) {
     );
   }
 
+  const onProgress = options.onProgress;
+  onProgress?.({ provider: 'Zulora Video API', phase: 'Connecting', message: 'Connecting to the text-to-video service.' });
   try {
-    let serverResult = await requestGeneration('video', serverBody, options.currentUser, '/api/video');
-    if (!serverResult) serverResult = await requestGeneration('video', serverBody, options.currentUser);
+    let serverResult = await requestVideoGeneration(serverBody, options.currentUser, onProgress, '/api/video');
+    if (!serverResult) serverResult = await requestVideoGeneration(serverBody, options.currentUser, onProgress, '/api/ai');
     if (serverResult?.url || serverResult?.videoUrl) return serverResult;
   } catch (error) {
     if (error instanceof GenerationApiError && [401, 403, 429].includes(error.status)) throw error;
-    console.warn('[Video] Server generation route unavailable; trying Pollinations:', error.message);
+    console.warn('[Video] Server video provider pipeline failed; trying direct Pollinations:', error.message);
   }
 
   try {
+    onProgress?.({ provider: 'Pollinations', phase: 'Generating video', message: 'Submitting your prompt to Pollinations text-to-video.' });
     const url = await pollinationsVideo(enrichedPrompt, duration, options.aspectRatio || '16:9');
+    onProgress?.({ provider: 'Pollinations', phase: 'Video ready', message: 'Your generated video is ready.' });
     return { url, videoUrl: url, provider: 'Pollinations', model: 'video', duration: Math.min(duration, 8), prompt, usage: await trackSuccessfulUsage('video', options.currentUser) };
-  } catch (error) { console.warn('[Video] Pollinations fallback failed:', error.message); }
-
-  try {
-    const url = await canvasMotionVideo(enrichedPrompt, duration, options.aspectRatio || '16:9');
-    return { url, videoUrl: url, provider: 'HTML Canvas Motion Generator', model: 'canvas-motion-v1', duration: Math.min(duration, 8), prompt, usage: await trackSuccessfulUsage('video', options.currentUser) };
   } catch (error) {
-    console.warn('[Video] Canvas motion fallback failed:', error.message);
-    throw new Error('Video engines and the browser canvas fallback are unavailable. Try again in a browser that supports video recording.');
+    console.warn('[Video] Direct Pollinations video request failed:', error.message);
+    throw new Error('Real text-to-video providers are unavailable. Configure Pollinations, Replicate, Hugging Face, or Fal AI credentials, then retry.');
   }
 }
 

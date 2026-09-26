@@ -10,6 +10,6 @@ export default async function videoHandler(req, res) {
     catch { return res.status(400).json({ error: 'Invalid JSON request.' }); }
   }
   if (!body || typeof body !== 'object') return res.status(400).json({ error: 'Invalid request.' });
-  req.body = { ...body, action: 'video' };
+  req.body = { ...body, action: body.action === 'video-stream' ? 'video-stream' : 'video' };
   return aiHandler(req, res);
 }

@@ -890,6 +890,16 @@ async function replicateImage(prompt, aspectRatio) {
   return url;
 }
 
+function buildImagePrompt(prompt, style, negativePrompt) {
+  const subject = String(prompt || '').trim();
+  return [
+    `User's requested image: ${subject}`,
+    'Subject fidelity is essential: make the requested subject and every named object the clear focus. Preserve the user\'s requested attributes and scene; do not replace them with a different subject or omit requested details.',
+    style ? `Visual style: ${String(style).trim()}. Apply this style without changing the requested subject.` : '',
+    negativePrompt ? `Avoid including: ${String(negativePrompt).trim()}.` : ''
+  ].filter(Boolean).join('\n\n');
+}
+
 async function generateImage(body) {
   const prompt = String(body.prompt || '').trim();
   const sourceImage = String(body.sourceImage || '');
@@ -899,7 +909,7 @@ async function generateImage(body) {
     ? availableProviders().includes('gemini') || Boolean(providerKeys.pollinations)
     : Boolean(providerKeys.pollinations || providerKeys.huggingface || providerKeys.fal || (providerKeys.cloudflareAccountId && providerKeys.cloudflareToken) || providerKeys.replicate);
   if (!hasImageProvider) throw new Error(`No image-${sourceImage ? 'editing' : 'generation'} providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.`);
-  const fullPrompt = prompt;
+  const fullPrompt = buildImagePrompt(prompt, body.style, body.negativePrompt);
   const attempts = [];
   const selectedHfModel = imageEngine === 'hf-sdxl'
     ? 'stabilityai/stable-diffusion-xl-base-1.0'
@@ -1086,7 +1096,7 @@ async function validateVideoCandidate(candidate, timeoutMs = 7_000) {
   return url.href;
 }
 
-async function generateVideo(body) {
+async function generateVideo(body, onProgress = () => {}) {
   const prompt = String(body.prompt || '').trim();
   if (!prompt) throw new Error('Write a prompt before generating a video.');
   const enriched = [prompt, body.cameraAngle ? `Camera movement: ${body.cameraAngle}.` : '', body.motionSpeed ? `Motion intensity: ${body.motionSpeed}/10.` : ''].filter(Boolean).join(' ');
@@ -1104,13 +1114,19 @@ async function generateVideo(body) {
   for (const [provider, model, run] of attempts) {
     if (Date.now() >= deadline) break;
     try {
+      onProgress({ provider, phase: 'Generating video', message: `Submitting your prompt to ${provider}.` });
       const candidate = await run();
       if (candidate) {
+        onProgress({ provider, phase: 'Preparing playback', message: 'The provider returned a video. Checking the video file.' });
         const url = await validateVideoCandidate(candidate, Math.min(7_000, Math.max(1_000, deadline - Date.now())));
         const generatedDuration = provider === 'Replicate' ? 6 : Math.min(Number(body.duration) || 6, provider === 'Pollinations' ? 8 : 10);
+        onProgress({ provider, phase: 'Video ready', message: 'Your generated video is ready.' });
         return { url, provider, model, duration: generatedDuration };
       }
-    } catch (error) { console.warn(`${provider} ${model} video attempt failed:`, error.message); }
+    } catch (error) {
+      onProgress({ provider, phase: 'Trying another provider', message: `${provider} could not finish this request. Trying the next video provider.` });
+      console.warn(`${provider} ${model} video attempt failed:`, error.message);
+    }
   }
   throw new Error('Pollinations, Replicate, Hugging Face, and Fal AI video providers are unavailable. Configure the matching server API keys, then retry.');
 }
@@ -1145,10 +1161,11 @@ export default async function handler(req, res) {
   const usageOnly = body.action === 'usage';
   const allowanceOnly = body.action === 'allowance';
   const streamChat = body.action === 'chat-stream';
+  const streamVideo = body.action === 'video-stream';
   const quotaOnly = usageOnly || allowanceOnly;
   const type = quotaOnly
     ? (['chat', 'image', 'video'].includes(body.usageType) ? body.usageType : null)
-    : (body.action === 'chat' || streamChat) ? 'chat' : body.action === 'image' ? 'image' : body.action === 'video' ? 'video' : null;
+    : (body.action === 'chat' || streamChat) ? 'chat' : body.action === 'image' ? 'image' : (body.action === 'video' || streamVideo) ? 'video' : null;
   if (!type) return safeError(res, 400, 'Unsupported generation action.');
   const token = bearer(req);
   if (!token) return safeError(res, 401, 'Sign in to use Zulora AI.');
@@ -1284,6 +1301,35 @@ export default async function handler(req, res) {
       } catch (error) {
         const message = error?.message || 'Generation failed. Please retry.';
         sendEvent('error', { error: message, status: error?.status || 502, upgradeRequired: Boolean(error?.payload?.upgradeRequired) });
+      }
+      return res.end();
+    }
+
+    if (streamVideo) {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      const sendEvent = (name, data) => {
+        if (!res.headersSent) res.flushHeaders?.();
+        res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+        res.flush?.();
+      };
+      try {
+        const output = await generateVideo(body, progress => sendEvent('progress', progress));
+        let usage = { type, tracked: false };
+        if (usageTrackingAvailable) {
+          try {
+            const tokenUpdate = await incrementTokenUsage(uid, estimateRequestTokens(type, body, output), flagshipRequest);
+            usage = { type, tracked: true, ...tokenUpdate };
+          } catch (error) {
+            console.warn('Firestore usage write fell back to the client store:', error?.message || 'Could not save usage.');
+          }
+        }
+        sendEvent('done', { ...output, usage });
+      } catch (error) {
+        sendEvent('error', { error: error?.message || 'Video generation failed.', status: error?.status || 502, upgradeRequired: Boolean(error?.payload?.upgradeRequired) });
       }
       return res.end();
     }

@@ -274,6 +274,17 @@ async function browserHuggingFaceImage(prompt, modelId) {
   return blobToDataUrl(blob);
 }
 
+function buildImagePrompt(prompt, style, negativePrompt) {
+  const subject = String(prompt || '').trim();
+  const instructions = [
+    `User's requested image: ${subject}`,
+    'Subject fidelity is essential: make the requested subject and every named object the clear focus. Preserve the user's requested attributes and scene; do not replace them with a different subject or omit requested details.',
+    style ? `Visual style: ${String(style).trim()}. Apply this style without changing the requested subject.` : '',
+    negativePrompt ? `Avoid including: ${String(negativePrompt).trim()}.` : ''
+  ];
+  return instructions.filter(Boolean).join('\n\n');
+}
+
 async function browserReplicateImage(prompt, aspectRatio) {
   if (!REPLICATE_IMAGE_KEY) throw new Error('No Replicate browser key is configured.');
   const response = await fetchWithTimeout('https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions', {
@@ -877,6 +888,8 @@ export const apiRouter = {
     try {
       const serverResult = await requestGeneration('image', {
         prompt,
+        style: options.style || '',
+        negativePrompt: options.negativePrompt || '',
         aspectRatio,
         imageEngine,
         width,
@@ -902,7 +915,7 @@ export const apiRouter = {
 
     const seed = Math.floor(Math.random() * 9999999);
     // Keep each generation call isolated to the current Image Studio prompt.
-    const styledPrompt = prompt.trim();
+    const styledPrompt = buildImagePrompt(prompt, options.style, options.negativePrompt);
     const encoded = encodeURIComponent(styledPrompt);
 
     if (imageEngine === 'hf-flux-dev' || imageEngine === 'hf-sdxl') {
@@ -1043,16 +1056,7 @@ export const apiRouter = {
       }
     }
 
-    const fallbackUrl = `https://picsum.photos/seed/${seed}/${targetWidth}/${targetHeight}`;
-    return await syncUsage({
-      url: fallbackUrl,
-      imageUrl: fallbackUrl,
-      provider: 'Pollinations HD Fallback',
-      model: 'Standard Engine',
-      prompt: prompt.trim(),
-      enhancedPrompt: styledPrompt,
-      seed
-    }, 'image', currentUser);
+    throw new Error('No image provider returned a generated image. The request was not replaced with a placeholder. Check your image provider configuration and retry.');
   },
 
   // ─── VIDEO STUDIO GENERATION ───────────────────────────────────────────────

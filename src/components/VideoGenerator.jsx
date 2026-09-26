@@ -37,6 +37,7 @@ export const VideoGenerator = () => {
   const [cameraAngle, setCameraAngle] = useState('Cinematic Pan');
   const [duration, setDuration] = useState(6);
   const [loading, setLoading] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState(null);
   const [generationError, setGenerationError] = useState('');
   const [gallery, setGallery] = useState([]);
   const [activeVideo, setActiveVideo] = useState(null);
@@ -74,6 +75,7 @@ export const VideoGenerator = () => {
     }
 
     setGenerationError('');
+    setGenerationProgress({ provider: 'Zulora Video API', phase: 'Connecting', message: 'Connecting to the text-to-video service.' });
     setLoading(true);
 
     try {
@@ -82,7 +84,8 @@ export const VideoGenerator = () => {
         motionSpeed,
         cameraAngle,
         duration,
-        currentUser
+        currentUser,
+        onProgress: status => setGenerationProgress(status)
       });
       if (!result?.url) throw new Error('Video provider returned no video.');
       await recordUsage('video', Boolean(result.usage?.tracked));
@@ -108,6 +111,7 @@ export const VideoGenerator = () => {
       setGenerationError(err.status === 429 ? '' : (err.message || 'Video generation could not finish. Please try again.'));
     } finally {
       setLoading(false);
+      setGenerationProgress(null);
       generatingRef.current = false;
     }
   };
@@ -249,18 +253,30 @@ export const VideoGenerator = () => {
                   : 'text-white bg-gradient-to-r from-indigo-500 via-sky-500 to-blue-600 hover:from-indigo-600 hover:to-blue-700 shadow-indigo-500/25'
               }`}
             >
-              {loading ? (
+            {loading ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Synthesizing Motion Frames...</span>
+                  <span>Generating with Video API...</span>
                 </>
               ) : (
                 <>
                   <Film className="w-4 h-4" />
                   <span>Generate Video Clip</span>
                 </>
-              )}
+            )}
             </button>
+            {loading && (
+              <div className="mt-3 rounded-xl border border-indigo-200/20 bg-indigo-50/70 p-3 dark:border-indigo-400/15 dark:bg-indigo-950/25" aria-live="polite">
+                <div className="mb-2 flex items-center justify-between gap-3 text-[11px]">
+                  <span className="font-semibold text-indigo-700 dark:text-indigo-200">{generationProgress?.message || 'Waiting for the video provider...'}</span>
+                  <span className="shrink-0 text-slate-500 dark:text-slate-400">{generationProgress?.provider || 'Video API'}</span>
+                </div>
+                <div role="progressbar" aria-label="Video generation progress" aria-valuetext={`${generationProgress?.provider || 'Video API'}: ${generationProgress?.phase || 'working'}`} className="h-2 overflow-hidden rounded-full bg-indigo-100 dark:bg-slate-800">
+                  <div className="h-full w-2/5 rounded-full bg-gradient-to-r from-indigo-500 via-sky-400 to-indigo-500" style={{ animation: 'zulora-video-progress 1.5s ease-in-out infinite' }} />
+                </div>
+                <style>{'@keyframes zulora-video-progress{0%{transform:translateX(-110%)}100%{transform:translateX(260%)}}'}</style>
+              </div>
+            )}
             {generationError && (
               <p role="alert" aria-live="polite" className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs leading-5 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300">
                 {generationError}
@@ -295,6 +311,7 @@ export const VideoGenerator = () => {
                 loop
                 muted
                 playsInline
+                controls
                 className="w-full h-full object-cover rounded-xl"
               />
             ) : (
@@ -327,7 +344,7 @@ export const VideoGenerator = () => {
                 className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-500 to-sky-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-md hover:opacity-95"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>Download MP4</span>
+                <span>Download video</span>
               </button>
             </div>
           )}
