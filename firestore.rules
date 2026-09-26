@@ -36,6 +36,10 @@ service cloud.firestore {
       match /vault/{vaultId} {
         allow read, write: if isOwner(uid);
       }
+
+      match /search_vault/{activityId} {
+        allow read, write: if isOwner(uid);
+      }
     }
   }
 }

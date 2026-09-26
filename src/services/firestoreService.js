@@ -7,6 +7,7 @@ import {
   query,
   where,
   orderBy,
+  limit,
   getDocs,
   addDoc,
   deleteDoc,
@@ -54,6 +55,7 @@ const DAY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 const STORAGE_PREFIX = 'zulora_store_';
 const AI_BRAIN_STORAGE_KEY = 'zulora_user_memory';
 const VAULT_STORAGE_PREFIX = 'zulora_user_vault_';
+const USER_HISTORY_STORAGE_KEY = 'zulora_user_history';
 const normalizeAiBrain = brain => ({
   talkStyle: String(brain?.talkStyle || ''),
   customInstructions: String(brain?.customInstructions || ''),
@@ -72,6 +74,25 @@ function readCachedVault(uid) {
     const cached = JSON.parse(localStorage.getItem(`${VAULT_STORAGE_PREFIX}${uid}`) || 'null');
     return cached ? normalizeVault(cached) : null;
   } catch { return null; }
+}
+
+function readUserHistory(uid) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(USER_HISTORY_STORAGE_KEY) || '{}');
+    const entries = Array.isArray(parsed) ? parsed.filter(item => item.uid === uid) : parsed?.[uid];
+    return Array.isArray(entries) ? entries : [];
+  } catch { return []; }
+}
+
+function writeUserHistory(uid, entries) {
+  const parsed = (() => {
+    try {
+      const value = JSON.parse(localStorage.getItem(USER_HISTORY_STORAGE_KEY) || '{}');
+      return !Array.isArray(value) && value && typeof value === 'object' ? value : {};
+    } catch { return {}; }
+  })();
+  parsed[uid] = entries.slice(0, 40);
+  localStorage.setItem(USER_HISTORY_STORAGE_KEY, JSON.stringify(parsed));
 }
 
 function readCachedAiBrain(uid) {
@@ -137,6 +158,11 @@ export const firestoreService = {
     if (!uid) throw new Error('Sign in to save your Zulora AI Vault.');
     const vault = normalizeVault({ ...value, updatedAt: Date.now() });
     localStorage.setItem(`${VAULT_STORAGE_PREFIX}${uid}`, JSON.stringify(vault));
+    this.recordUserHistory(uid, {
+      type: 'preference',
+      preference: JSON.stringify({ preferences: vault.preferences, customInstructions: vault.customInstructions, keyFacts: vault.keyFacts }),
+      prompt: 'Updated Zulora AI Vault preferences'
+    });
     try {
       await setDoc(doc(db, 'users', uid, 'vault', 'personal'), vault, { merge: true });
       return { vault, synced: true };
@@ -144,6 +170,62 @@ export const firestoreService = {
       console.warn('Firestore saveVault fallback to LocalStorage:', error.message);
       return { vault, synced: false };
     }
+  },
+
+  recordUserHistory(uid, value = {}) {
+    if (!uid) return null;
+    const clientId = `activity_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const record = {
+      clientId,
+      uid,
+      type: String(value.type || 'prompt').slice(0, 40),
+      prompt: String(value.prompt || '').trim().slice(0, 2000),
+      code: String(value.code || '').slice(0, 50000),
+      preference: String(value.preference || '').slice(0, 8000),
+      model: String(value.model || '').slice(0, 120),
+      createdAt: Number(value.createdAt) || Date.now()
+    };
+    try {
+      const updated = [record, ...readUserHistory(uid)].slice(0, 40);
+      writeUserHistory(uid, updated);
+    } catch (error) {
+      console.warn('Could not save user activity to LocalStorage:', error.message);
+    }
+    addDoc(collection(db, 'users', uid, 'search_vault'), record)
+      .catch(error => console.warn('Firestore search vault fallback to LocalStorage:', error.message));
+    return record;
+  },
+
+  async getUserHistory(uid, maxItems = 40) {
+    if (!uid) return [];
+    const local = readUserHistory(uid);
+    try {
+      const activityRef = collection(db, 'users', uid, 'search_vault');
+      const snapshot = await getDocs(query(activityRef, orderBy('createdAt', 'desc'), limit(maxItems)));
+      const remote = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+      const merged = new Map();
+      [...remote, ...local].forEach(item => merged.set(item.clientId || item.id, item));
+      const history = [...merged.values()].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)).slice(0, maxItems);
+      try { writeUserHistory(uid, history); } catch { /* keep Firestore results available for this view */ }
+      return history;
+    } catch (error) {
+      console.warn('Firestore history fallback to LocalStorage:', error.message);
+      return local.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)).slice(0, maxItems);
+    }
+  },
+
+  async getRecentActivityContext(uid, maxItems = 8) {
+    if (!uid) return [];
+    const [history, legacyContext] = await Promise.all([
+      this.getUserHistory(uid, maxItems),
+      Promise.resolve(this.getRecentQueryContext(uid, maxItems))
+    ]);
+    const activityContext = history.map(item => {
+      if (item.type === 'code') return `Recently generated code for: ${item.prompt || 'a coding request'}`;
+      if (item.type === 'preference') return `Saved user preference: ${item.preference || item.prompt || ''}`;
+      return `${item.type === 'search' ? 'Recent search' : 'Recent user request'}: ${item.prompt || ''}`;
+    }).filter(item => !item.endsWith(': '));
+    return [...legacyContext, ...activityContext].filter(Boolean).slice(-maxItems);
   },
 
   getCachedAiBrain(uid) {
@@ -172,6 +254,11 @@ export const firestoreService = {
     if (!uid) throw new Error('Sign in to save your AI Brain preferences.');
     const brain = normalizeAiBrain({ ...value, updatedAt: Date.now() });
     localStorage.setItem(AI_BRAIN_STORAGE_KEY, JSON.stringify({ uid, ...brain }));
+    this.recordUserHistory(uid, {
+      type: 'preference',
+      preference: JSON.stringify(brain),
+      prompt: 'Updated AI Brain preferences'
+    });
     try {
       await updateDoc(doc(db, 'users', uid), { ai_brain: brain });
       return { brain, synced: true };

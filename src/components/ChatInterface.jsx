@@ -54,6 +54,7 @@ import { useAuth } from '../context/AuthContext';
 import { apiRouter, MODEL_TIERS } from '../services/apiRouter';
 import { firestoreService, deriveChatTitle } from '../services/firestoreService';
 import { imageFileToDataUrl } from '../services/imageUtils';
+import CodeArtifactRunner from './CodeArtifactRunner';
 
 /* ============================================================
    CONSTANTS
@@ -186,6 +187,9 @@ const MarkdownContent = memo(({ content }) => {
             const match = /language-(\w+)/.exec(className || '');
             const lang = match ? match[1] : '';
             if (!inline && (match || String(children).includes('\n'))) {
+              if (['html', 'css', 'js', 'javascript', 'svg'].includes(lang.toLowerCase())) {
+                return <CodeArtifactRunner language={lang.toLowerCase()} code={String(children).replace(/\n$/, '')} />;
+              }
               return (
                 <CodeBlock
                   language={lang}
@@ -199,6 +203,7 @@ const MarkdownContent = memo(({ content }) => {
               </code>
             );
           },
+          pre({ children }) { return <>{children}</>; },
           a({ href, children }) {
             return (
               <a
@@ -690,10 +695,14 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
       if (currentUser?.uid) {
         onUpdateSession?.(pendingSession);
         await firestoreService.saveChatSession(currentUser.uid, sessionId, pendingSession);
+        firestoreService.recordUserHistory(currentUser.uid, {
+          type: enableWebSearch ? 'search' : 'prompt',
+          prompt: basePrompt
+        });
       }
       const contextMessages = buildContextMessages();
       const contextMemory = currentUser?.uid
-        ? firestoreService.getRecentQueryContext(currentUser.uid)
+        ? await firestoreService.getRecentActivityContext(currentUser.uid)
         : [];
       const aiBrain = currentUser?.uid
         ? await firestoreService.getAiBrain(currentUser.uid)
@@ -748,6 +757,12 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
       setMessages(finalMessages);
       await recordUsage('chat', Boolean(result.usage?.tracked));
       if (currentUser?.uid) firestoreService.recordQueryContext(currentUser.uid, basePrompt, enableWebSearch ? 'search' : 'chat');
+      const generatedCode = Array.from(String(result.text || '').matchAll(/```([^\r\n]*)\r?\n([\s\S]*?)```/g))
+        .map(([, language, source]) => `\`\`\`${language.trim()}\n${source.replace(/\n$/, '')}\n\`\`\``)
+        .join('\n\n');
+      if (currentUser?.uid && generatedCode) {
+        firestoreService.recordUserHistory(currentUser.uid, { type: 'code', prompt: basePrompt, code: generatedCode, model: result.model });
+      }
 
       // Persist to Firestore
       const updatedSession = {

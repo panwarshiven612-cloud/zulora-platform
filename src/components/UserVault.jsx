@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Check, Database, LoaderCircle, Save } from 'lucide-react';
+import { Check, Code2, Database, LoaderCircle, Search, Save } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { firestoreService } from '../services/firestoreService';
 
@@ -8,6 +8,7 @@ const EMPTY_VAULT = { preferences: '', customInstructions: '', keyFacts: '' };
 export default function UserVault() {
   const { currentUser } = useAuth();
   const [vault, setVault] = useState(EMPTY_VAULT);
+  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveState, setSaveState] = useState('');
@@ -15,8 +16,15 @@ export default function UserVault() {
   useEffect(() => {
     let active = true;
     setLoading(true);
-    firestoreService.getVault(currentUser?.uid).then(value => {
-      if (active) setVault({ ...EMPTY_VAULT, ...value });
+    Promise.all([
+      firestoreService.getVault(currentUser?.uid),
+      firestoreService.getUserHistory(currentUser?.uid, 12)
+    ]).then(([value, activity]) => {
+      if (!active) return;
+      setVault({ ...EMPTY_VAULT, ...value });
+      setHistory(activity);
+    }).catch(error => {
+      console.warn('Could not load the complete Vault view:', error.message);
     }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [currentUser?.uid]);
@@ -34,6 +42,7 @@ export default function UserVault() {
     try {
       const result = await firestoreService.saveVault(currentUser.uid, vault);
       setVault({ ...EMPTY_VAULT, ...result.vault });
+      setHistory(await firestoreService.getUserHistory(currentUser.uid, 12));
       setSaveState(result.synced ? 'Synced to your private Firestore Vault and this browser.' : 'Saved on this browser. Firestore will sync when available.');
     } catch (error) {
       setSaveState(error.message || 'Could not save your Vault.');
@@ -92,6 +101,40 @@ export default function UserVault() {
             </button>
           </div>
         </form>
+
+        <section className="p-5 sm:p-7 rounded-3xl glass-pearl dark:glass-dark border border-slate-200/80 dark:border-slate-800 shadow-glass">
+          <div className="flex items-start justify-between gap-3 mb-4">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white">Recent activity</h2>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Searches, prompts, code artifacts, and preference updates kept in your personal history.</p>
+            </div>
+            <Database className="h-4 w-4 text-indigo-500 shrink-0 mt-1" />
+          </div>
+          {history.length ? (
+            <div className="space-y-2">
+              {history.slice(0, 12).map((item, index) => {
+                const isCode = item.type === 'code';
+                const isSearch = item.type === 'search';
+                const title = isCode ? 'Generated code' : isSearch ? 'Web search' : item.type === 'preference' ? 'Preference update' : 'Chat prompt';
+                return (
+                  <article key={item.clientId || item.id || index} className="rounded-2xl border border-slate-200/70 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200">
+                        {isCode ? <Code2 className="h-3.5 w-3.5 text-violet-500" /> : <Search className="h-3.5 w-3.5 text-sky-500" />}{title}
+                      </span>
+                      <time className="shrink-0 text-[10px] text-slate-400">{item.createdAt ? new Date(item.createdAt).toLocaleString() : ''}</time>
+                    </div>
+                    {item.prompt && <p className="mt-1.5 text-xs leading-relaxed text-slate-600 dark:text-slate-400 line-clamp-2">{item.prompt}</p>}
+                    {item.code && <pre className="mt-2 max-h-20 overflow-hidden rounded-lg bg-slate-950/90 p-2 text-[10px] leading-relaxed text-sky-200"><code>{item.code.slice(0, 500)}</code></pre>}
+                    {item.preference && <p className="mt-1.5 text-[10px] text-slate-500 line-clamp-2">{item.preference}</p>}
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="rounded-2xl border border-dashed border-slate-300 p-5 text-center text-xs text-slate-500 dark:border-slate-700">Your searches and generated code will appear here.</p>
+          )}
+        </section>
       </div>
     </div>
   );
