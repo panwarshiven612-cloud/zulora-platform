@@ -52,7 +52,9 @@ function parseArtifact(source) {
   }
   if (!/<html[\s>]/i.test(html)) html = `<!doctype html><html><head><meta charset="utf-8"></head><body>${html}</body></html>`;
   const csp = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data: blob:; style-src \'unsafe-inline\' data:; script-src \'unsafe-inline\'; font-src data:; connect-src \'none\'; object-src \'none\'; base-uri \'none\'; form-action \'none\'">';
-  html = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, `$&${csp}`) : html.replace(/<html[^>]*>/i, `$&<head>${csp}</head>`);
+  if (!/<meta[^>]+http-equiv=["']Content-Security-Policy["']/i.test(html)) {
+    html = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, `$&${csp}`) : html.replace(/<html[^>]*>/i, `$&<head>${csp}</head>`);
+  }
   return { ...files, html };
 }
 
@@ -84,6 +86,7 @@ export default function AIStudio({ onExitDashboard }) {
   const [stage, setStage] = useState(-1);
   const [artifactTab, setArtifactTab] = useState('preview');
   const [codeTab, setCodeTab] = useState('html');
+  const [isEditingCode, setIsEditingCode] = useState(false);
   const [viewport, setViewport] = useState('desktop');
   const [refreshKey, setRefreshKey] = useState(0);
   const [modal, setModal] = useState('');
@@ -215,7 +218,7 @@ export default function AIStudio({ onExitDashboard }) {
       if (!source) throw new Error('The model returned an empty website. Please try again.');
       const parsed = parseArtifact(source);
       const nextId = projectId || crypto.randomUUID();
-      const nextArtifact = { ...parsed, title: request.slice(0, 72) || 'Untitled project' };
+      const nextArtifact = { ...parsed, code: source, title: request.slice(0, 72) || 'Untitled project' };
       setArtifact(nextArtifact);
       setProjectId(nextId);
       setArtifactTab('preview');
@@ -225,8 +228,9 @@ export default function AIStudio({ onExitDashboard }) {
         if (last?.role === 'assistant') next[next.length - 1] = { ...last, text: source, streaming: false };
         return next;
       });
-      await firestoreService.saveStudioProject(currentUser.uid, { id: nextId, title: nextArtifact.title, prompt: request, ...parsed, model: result.model || preferredModel });
-      firestoreService.setActiveCodeProject(currentUser.uid, { id: nextId, title: nextArtifact.title, prompt: request, code: source, ...parsed, model: result.model || preferredModel, updatedAt: Date.now() });
+      const savedProject = { id: nextId, title: nextArtifact.title, prompt: request, code: source, ...parsed, model: result.model || preferredModel, timestamp: Date.now() };
+      await firestoreService.saveStudioProject(currentUser.uid, savedProject);
+      firestoreService.setActiveCodeProject(currentUser.uid, savedProject);
       firestoreService.recordUserHistory(currentUser.uid, { type: 'code', prompt: request, code: source, model: result.model || preferredModel });
       if (!result?.usage?.tracked) firestoreService.recordLocalUsage(currentUser.uid, 'chat', Math.max(512, Math.ceil((fullPrompt.length + source.length) / 4)));
       await refreshProfile();
@@ -271,15 +275,17 @@ export default function AIStudio({ onExitDashboard }) {
   }, [runBuild, modal]);
 
   const startNew = () => {
-    setPrompt(''); setArtifact(null); setProjectId(null); setMessages([]); setArtifactTab('preview');
+    setPrompt(''); setArtifact(null); setProjectId(null); setMessages([]); setArtifactTab('preview'); setIsEditingCode(false);
     promptRef.current?.focus(); setModal('');
   };
 
-  const openProject = project => {
-    setArtifact({ ...project }); setPrompt(project.prompt || ''); setProjectId(project.id);
+  const openProject = (project, mode = 'preview') => {
+    const parsed = parseArtifact(project.html || project.code || project.svg || '');
+    const opened = { ...parsed, ...project, html: project.html || parsed.html, title: project.title || 'Saved project' };
+    setArtifact(opened); setPrompt(project.prompt || ''); setProjectId(project.id);
     firestoreService.setActiveCodeProject(currentUser.uid, project);
     setMessages([{ role: 'user', text: project.prompt || project.title }, { role: 'assistant', text: 'Project loaded from your workspace.' }]);
-    setModal(''); setArtifactTab('preview');
+    setModal(''); setArtifactTab(mode === 'edit' ? 'code' : 'preview'); setIsEditingCode(mode === 'edit'); setCodeTab('html');
   };
 
   const duplicateProject = async project => {
@@ -288,7 +294,60 @@ export default function AIStudio({ onExitDashboard }) {
   };
   const removeProject = async project => {
     await firestoreService.deleteStudioProject(currentUser.uid, project.id); await loadProjects(); showToast('Project deleted.');
+    if (projectId === project.id) { setArtifact(null); setProjectId(null); setMessages([]); }
   };
+
+  const updateCode = value => {
+    setArtifact(previous => {
+      if (!previous) return previous;
+      if (codeTab === 'html') {
+        const parsed = parseArtifact(value);
+        return { ...previous, ...parsed, code: value, title: previous.title };
+      }
+      const tag = codeTab === 'css' ? 'style' : 'script';
+      const block = `<${tag}>\n${value}\n</${tag}>`;
+      let html = previous.html || '<!doctype html><html><head></head><body></body></html>';
+      const tagPattern = new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}>`, 'i');
+      if (tagPattern.test(html)) html = html.replace(tagPattern, block);
+      else if (tag === 'style' && /<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, `$&${block}`);
+      else if (tag === 'script' && /<\/body>/i.test(html)) html = html.replace(/<\/body>/i, `${block}</body>`);
+      else html += block;
+      const parsed = parseArtifact(html);
+      return { ...previous, ...parsed, [codeTab]: value, code: html, title: previous.title };
+    });
+  };
+
+  const saveCurrentProject = useCallback(async () => {
+    if (!currentUser?.uid || !artifact || !projectId) return;
+    const project = {
+      ...artifact,
+      id: projectId,
+      title: artifact.title || prompt.slice(0, 72) || 'Untitled project',
+      prompt,
+      code: artifact.code || artifact.html || '',
+      timestamp: Date.now()
+    };
+    await firestoreService.saveStudioProject(currentUser.uid, project);
+    firestoreService.setActiveCodeProject(currentUser.uid, project);
+    await loadProjects();
+    showToast('Project saved.');
+  }, [currentUser?.uid, artifact, projectId, prompt, loadProjects, showToast]);
+
+  useEffect(() => {
+    if (!isEditingCode || isGenerating || !artifact || !projectId || !currentUser?.uid) return undefined;
+    const timer = window.setTimeout(() => {
+      const project = {
+        ...artifact, id: projectId, prompt,
+        title: artifact.title || prompt.slice(0, 72) || 'Untitled project',
+        code: artifact.code || artifact.html || '', timestamp: Date.now()
+      };
+      firestoreService.saveStudioProject(currentUser.uid, project)
+        .then(() => firestoreService.setActiveCodeProject(currentUser.uid, project))
+        .then(loadProjects)
+        .catch(error => console.warn('Could not autosave Studio code:', error.message));
+    }, 850);
+    return () => window.clearTimeout(timer);
+  }, [isEditingCode, isGenerating, artifact, projectId, currentUser?.uid, prompt, loadProjects]);
 
   const copyCode = async () => {
     const code = artifactTab === 'code' && codeTab !== 'html' ? activeCode : currentHtml;
@@ -358,7 +417,7 @@ export default function AIStudio({ onExitDashboard }) {
             <button onClick={() => downloadHtml(currentHtml, fileName)} className="flex items-center gap-1.5 rounded-lg px-2 py-2 text-[10px] text-slate-400 hover:bg-white/[.06] hover:text-white" title="Download file"><Download size={14} /><span className="hidden xl:inline">Download File</span></button>
             <button onClick={publish} className="ml-auto flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-violet-500 to-blue-500 px-3 py-2 text-[11px] font-bold text-white shadow-lg shadow-violet-950/30 hover:brightness-110"><Globe2 size={13} />Publish</button>
           </div>
-          {artifactTab === 'preview' ? <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-[#070911] p-3 sm:p-5"><div className="h-full min-h-[390px] max-w-full overflow-hidden rounded-xl border border-white/10 bg-white shadow-[0_10px_45px_rgba(0,0,0,.4)] transition-[width] duration-300" style={{ width: viewportWidth, flex: viewport === 'desktop' ? '1' : '0 0 auto' }}><iframe key={refreshKey} title="Generated website live preview" srcDoc={currentHtml} sandbox="allow-scripts" referrerPolicy="no-referrer" className="h-full min-h-[390px] w-full border-0" /></div></div> : <div className="flex min-h-0 flex-1 flex-col bg-[#080a10]"><div className="flex items-center gap-1 border-b border-white/[.06] px-4 py-2">{['html', 'css', 'js'].map(lang => <button key={lang} onClick={() => setCodeTab(lang)} className={`rounded-lg px-3 py-1.5 text-[11px] font-semibold uppercase ${codeTab === lang ? 'bg-cyan-300/10 text-cyan-100' : 'text-slate-500 hover:text-white'}`}>{lang}</button>)}<div className="ml-auto flex gap-1"><button onClick={copyCode} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10px] text-slate-400 hover:bg-white/[.06] hover:text-white">{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? 'Copied' : 'Copy'}</button><button onClick={() => downloadHtml(currentHtml, fileName)} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10px] text-slate-400 hover:bg-white/[.06] hover:text-white"><Download size={13} />Download</button></div></div><div className="min-h-0 flex-1 overflow-auto text-xs">{activeCode ? <SyntaxHighlighter language={codeLanguages[codeTab] || 'html'} style={vscDarkPlus} showLineNumbers wrapLongLines customStyle={{ background: 'transparent', margin: 0, minHeight: '100%', fontSize: '11px', lineHeight: '1.65', padding: '18px' }} lineNumberStyle={{ minWidth: '3em', color: '#556077', paddingRight: '1.5em' }}>{activeCode}</SyntaxHighlighter> : <div className="p-6 text-sm text-slate-500">No {codeTab.toUpperCase()} block was returned.</div>}</div></div>}
+          {artifactTab === 'preview' ? <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-[#070911] p-3 sm:p-5"><div className="h-full min-h-[390px] max-w-full overflow-hidden rounded-xl border border-white/10 bg-white shadow-[0_10px_45px_rgba(0,0,0,.4)] transition-[width] duration-300" style={{ width: viewportWidth, flex: viewport === 'desktop' ? '1' : '0 0 auto' }}><iframe key={refreshKey} title="Generated website live preview" srcDoc={currentHtml} sandbox="allow-scripts" referrerPolicy="no-referrer" className="h-full min-h-[390px] w-full border-0" /></div></div> : <div className="flex min-h-0 flex-1 flex-col bg-[#080a10]"><div className="flex items-center gap-1 border-b border-white/[.06] px-4 py-2">{['html', 'css', 'js'].map(lang => <button key={lang} onClick={() => setCodeTab(lang)} className={`rounded-lg px-3 py-1.5 text-[11px] font-semibold uppercase ${codeTab === lang ? 'bg-cyan-300/10 text-cyan-100' : 'text-slate-500 hover:text-white'}`}>{lang}</button>)}<div className="ml-auto flex gap-1"><button onClick={() => setIsEditingCode(value => !value)} className="rounded-lg px-2.5 py-1.5 text-[10px] font-semibold text-cyan-100 hover:bg-cyan-200/10">{isEditingCode ? 'Done editing' : 'Edit Code'}</button><button onClick={saveCurrentProject} disabled={!projectId} className="rounded-lg px-2.5 py-1.5 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-200/10 disabled:opacity-40">Save Project</button><button onClick={copyCode} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10px] text-slate-400 hover:bg-white/[.06] hover:text-white">{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? 'Copied' : 'Copy'}</button><button onClick={() => downloadHtml(currentHtml, fileName)} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10px] text-slate-400 hover:bg-white/[.06] hover:text-white"><Download size={13} />Download</button></div></div><div className="min-h-0 flex-1 overflow-auto text-xs">{isEditingCode ? <textarea aria-label={`Edit ${codeTab.toUpperCase()} code`} spellCheck={false} value={activeCode} onChange={event => updateCode(event.target.value)} className="h-full min-h-[380px] w-full resize-none bg-transparent p-5 font-mono text-[11px] leading-6 text-slate-200 outline-none" /> : activeCode ? <SyntaxHighlighter language={codeLanguages[codeTab] || 'html'} style={vscDarkPlus} showLineNumbers wrapLongLines customStyle={{ background: 'transparent', margin: 0, minHeight: '100%', fontSize: '11px', lineHeight: '1.65', padding: '18px' }} lineNumberStyle={{ minWidth: '3em', color: '#556077', paddingRight: '1.5em' }}>{activeCode}</SyntaxHighlighter> : <div className="p-6 text-sm text-slate-500">No {codeTab.toUpperCase()} block was returned.</div>}</div></div>}
         </section>
       </div>}
     </main>
@@ -366,7 +425,7 @@ export default function AIStudio({ onExitDashboard }) {
     {toast && <div className="fixed bottom-5 left-1/2 z-[90] -translate-x-1/2 rounded-xl border border-white/10 bg-[#171b29] px-4 py-3 text-xs text-slate-100 shadow-2xl">{toast}</div>}
     {modal === 'fullscreen' && <div className="fixed inset-0 z-[80] flex flex-col bg-[#070911]"><div className="flex h-14 items-center justify-between border-b border-white/10 px-4 text-sm"><span className="font-semibold">{artifact?.title || 'Live preview'}</span><button onClick={() => setModal('')} className="rounded-xl p-2 text-slate-400 hover:bg-white/10 hover:text-white"><X size={18} /></button></div><iframe title="Fullscreen website preview" srcDoc={currentHtml} sandbox="allow-scripts" referrerPolicy="no-referrer" className="min-h-0 flex-1 border-0 bg-white" /></div>}
 
-    {modal === 'projects' && <StudioModal title="Your projects" onClose={() => setModal('')} wide><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{projects.map(project => <article key={project.id} className="group overflow-hidden rounded-2xl border border-white/10 bg-white/[.025]"><button onClick={() => openProject(project)} className="block h-32 w-full overflow-hidden bg-gradient-to-br from-violet-500/20 via-blue-500/10 to-cyan-500/20 text-left"><iframe title="Project thumbnail" srcDoc={project.html || ''} sandbox="" tabIndex={-1} className="pointer-events-none h-[520px] w-[1600px] origin-top-left scale-[.11] border-0 bg-white" /></button><div className="p-3"><div className="flex items-start justify-between gap-2"><button onClick={() => openProject(project)} className="truncate text-sm font-semibold hover:text-cyan-200">{project.title || 'Untitled project'}</button><div className="flex shrink-0 gap-1"><button title="Duplicate" onClick={() => duplicateProject(project)} className="rounded-lg p-1.5 text-slate-500 hover:bg-white/10 hover:text-white"><Copy size={13} /></button><button title="Delete" onClick={() => removeProject(project)} className="rounded-lg p-1.5 text-slate-500 hover:bg-rose-400/10 hover:text-rose-200"><Trash2 size={13} /></button></div></div><p className="mt-1 text-[10px] text-slate-500">Edited {new Date(project.updatedAt || Date.now()).toLocaleString()}</p></div></article>)}{!projects.length && <div className="col-span-full rounded-2xl border border-dashed border-white/10 p-12 text-center text-sm text-slate-500">Your saved projects will appear here.</div>}</div></StudioModal>}
+    {modal === 'projects' && <StudioModal title="Your projects" onClose={() => setModal('')} wide><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{projects.map(project => <article key={project.id} className="group overflow-hidden rounded-2xl border border-white/10 bg-white/[.025]"><div className="block h-32 w-full overflow-hidden bg-gradient-to-br from-violet-500/20 via-blue-500/10 to-cyan-500/20"><iframe title="Project thumbnail" srcDoc={project.html || ''} sandbox="" tabIndex={-1} className="pointer-events-none h-[520px] w-[1600px] origin-top-left scale-[.11] border-0 bg-white" /></div><div className="p-3"><div className="flex items-start justify-between gap-2"><p className="truncate text-sm font-semibold">{project.title || 'Untitled project'}</p><button title="Delete" onClick={() => removeProject(project)} className="rounded-lg p-1.5 text-slate-500 hover:bg-rose-400/10 hover:text-rose-200"><Trash2 size={13} /></button></div><p className="mt-1 text-[10px] text-slate-500">Edited {new Date(project.timestamp || project.updatedAt || Date.now()).toLocaleString()}</p><div className="mt-3 flex gap-2"><button onClick={() => openProject(project, 'preview')} className="flex-1 rounded-lg border border-white/10 bg-white/[.04] px-2 py-2 text-[10px] font-semibold text-slate-200 hover:bg-white/10">Open Preview</button><button onClick={() => openProject(project, 'edit')} className="flex-1 rounded-lg border border-cyan-200/15 bg-cyan-200/[.06] px-2 py-2 text-[10px] font-semibold text-cyan-100 hover:bg-cyan-200/10">Edit Code</button></div><button onClick={() => duplicateProject(project)} className="mt-2 w-full rounded-lg px-2 py-1.5 text-[10px] text-slate-500 hover:bg-white/[.05] hover:text-white"><Copy size={12} className="mr-1 inline" />Duplicate</button></div></article>)}{!projects.length && <div className="col-span-full rounded-2xl border border-dashed border-white/10 p-12 text-center text-sm text-slate-500">Your saved projects will appear here.</div>}</div></StudioModal>}
 
     {modal === 'menu' && <StudioModal title="Workspace" onClose={() => setModal('')}><div className="grid gap-2 sm:grid-cols-2">{[['Projects', 'projects', FolderOpen], ['Templates', 'templates', Sparkles], ['Pricing', 'pricing', WandSparkles], ['Settings', 'settings', Settings2]].map(([label, key, Icon]) => <button key={key} onClick={() => setModal(key)} className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[.025] p-4 text-left text-sm text-slate-300 transition hover:border-cyan-200/20 hover:bg-white/[.06] hover:text-white"><Icon size={16} />{label}</button>)}</div></StudioModal>}
 

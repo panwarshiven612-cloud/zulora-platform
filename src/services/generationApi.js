@@ -133,7 +133,14 @@ export async function checkGenerationAllowance(type, currentUser) {
   try { result = await requestGeneration('allowance', { usageType: type }, currentUser); }
   catch (error) {
     if (error instanceof GenerationApiError && [403, 429].includes(error.status)) {
-      return { allowed: false, upgradeRequired: Boolean(error.payload?.upgradeRequired), usage: error.payload?.usage, tier: error.payload?.planTier };
+      return {
+        allowed: false,
+        upgradeRequired: Boolean(error.payload?.upgradeRequired),
+        softCooldown: Boolean(error.payload?.softCooldown),
+        cooldownUntil: error.payload?.cooldownUntil || error.payload?.usage?.cooldownUntil || null,
+        usage: error.payload?.usage,
+        tier: error.payload?.planTier
+      };
     }
     throw error;
   }

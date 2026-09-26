@@ -11,7 +11,46 @@ import { useAuth } from '../context/AuthContext';
 import { TIERS } from '../services/firestoreService';
 
 export const PricingModal = ({ isOpen, onClose }) => {
-  const { tier } = useAuth();
+  const { currentUser, tier, refreshProfile } = useAuth();
+  const [utr, setUtr] = useState('');
+  const [submittingUtr, setSubmittingUtr] = useState(false);
+  const [utrMessage, setUtrMessage] = useState('');
+  const [utrError, setUtrError] = useState('');
+
+  const submitUtr = async event => {
+    event.preventDefault();
+    const transactionId = utr.trim();
+    setUtrMessage('');
+    setUtrError('');
+    if (!/^\d{12}$/.test(transactionId)) {
+      setUtrError('Enter a valid 12-digit UTR / transaction ID.');
+      return;
+    }
+    if (!currentUser?.getIdToken) {
+      setUtrError('Sign in before submitting your payment UTR.');
+      return;
+    }
+    setSubmittingUtr(true);
+    try {
+      const token = await currentUser.getIdToken();
+      const response = await fetch('/api/payments/utr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ utr: transactionId })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'Could not verify this transaction.');
+      await refreshProfile();
+      setUtr('');
+      setUtrMessage('UTR recorded. Your Pro plan is active.');
+    } catch (error) {
+      setUtrError(error.message || 'Could not verify this transaction.');
+    } finally {
+      setSubmittingUtr(false);
+    }
+  };
+
+  const handleUpgrade = () => setUtrMessage('Contact support to change an active subscription.');
 
   if (!isOpen) return null;
 
@@ -71,7 +110,7 @@ export const PricingModal = ({ isOpen, onClose }) => {
               <ul className="text-xs text-slate-600 dark:text-slate-300 space-y-2.5 mb-6">
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  <span>Flexible hourly AI capacity</span>
+                  <span>Flexible daily AI capacity</span>
                 </li>
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-slate-400 shrink-0" />
@@ -125,13 +164,13 @@ export const PricingModal = ({ isOpen, onClose }) => {
                 <div className="text-3xl font-black text-slate-900 dark:text-white">
                   ₹299 <span className="text-xs font-normal text-slate-400">/ month</span>
                 </div>
-                <div className="text-xs text-sky-500 font-semibold">More hourly generation capacity</div>
+                <div className="text-xs text-sky-500 font-semibold">More daily generation capacity</div>
               </div>
 
               <ul className="text-xs text-slate-600 dark:text-slate-300 space-y-2.5 mb-6">
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-sky-500 shrink-0" />
-                  <span>Expanded hourly AI capacity</span>
+                  <span>Expanded daily AI capacity</span>
                 </li>
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-sky-500 shrink-0" />
@@ -152,17 +191,7 @@ export const PricingModal = ({ isOpen, onClose }) => {
               </ul>
             </div>
 
-            <button
-              onClick={() => window.open('https://wa.me/916395211325?text=Hi%20Shiven,%20I%20have%20completed%20the%20payment%20to%20shivenpanwar@fam%20for%20Zulora%20AI%20Pro.%20Here%20is%20my%20registered%20email:', '_blank', 'noopener,noreferrer')}
-              disabled={tier === TIERS.PRO}
-              className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all ${
-                tier === TIERS.PRO 
-                  ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-default'
-                  : 'text-white azure-gradient-btn'
-              }`}
-            >
-              {tier === TIERS.PRO ? 'Verified Pro Plan' : 'Submit Payment Proof via WhatsApp'}
-            </button>
+            {tier === TIERS.PRO ? <button disabled className="w-full py-2.5 rounded-xl text-xs font-bold bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-default">Verified Pro Plan</button> : <a href="upi://pay?pa=shivenpanwar@fam&pn=Zulora%20AI&cu=INR" className="flex w-full items-center justify-center py-2.5 rounded-xl text-xs font-bold text-white azure-gradient-btn">Pay via UPI App</a>}
           </div>
 
           {/* 3. Ultra Pro Max Tier (₹599 / month) */}
@@ -188,13 +217,13 @@ export const PricingModal = ({ isOpen, onClose }) => {
                 <div className="text-3xl font-black text-slate-900 dark:text-white">
                   ₹599 <span className="text-xs font-normal text-slate-400">/ month</span>
                 </div>
-                <div className="text-xs text-amber-500 font-semibold">Maximum hourly generation capacity</div>
+                <div className="text-xs text-amber-500 font-semibold">Maximum daily generation capacity</div>
               </div>
 
               <ul className="text-xs text-slate-600 dark:text-slate-300 space-y-2.5 mb-6">
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                  <span>Maximum hourly AI capacity</span>
+                  <span>Maximum daily AI capacity</span>
                 </li>
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-amber-500 shrink-0" />
@@ -231,13 +260,22 @@ export const PricingModal = ({ isOpen, onClose }) => {
         </div>
 
         <div className="p-5 rounded-2xl bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-800 space-y-3">
-          <p className="text-sm font-bold text-slate-900 dark:text-white">Manual UPI subscription verification</p>
-          <p className="text-xs text-slate-600 dark:text-slate-300">Pay for subscription using any UPI app (PhonePe/GPay/Paytm) to UPI ID: <strong>shivenpanwar@fam</strong></p>
-          <a href="https://wa.me/916395211325?text=Hi%20Shiven,%20I%20have%20completed%20the%20payment%20to%20shivenpanwar@fam%20for%20Zulora%20AI%20Pro.%20Here%20is%20my%20registered%20email:" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">
-            <MessageCircle className="w-4 h-4" />
-            Submit Payment Proof via WhatsApp
+          <p className="text-sm font-bold text-slate-900 dark:text-white">UPI payment and Pro activation</p>
+          <p className="text-xs text-slate-600 dark:text-slate-300">Pay from any UPI app to UPI ID: <strong>shivenpanwar@fam</strong></p>
+          <a href="upi://pay?pa=shivenpanwar@fam&pn=Zulora%20AI&cu=INR" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">
+            <ExternalLink className="w-4 h-4" />
+            Pay via UPI App
           </a>
-          <p className="text-[11px] text-slate-500 dark:text-slate-400">Paid features unlock only after manual verification updates your Firestore profile.</p>
+          <form onSubmit={submitUtr} className="space-y-2 border-t border-sky-200/70 pt-4 dark:border-sky-800">
+            <label htmlFor="utr-input" className="block text-xs font-semibold text-slate-700 dark:text-slate-200">Enter 12-Digit UTR / Transaction ID</label>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input id="utr-input" inputMode="numeric" autoComplete="off" maxLength={12} pattern="[0-9]{12}" value={utr} onChange={event => setUtr(event.target.value.replace(/\D/g, '').slice(0, 12))} placeholder="12-digit UTR" className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950 dark:text-white" />
+              <button type="submit" disabled={submittingUtr || tier !== TIERS.FREE} className="rounded-xl bg-sky-600 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50">{submittingUtr ? 'Submitting…' : 'Verify & Activate Pro'}</button>
+            </div>
+            {utrError && <p role="alert" className="text-xs text-rose-600 dark:text-rose-300">{utrError}</p>}
+            {utrMessage && <p role="status" className="text-xs text-emerald-700 dark:text-emerald-300">{utrMessage}</p>}
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">Each UTR can be submitted once. The submitted UTR is recorded with your account.</p>
+          </form>
         </div>
 
         {/* Enterprise & Founder WhatsApp Card */}

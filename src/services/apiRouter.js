@@ -189,7 +189,15 @@ const isQuotaAuthorityError = error => error instanceof GenerationApiError &&
 const ensureGenerationAllowance = async (type, currentUser) => {
   const allowance = await checkGenerationAllowance(type, currentUser);
   if (allowance && !allowance.allowed) {
-    throw new GenerationApiError(`${type} limit reached. Upgrade your subscription to continue.`, allowance.usage?.blocked ? 429 : 403, { ...allowance, upgradeRequired: true });
+    if (allowance.softCooldown) {
+      throw new GenerationApiError('Taking a 5-minute breather to maintain top performance...', 429, { ...allowance, upgradeRequired: false });
+    }
+    const hardLimit = Boolean(allowance.usage?.blocked || allowance.upgradeRequired);
+    throw new GenerationApiError(
+      hardLimit ? 'Your daily AI token allocation is used. Upgrade or wait for the reset to continue.' : `${type} request is currently unavailable.`,
+      hardLimit ? 429 : 403,
+      { ...allowance, upgradeRequired: hardLimit }
+    );
   }
 };
 
@@ -711,8 +719,6 @@ export const apiRouter = {
       currentUser
     } = options;
     const imageEngine = options.imageEngine || 'flux-quick';
-    const isHuggingFaceEngine = ['hf-flux-dev', 'hf-sdxl'].includes(imageEngine);
-
     await ensureGenerationAllowance('image', currentUser);
 
     try {
@@ -727,11 +733,7 @@ export const apiRouter = {
       if (serverResult?.url) return await syncUsage(serverResult, 'image', currentUser);
     } catch (error) {
       if (isQuotaAuthorityError(error)) throw error;
-      if (isHuggingFaceEngine) throw error;
       console.warn('[Image] Server generation route unavailable; trying browser providers:', error.message);
-    }
-    if (isHuggingFaceEngine) {
-      throw new Error('Hugging Face image models require the authenticated server route and a configured server-side HUGGINGFACE_API_KEY.');
     }
 
     let targetWidth = width;

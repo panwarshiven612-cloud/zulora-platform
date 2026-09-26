@@ -129,9 +129,9 @@ export const Sidebar = ({
   const olderSessions = sessions.filter(s => now - (s.updatedAt || 0) >= sevenDays);
   const tokenCap = tier === TIERS.ULTRA ? 100_000 : tier === TIERS.PRO ? 50_000 : 10_000;
   const tokenWindowStart = Number(usage.tokenWindowStart) || Date.now();
-  const tokenWindowExpired = Date.now() - tokenWindowStart >= 60 * 60 * 1000;
-  const tokenPercent = tokenWindowExpired ? 0 : Math.min(100, Math.round(((Number(usage.tokenUsed) || 0) / tokenCap) * 100));
-  const tokenResetAt = new Date((tokenWindowExpired ? Date.now() : tokenWindowStart) + 60 * 60 * 1000)
+  const tokenWindowExpired = Date.now() - tokenWindowStart >= oneDay || tokenWindowStart > Date.now();
+  const tokenPercent = tokenWindowExpired ? 0 : Math.max(0, Math.min(100, Math.floor(((Number(usage.tokenUsed) || 0) / tokenCap) * 100)));
+  const tokenResetAt = new Date((tokenWindowExpired ? Date.now() : tokenWindowStart) + oneDay)
     .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   const renderSessionItem = (session) => {
@@ -346,10 +346,10 @@ export const Sidebar = ({
             </span>
           </div>
 
-          {/* Hourly token bucket */}
+          {/* Daily token allocation */}
           <div>
             <div className="flex justify-between text-[10px] text-slate-500 dark:text-slate-400 mb-1">
-              <span>Current usage</span>
+              <span>Daily usage</span>
               <span>{tokenPercent}% used</span>
             </div>
             <div className="w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">

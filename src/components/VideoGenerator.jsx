@@ -148,7 +148,7 @@ export const VideoGenerator = () => {
           </div>
           <div>
             <div className="text-[11px] text-slate-400 font-medium">Current usage</div>
-            <div className="text-sm font-bold text-slate-900 dark:text-white">{usagePercent}% <span className="font-medium text-slate-400">used this hour</span></div>
+            <div className="text-sm font-bold text-slate-900 dark:text-white">{usagePercent}% <span className="font-medium text-slate-400">used today</span></div>
           </div>
         </div>
       </div>

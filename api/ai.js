@@ -7,7 +7,10 @@ export const config = { maxDuration };
 
 const CHAT_ORDER = ['gemini', 'groq', 'cerebras', 'openrouter', 'mistral'];
 const TOKEN_LIMITS = { free: 10_000, pro: 50_000, ultra: 100_000 };
-const TOKEN_WINDOW_MS = 60 * 60 * 1000;
+const TOKEN_WINDOW_MS = 24 * 60 * 60 * 1000;
+const PROMPT_BURST_WINDOW_MS = 2 * 60 * 1000;
+const PROMPT_BURST_LIMIT = 8;
+const SOFT_COOLDOWN_MS = 5 * 60 * 1000;
 let cachedFirestoreToken = null;
 let cachedFirebaseCertificates = null;
 
@@ -144,6 +147,7 @@ function readValue(value) {
   if ('doubleValue' in value) return Number(value.doubleValue);
   if ('booleanValue' in value) return value.booleanValue;
   if ('stringValue' in value) return value.stringValue;
+  if ('arrayValue' in value) return (value.arrayValue.values || []).map(readValue);
   if ('mapValue' in value) return Object.fromEntries(Object.entries(value.mapValue.fields || {}).map(([key, field]) => [key, readValue(field)]));
   return null;
 }
@@ -156,6 +160,7 @@ function toFirestoreValue(value) {
   if (typeof value === 'number') return Number.isInteger(value) ? { integerValue: String(value) } : { doubleValue: value };
   if (typeof value === 'boolean') return { booleanValue: value };
   if (typeof value === 'string') return { stringValue: value };
+  if (Array.isArray(value)) return { arrayValue: { values: value.map(toFirestoreValue) } };
   if (value && typeof value === 'object') return { mapValue: { fields: Object.fromEntries(Object.entries(value).map(([key, child]) => [key, toFirestoreValue(child)])) } };
   return { nullValue: null };
 }
@@ -186,7 +191,11 @@ function tokenUsageState(profile, now = Date.now()) {
   const windowStart = expired ? now : previousStart;
   const current = expired ? 0 : Math.max(0, Number(usage.tokenUsed) || 0);
   const limit = TOKEN_LIMITS[tier];
-  return { usage, tier, current, limit, windowStart, resetAt: windowStart + TOKEN_WINDOW_MS, allowed: current < limit };
+  const cooldownUntil = Math.max(0, Number(profile.rateLimit?.cooldownUntil) || 0);
+  return {
+    usage, tier, current, limit, windowStart, resetAt: windowStart + TOKEN_WINDOW_MS,
+    allowed: current < limit, cooldownUntil, softCooldown: cooldownUntil > now
+  };
 }
 
 async function readTokenUsageState(uid) {
@@ -217,7 +226,7 @@ async function incrementTokenUsage(uid, estimatedTokens = 1000) {
     const commit = await fetchWithTimeout(`${firestoreRoot()}:commit`, {
       method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction, writes: [write] })
     }, 8_000);
-    if (commit.ok) return { allowed: true, usedPercent: Math.min(100, Math.round(((state.current + charge) / state.limit) * 100)), resetAt: state.resetAt, planTier: state.tier };
+    if (commit.ok) return { allowed: true, usedPercent: Math.max(0, Math.min(100, Math.floor(((state.current + charge) / state.limit) * 100))), resetAt: state.resetAt, planTier: state.tier };
     const details = await commit.text();
     if (attempt < 2 && (commit.status === 409 || details.includes('ABORTED'))) continue;
     throw new Error('Firestore rejected the token usage update.');
@@ -225,11 +234,123 @@ async function incrementTokenUsage(uid, estimatedTokens = 1000) {
   throw new Error('Firestore token usage update could not be committed.');
 }
 
+async function registerPromptAttempt(uid, now = Date.now()) {
+  const adminToken = await firestoreAccessToken();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const begin = await fetchWithTimeout(`${firestoreRoot()}:beginTransaction`, {
+      method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ options: { readWrite: {} } })
+    }, 8_000);
+    if (!begin.ok) throw new Error('Could not start the Firestore rate-limit transaction.');
+    const transaction = (await begin.json()).transaction;
+    const { profile, error } = await readUsageProfile(uid, adminToken, transaction);
+    if (error) throw new Error(error);
+    const rateLimit = { ...(profile.rateLimit || {}) };
+    const cooldownUntil = Number(rateLimit.cooldownUntil) || 0;
+    if (cooldownUntil > now) {
+      await fetchWithTimeout(`${firestoreRoot()}:rollback`, {
+        method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction })
+      }, 8_000).catch(() => {});
+      return { allowed: false, softCooldown: true, cooldownUntil };
+    }
+    const promptTimes = (Array.isArray(rateLimit.promptTimes) ? rateLimit.promptTimes : [])
+      .map(Number).filter(timestamp => Number.isFinite(timestamp) && timestamp > now - PROMPT_BURST_WINDOW_MS && timestamp <= now);
+    if (promptTimes.length >= PROMPT_BURST_LIMIT) {
+      const until = now + SOFT_COOLDOWN_MS;
+      const write = {
+        update: { name: firestoreDoc(uid), fields: { rateLimit: toFirestoreValue({ promptTimes: [...promptTimes, now].slice(-PROMPT_BURST_LIMIT - 1), cooldownUntil: until }) } },
+        updateMask: { fieldPaths: ['rateLimit'] }
+      };
+      const commit = await fetchWithTimeout(`${firestoreRoot()}:commit`, {
+        method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction, writes: [write] })
+      }, 8_000);
+      if (commit.ok) return { allowed: false, softCooldown: true, cooldownUntil: until };
+      const details = await commit.text();
+      if (attempt < 2 && (commit.status === 409 || details.includes('ABORTED'))) continue;
+      throw new Error('Firestore rejected the prompt rate-limit update.');
+    }
+    const write = {
+      update: { name: firestoreDoc(uid), fields: { rateLimit: toFirestoreValue({ promptTimes: [...promptTimes, now], cooldownUntil: 0 }) } },
+      updateMask: { fieldPaths: ['rateLimit'] }
+    };
+    const commit = await fetchWithTimeout(`${firestoreRoot()}:commit`, {
+      method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction, writes: [write] })
+    }, 8_000);
+    if (commit.ok) return { allowed: true, softCooldown: false, cooldownUntil: 0 };
+    const details = await commit.text();
+    if (attempt < 2 && (commit.status === 409 || details.includes('ABORTED'))) continue;
+    throw new Error('Firestore rejected the prompt rate-limit update.');
+  }
+  throw new Error('Firestore prompt rate-limit update could not be committed.');
+}
+
 export async function verifyRequestUser(req) { return verifyUser(req); }
+
+export async function recordUtrAndActivate(uid, utr) {
+  const adminToken = await firestoreAccessToken();
+  const now = Date.now();
+  const { profile, error } = await readUsageProfile(uid, adminToken);
+  if (error) throw new Error(error);
+  const existingTier = [profile.planTier, profile.tier].map(value => String(value || '').toLowerCase().replace(/[ _-]/g, ''));
+  if (existingTier.some(value => value.includes('ultra'))) {
+    const activePlan = new Error('Your Ultra plan is already active.');
+    activePlan.status = 409;
+    throw activePlan;
+  }
+  if (existingTier.some(value => value.includes('pro'))) {
+    const activePlan = new Error('Your Pro plan is already active.');
+    activePlan.status = 409;
+    throw activePlan;
+  }
+  const paymentDoc = `${firestoreRoot()}/payments/utr_logs/entries/${encodeURIComponent(utr)}`;
+  const paymentParent = `${firestoreRoot()}/payments/utr_logs`;
+  const writes = [
+    {
+      update: { name: paymentParent, fields: { collection: { stringValue: 'utr_logs' }, updatedAt: { integerValue: String(now) } } },
+      updateMask: { fieldPaths: ['collection', 'updatedAt'] }
+    },
+    {
+      update: { name: paymentDoc, fields: {
+        uid: { stringValue: uid }, utr: { stringValue: utr }, planTier: { stringValue: 'pro' },
+        status: { stringValue: 'activated' }, submittedAt: { integerValue: String(now) },
+        verificationMethod: { stringValue: 'upi-utr-submission' }
+      } },
+      currentDocument: { exists: false }
+    },
+    {
+      update: { name: firestoreDoc(uid), fields: {
+        planTier: { stringValue: 'pro' }, tier: { stringValue: 'pro' }, isPro: { booleanValue: true },
+        proActivatedAt: { integerValue: String(now) }, paymentUtr: { stringValue: utr }
+      } },
+      updateMask: { fieldPaths: ['planTier', 'tier', 'isPro', 'proActivatedAt', 'paymentUtr'] }
+    }
+  ];
+  const commit = await fetchWithTimeout(`${firestoreRoot()}:commit`, {
+    method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ writes })
+  }, 12_000);
+  if (!commit.ok) {
+    const details = await commit.text();
+    if (commit.status === 409 || details.includes('ALREADY_EXISTS') || details.includes('FAILED_PRECONDITION')) {
+      const duplicate = new Error('This 12-digit UTR has already been submitted.');
+      duplicate.status = 409;
+      throw duplicate;
+    }
+    throw new Error('Could not record the UTR or activate the plan.');
+  }
+  return { activated: true, planTier: 'pro', submittedAt: now };
+}
 
 export async function getTokenUsageStatus(uid) {
   const state = await readTokenUsageState(uid);
-  return { usedPercent: Math.min(100, Math.round((state.current / state.limit) * 100)), resetAt: new Date(state.resetAt).toISOString(), blocked: !state.allowed, tier: state.tier };
+  return {
+    usedPercent: Math.max(0, Math.min(100, Math.floor((state.current / state.limit) * 100))),
+    usedTokens: state.current,
+    tokenLimit: state.limit,
+    resetAt: new Date(state.resetAt).toISOString(),
+    blocked: !state.allowed,
+    softCooldown: state.softCooldown,
+    cooldownUntil: state.softCooldown ? new Date(state.cooldownUntil).toISOString() : null,
+    tier: state.tier
+  };
 }
 
 const parseRetryAfter = response => {
@@ -505,25 +626,56 @@ async function responseImage(response, pollinationsKey = '') {
     const encoded = data.data?.[0]?.b64_json || data.image || data.result?.image;
     const url = data.data?.[0]?.url || data.images?.[0]?.url;
     if (encoded) {
-      if (encoded.length * 0.75 > 2_800_000) throw new Error('Image output exceeds the serverless response limit.');
-      return `data:${data.mime_type || 'image/png'};base64,${encoded}`;
+      const bytes = Buffer.from(String(encoded), 'base64');
+      return verifiedImageDataUrl(bytes, data.mime_type || 'image/png');
     }
     if (url) {
       const generatedUrl = new URL(url);
-      const pollinationsHost = generatedUrl.protocol === 'https:' && ['gen.pollinations.ai', 'image.pollinations.ai'].some(host => generatedUrl.hostname === host || generatedUrl.hostname.endsWith(`.${host}`));
-      if (!pollinationsHost) throw new Error('Image provider returned an unsupported asset URL.');
+      if (!isTrustedImageHost(generatedUrl)) throw new Error('Image provider returned an unsupported asset URL.');
       const imageResponse = await fetchWithTimeout(generatedUrl.href, {
-        headers: pollinationsKey ? { Authorization: `Bearer ${pollinationsKey}` } : {}
+        headers: pollinationsKey && ['gen.pollinations.ai', 'image.pollinations.ai'].includes(generatedUrl.hostname) ? { Authorization: `Bearer ${pollinationsKey}` } : {}
       }, 12_000);
       if (!imageResponse.ok) throw new Error('Generated image URL could not be fetched.');
-      return responseImage(imageResponse);
+      return responseImage(imageResponse, pollinationsKey);
     }
     throw new Error('Image provider returned no image.');
   }
   if (!type.startsWith('image/')) throw new Error('Image provider returned an unsupported response.');
   const bytes = Buffer.from(await response.arrayBuffer());
+  return verifiedImageDataUrl(bytes, type.split(';')[0]);
+}
+
+function isTrustedImageHost(url) {
+  if (url.protocol !== 'https:') return false;
+  const host = url.hostname.toLowerCase();
+  return ['gen.pollinations.ai', 'image.pollinations.ai', 'replicate.delivery', 'fal.media', 'fal.ai', 'huggingface.co']
+    .some(domain => host === domain || host.endsWith(`.${domain}`));
+}
+
+function verifiedImageDataUrl(bytes, declaredType = '') {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 12) throw new Error('Image provider returned a corrupt or empty image.');
   if (bytes.length > 2_800_000) throw new Error('Image output exceeds the serverless response limit.');
-  return `data:${type.split(';')[0]};base64,${bytes.toString('base64')}`;
+  const mimeType = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? 'image/png'
+    : bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff ? 'image/jpeg'
+      : bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP' ? 'image/webp'
+        : ['GIF87a', 'GIF89a'].includes(bytes.toString('ascii', 0, 6)) ? 'image/gif' : '';
+  if (!mimeType) throw new Error('Image provider returned a corrupt or unsupported image payload.');
+  const normalizedDeclared = String(declaredType || '').split(';')[0].toLowerCase();
+  if (normalizedDeclared.startsWith('image/') && normalizedDeclared !== mimeType && normalizedDeclared !== 'image/jpg') {
+    console.warn(`Image provider declared ${normalizedDeclared} but returned ${mimeType}; using the detected image format.`);
+  }
+  return `data:${mimeType};base64,${bytes.toString('base64')}`;
+}
+
+async function validateGeneratedImage(result) {
+  const value = String(result || '');
+  const dataMatch = value.match(/^data:(image\/(?:png|jpe?g|webp|gif));base64,([A-Za-z0-9+/=]+)$/i);
+  if (dataMatch) return verifiedImageDataUrl(Buffer.from(dataMatch[2], 'base64'), dataMatch[1]);
+  const url = new URL(value);
+  if (!isTrustedImageHost(url)) throw new Error('Image provider returned an unsupported asset URL.');
+  const response = await fetchWithTimeout(url.href, {}, 12_000);
+  if (!response.ok) throw new Error(`Generated image asset returned HTTP ${response.status}.`);
+  return responseImage(response);
 }
 
 async function geminiImageEdit(prompt, sourceImage, aspectRatio) {
@@ -667,39 +819,44 @@ async function generateImage(body) {
   const sourceImage = String(body.sourceImage || '');
   const imageEngine = String(body.imageEngine || 'flux-quick');
   if (!prompt) throw new Error('Write a prompt before generating an image.');
-  if (['hf-flux-dev', 'hf-sdxl'].includes(imageEngine)) {
-    if (sourceImage) throw new Error('The selected Hugging Face model supports text-to-image generation, not reference-image editing.');
-    const modelId = imageEngine === 'hf-flux-dev'
-      ? 'black-forest-labs/FLUX.1-dev'
-      : 'stabilityai/stable-diffusion-xl-base-1.0';
-    const url = await huggingfaceImage(prompt, modelId);
-    if (!url) throw new Error('Hugging Face Inference API is unavailable. Configure HUGGINGFACE_API_KEY on the server.');
-    return { url, provider: 'Hugging Face Inference API', model: modelId, enhancedPrompt: prompt, aspectRatio: body.aspectRatio || '1:1' };
-  }
-  if (imageEngine === 'pollinations-hd') {
-    if (sourceImage) throw new Error('Pollinations HD currently supports text-to-image generation only.');
-    const url = await pollinationsImage(prompt, '', body.aspectRatio, body.seed, 'hd');
-    if (!url) throw new Error('Pollinations HD is unavailable. Configure POLLINATIONS_API_KEY on the server.');
-    return { url, provider: 'Pollinations HD', model: 'flux-hd', enhancedPrompt: prompt, aspectRatio: body.aspectRatio || '1:1' };
-  }
   const hasImageProvider = sourceImage
     ? availableProviders().includes('gemini') || Boolean(providerKeys.pollinations)
     : Boolean(providerKeys.pollinations || providerKeys.huggingface || providerKeys.fal || (providerKeys.cloudflareAccountId && providerKeys.cloudflareToken) || providerKeys.replicate);
   if (!hasImageProvider) throw new Error(`No image-${sourceImage ? 'editing' : 'generation'} providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.`);
   const fullPrompt = prompt;
   const attempts = [];
-  if (sourceImage) attempts.push(['Gemini 3.1 Flash Image', () => geminiImageEdit(fullPrompt, sourceImage, body.aspectRatio)]);
-  attempts.push(['Pollinations', () => pollinationsImage(fullPrompt, sourceImage, body.aspectRatio, body.seed)]);
-  if (!sourceImage) {
-    attempts.push(['Hugging Face', () => huggingfaceImage(fullPrompt)]);
-    attempts.push(['Fal', async () => { const data = await falRequest('fal-ai/flux/schnell', { prompt: fullPrompt, image_size: falImageSize(body.aspectRatio) }); return data?.images?.[0]?.url || null; }]);
-    attempts.push(['Cloudflare Workers AI', () => cloudflareImage(fullPrompt, body.aspectRatio)]);
-    attempts.push(['Replicate', () => replicateImage(fullPrompt, body.aspectRatio)]);
+  const selectedHfModel = imageEngine === 'hf-sdxl'
+    ? 'stabilityai/stable-diffusion-xl-base-1.0'
+    : 'black-forest-labs/FLUX.1-dev';
+  if (sourceImage) {
+    if (imageEngine === 'pollinations-hd' || imageEngine === 'hf-flux-dev' || imageEngine === 'hf-sdxl') {
+      throw new Error('The selected model supports text-to-image generation, not reference-image editing.');
+    }
+    attempts.push(['Gemini 3.1 Flash Image', 'gemini-3.1-flash-image', () => geminiImageEdit(fullPrompt, sourceImage, body.aspectRatio)]);
+    attempts.push(['Pollinations', 'kontext', () => pollinationsImage(fullPrompt, sourceImage, body.aspectRatio, body.seed)]);
+  } else {
+    if (imageEngine === 'hf-flux-dev' || imageEngine === 'hf-sdxl') {
+      attempts.push(['Hugging Face Inference API', selectedHfModel, () => huggingfaceImage(fullPrompt, selectedHfModel)]);
+    } else if (imageEngine === 'pollinations-hd') {
+      attempts.push(['Pollinations HD', 'flux-hd', () => pollinationsImage(fullPrompt, '', body.aspectRatio, body.seed, 'hd')]);
+    } else {
+      attempts.push(['Pollinations', 'flux', () => pollinationsImage(fullPrompt, '', body.aspectRatio, body.seed)]);
+    }
+    if (imageEngine !== 'hf-flux-dev' && imageEngine !== 'hf-sdxl') {
+      attempts.push(['Hugging Face Inference API', 'black-forest-labs/FLUX.1-schnell', () => huggingfaceImage(fullPrompt)]);
+    }
+    if (imageEngine !== 'pollinations-hd') attempts.push(['Pollinations HD', 'flux-hd', () => pollinationsImage(fullPrompt, '', body.aspectRatio, body.seed, 'hd')]);
+    attempts.push(['Fal AI', 'fal-ai/flux/schnell', async () => { const data = await falRequest('fal-ai/flux/schnell', { prompt: fullPrompt, image_size: falImageSize(body.aspectRatio) }); return data?.images?.[0]?.url || null; }]);
+    attempts.push(['Cloudflare Workers AI', 'stable-diffusion-xl-lightning', () => cloudflareImage(fullPrompt, body.aspectRatio)]);
+    attempts.push(['Replicate', 'black-forest-labs/flux-schnell', () => replicateImage(fullPrompt, body.aspectRatio)]);
   }
-  for (const [provider, run] of attempts) {
+  for (const [provider, model, run] of attempts) {
     try {
-      const url = await run();
-      if (url) return { url, provider, model: provider === 'Gemini 3.1 Flash Image' ? 'gemini-3.1-flash-image' : provider === 'Pollinations' ? (sourceImage ? 'kontext' : 'flux') : 'image-generation', enhancedPrompt: fullPrompt, aspectRatio: body.aspectRatio || '1:1' };
+      const candidate = await run();
+      if (candidate) {
+        const url = await validateGeneratedImage(candidate);
+        return { url, provider, model, enhancedPrompt: fullPrompt, aspectRatio: body.aspectRatio || '1:1' };
+      }
     } catch (error) { console.warn(`${provider} image attempt failed:`, error.message); }
   }
   throw new Error(sourceImage ? 'Image editing providers are unavailable. Check Gemini and Pollinations server keys.' : 'All configured image providers are unavailable.');
@@ -725,6 +882,37 @@ async function replicateVideo(prompt, deadline) {
   const url = Array.isArray(data.output) ? data.output[0] : data.output;
   if (!url || data.status !== 'succeeded') throw new Error('Replicate video generation did not finish before the request deadline.');
   return url;
+}
+
+async function huggingfaceVideo(prompt, duration, aspectRatio, deadline) {
+  if (!providerKeys.huggingface) return null;
+  const remaining = Math.max(0, deadline - Date.now());
+  if (remaining < 2_000) return null;
+  const modelId = process.env.HUGGINGFACE_VIDEO_MODEL || 'Lightricks/LTX-Video';
+  const url = `https://router.huggingface.co/hf-inference/models/${modelId.split('/').map(encodeURIComponent).join('/')}`;
+  const response = await fetchWithTimeout(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${providerKeys.huggingface}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ inputs: prompt, parameters: { num_frames: Math.min(97, Math.max(49, (Number(duration) || 4) * 12)), aspect_ratio: aspectRatio || '16:9' } })
+  }, Math.min(18_000, remaining));
+  if (!response.ok) throw new Error(`Hugging Face video generation failed (HTTP ${response.status}).`);
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('json')) {
+    const data = await response.json();
+    const candidate = data.video?.url || data.video_url || data.videoUrl || data.url || data.output?.url;
+    if (!candidate) throw new Error('Hugging Face returned no video payload.');
+    const resultUrl = new URL(candidate);
+    const allowed = ['huggingface.co', 'hf.co', 'replicate.delivery', 'fal.media']
+      .some(host => resultUrl.hostname === host || resultUrl.hostname.endsWith(`.${host}`));
+    if (resultUrl.protocol !== 'https:' || !allowed) throw new Error('Hugging Face returned an unsupported video URL.');
+    return resultUrl.href;
+  }
+  if (!contentType.startsWith('video/')) throw new Error('Hugging Face returned a non-video response.');
+  const bytes = Buffer.from(await response.arrayBuffer());
+  const isMp4 = bytes.length >= 12 && bytes.toString('ascii', 4, 8) === 'ftyp';
+  const isWebm = bytes.length >= 4 && bytes.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+  if ((!isMp4 && !isWebm) || bytes.length < 128 || bytes.length > 3_000_000) throw new Error('Hugging Face returned a corrupt or oversized video.');
+  return `data:${contentType.split(';')[0]};base64,${bytes.toString('base64')}`;
 }
 
 async function falVideo(prompt, duration, modelId, deadline) {
@@ -758,14 +946,15 @@ async function pollinationsVideo(prompt, duration, aspectRatio, deadline) {
       if (contentType.includes('json')) {
         const data = await response.json();
         const candidate = data.video?.url || data.video_url || data.videoUrl || data.mediaUrl || data.url || data.output?.url;
-        if (candidate && ['https:', 'http:'].includes(new URL(candidate).protocol)) return candidate;
+        if (candidate) return candidate;
         throw new Error('Pollinations returned no valid video URL.');
       }
       const bytes = Buffer.from(await response.arrayBuffer());
       const isMp4 = bytes.length >= 12 && bytes.toString('ascii', 4, 8) === 'ftyp';
-      if (!contentType.startsWith('video/') && !isMp4) throw new Error('Pollinations returned an unsupported video response.');
+      const isWebm = bytes.length >= 4 && bytes.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+      if ((!contentType.startsWith('video/') && !isMp4 && !isWebm) || (!isMp4 && !isWebm)) throw new Error('Pollinations returned an unsupported or corrupt video response.');
       if (bytes.length < 1 || bytes.length > 30 * 1024 * 1024) throw new Error('Pollinations video output is outside the supported size.');
-      const mimeType = contentType.startsWith('video/') ? contentType.split(';')[0] : 'video/mp4';
+      const mimeType = isWebm ? 'video/webm' : 'video/mp4';
       const form = new FormData();
       form.set('file', new Blob([bytes], { type: mimeType }), 'zulora-generated.mp4');
       if (remaining() > 1_500) {
@@ -787,31 +976,67 @@ async function pollinationsVideo(prompt, duration, aspectRatio, deadline) {
   throw lastError || new Error('Pollinations video generation timed out.');
 }
 
+async function validateVideoCandidate(candidate, timeoutMs = 7_000) {
+  const value = String(candidate || '');
+  const data = value.match(/^data:video\/(mp4|webm);base64,([A-Za-z0-9+/=]+)$/i);
+  if (data) {
+    const bytes = Buffer.from(data[2], 'base64');
+    const valid = bytes.length >= 128 && ((data[1].toLowerCase() === 'mp4' && bytes.toString('ascii', 4, 8) === 'ftyp') || (data[1].toLowerCase() === 'webm' && bytes.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))));
+    if (!valid) throw new Error('Video provider returned a corrupt video payload.');
+    return value;
+  }
+  const url = new URL(value);
+  const trustedHost = ['gen.pollinations.ai', 'image.pollinations.ai', 'media.pollinations.ai', 'replicate.delivery', 'fal.media', 'fal.ai', 'huggingface.co', 'hf.co']
+    .some(host => url.hostname === host || url.hostname.endsWith(`.${host}`));
+  if (url.protocol !== 'https:' || !trustedHost) throw new Error('Video provider returned an unsupported asset URL.');
+  const response = await fetchWithTimeout(url.href, { headers: { Range: 'bytes=0-31' } }, timeoutMs);
+  if (!response.ok) throw new Error(`Generated video asset returned HTTP ${response.status}.`);
+  const contentType = response.headers.get('content-type') || '';
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('Generated video asset returned no payload.');
+  let bytes = new Uint8Array();
+  try {
+    const first = await reader.read();
+    bytes = first.value || bytes;
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+  const isMp4 = bytes.length >= 8 && String.fromCharCode(...bytes.slice(4, 8)) === 'ftyp';
+  const isWebm = bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3;
+  if ((!contentType.startsWith('video/') && contentType !== 'application/octet-stream') || (!isMp4 && !isWebm)) {
+    throw new Error('Video provider returned a corrupt or unsupported video asset.');
+  }
+  return url.href;
+}
+
 async function generateVideo(body) {
   const prompt = String(body.prompt || '').trim();
   if (!prompt) throw new Error('Write a prompt before generating a video.');
   const enriched = [prompt, body.cameraAngle ? `Camera movement: ${body.cameraAngle}.` : '', body.motionSpeed ? `Motion intensity: ${body.motionSpeed}/10.` : ''].filter(Boolean).join(' ');
-  const deadline = Date.now() + 48_000;
+  const deadline = Date.now() + 56_000;
   const falModels = [
     ['fal-ai/luma-dream-machine/ray-2-flash', 'Luma Dream Machine Ray 2 Flash'],
     ['fal-ai/hunyuan-video-v1.5/text-to-video', 'HunyuanVideo 1.5']
   ];
   const attempts = [
     ['Pollinations', 'veo-3.1-fast', () => pollinationsVideo(enriched, body.duration, body.aspectRatio, deadline)],
-    ...falModels.map(([modelId, model]) => ['Fal AI', model, () => falVideo(enriched, body.duration, modelId, deadline)]),
-    ['Replicate', 'minimax-video-01', () => replicateVideo(enriched, deadline)]
+    ['Replicate', 'minimax-video-01', () => replicateVideo(enriched, Math.min(deadline, Date.now() + 20_000))],
+    ['Hugging Face Video API', process.env.HUGGINGFACE_VIDEO_MODEL || 'Lightricks/LTX-Video', () => huggingfaceVideo(enriched, body.duration, body.aspectRatio, Math.min(deadline, Date.now() + 16_000))],
+    ...falModels.map(([modelId, model]) => ['Fal AI', model, () => falVideo(enriched, body.duration, modelId, deadline)])
   ];
   for (const [provider, model, run] of attempts) {
     if (Date.now() >= deadline) break;
     try {
-      const url = await run();
-      if (url) {
+      const candidate = await run();
+      if (candidate) {
+        const url = await validateVideoCandidate(candidate, Math.min(7_000, Math.max(1_000, deadline - Date.now())));
         const generatedDuration = provider === 'Replicate' ? 6 : Math.min(Number(body.duration) || 6, provider === 'Pollinations' ? 8 : 10);
         return { url, provider, model, duration: generatedDuration };
       }
     } catch (error) { console.warn(`${provider} ${model} video attempt failed:`, error.message); }
   }
-  throw new Error('Pollinations, Fal AI, and Replicate video providers are unavailable. Configure POLLINATIONS_API_KEY, FAL_API_KEY, or REPLICATE_API_TOKEN on the server, then retry.');
+  throw new Error('Pollinations, Replicate, Hugging Face, and Fal AI video providers are unavailable. Configure the matching server API keys, then retry.');
 }
 
 function estimateRequestTokens(type, body, output = {}) {
@@ -857,8 +1082,15 @@ export default async function handler(req, res) {
       }
       if (before.error) return json(res, 200, { allowance: null, quotaSource: 'client' });
       const bucket = await readTokenUsageState(uid);
-      const status = { usedPercent: Math.min(100, Math.round((bucket.current / bucket.limit) * 100)), resetAt: new Date(bucket.resetAt).toISOString(), tier: bucket.tier };
-      if (!bucket.allowed) return safeError(res, 429, 'Your hourly AI capacity is used. Upgrade or wait for the reset to continue.', { upgradeRequired: true, usage: { ...status, blocked: true } });
+      const status = {
+        usedPercent: Math.max(0, Math.min(100, Math.floor((bucket.current / bucket.limit) * 100))),
+        usedTokens: bucket.current, tokenLimit: bucket.limit,
+        resetAt: new Date(bucket.resetAt).toISOString(), tier: bucket.tier,
+        softCooldown: bucket.softCooldown,
+        cooldownUntil: bucket.softCooldown ? new Date(bucket.cooldownUntil).toISOString() : null
+      };
+      if (!bucket.allowed) return safeError(res, 429, 'Your daily AI token allocation is used. Upgrade or wait for the reset to continue.', { upgradeRequired: true, usage: { ...status, blocked: true } });
+      if (bucket.softCooldown) return safeError(res, 429, 'Taking a 5-minute breather to maintain top performance...', { softCooldown: true, cooldownUntil: status.cooldownUntil, upgradeRequired: false, usage: { ...status, blocked: false } });
       return json(res, 200, { allowance: { type, allowed: true, planTier: before.planTier, usage: { ...status, blocked: false } } });
     }
 
@@ -883,7 +1115,8 @@ export default async function handler(req, res) {
           console.warn('Server quota check fell back to the client store:', before.error);
         } else {
           const tokenState = await readTokenUsageState(uid);
-          if (!tokenState.allowed) return safeError(res, 429, 'Your hourly AI capacity is used. Upgrade or wait for the reset to continue.', { upgradeRequired: true });
+          if (!tokenState.allowed) return safeError(res, 429, 'Your daily AI token allocation is used. Upgrade or wait for the reset to continue.', { upgradeRequired: true, usage: { blocked: true, usedPercent: 100, resetAt: new Date(tokenState.resetAt).toISOString() } });
+          if (tokenState.softCooldown) return safeError(res, 429, 'Taking a 5-minute breather to maintain top performance...', { softCooldown: true, cooldownUntil: new Date(tokenState.cooldownUntil).toISOString(), upgradeRequired: false });
           usageTrackingAvailable = true;
         }
       } catch (error) {
@@ -895,6 +1128,21 @@ export default async function handler(req, res) {
       const normalizedTier = String(profileTier || '').toLowerCase().replace(/[ _-]/g, '');
       if (profileTier && !normalizedTier.includes('pro') && !normalizedTier.includes('ultra')) {
         return safeError(res, 403, 'The Zulora 3.5 Pro Ultra model requires a Pro or Ultra subscription.', { upgradeRequired: true });
+      }
+    }
+
+    if (firestoreAdminCredentials()) {
+      try {
+        const promptRate = await registerPromptAttempt(uid);
+        if (!promptRate.allowed) {
+          return safeError(res, 429, 'Taking a 5-minute breather to maintain top performance...', {
+            softCooldown: true,
+            cooldownUntil: new Date(promptRate.cooldownUntil).toISOString(),
+            upgradeRequired: false
+          });
+        }
+      } catch (error) {
+        console.warn('Firestore prompt cooldown check failed open:', error?.message || error);
       }
     }
 

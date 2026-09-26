@@ -10,7 +10,7 @@ export default async function handler(req, res) {
     const usage = await getTokenUsageStatus(uid);
     return reply(res, 200, { usage });
   } catch (error) {
-    console.warn('Hourly usage status is unavailable:', error?.message || error);
-    return reply(res, 503, { usage: null, error: 'Hourly usage is temporarily unavailable.' });
+    console.warn('Daily usage status is unavailable:', error?.message || error);
+    return reply(res, 503, { usage: null, error: 'Daily usage is temporarily unavailable.' });
   }
 }

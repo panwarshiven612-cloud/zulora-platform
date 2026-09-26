@@ -6,35 +6,46 @@ import { requestLimits } from '../services/generationApi';
 function localStatus(usage, tier) {
   const cap = tier === 'ultra' ? 100_000 : tier === 'pro' ? 50_000 : 10_000;
   const start = Number(usage?.tokenWindowStart) || Date.now();
-  const expired = Date.now() - start >= 60 * 60 * 1000 || start > Date.now();
+  const expired = Date.now() - start >= 24 * 60 * 60 * 1000 || start > Date.now();
   const used = expired ? 0 : Number(usage?.tokenUsed) || 0;
-  return { usedPercent: Math.min(100, Math.round((used / cap) * 100)), resetAt: new Date((expired ? Date.now() : start) + 60 * 60 * 1000).toISOString(), blocked: used >= cap };
+  return {
+    usedPercent: Math.max(0, Math.min(100, Math.floor((used / cap) * 100))),
+    resetAt: new Date((expired ? Date.now() : start) + 24 * 60 * 60 * 1000).toISOString(),
+    blocked: used >= cap
+  };
 }
 
 export default function UsageLimitsModal({ isOpen, onClose }) {
   const { currentUser, tier, usage, setIsPricingModalOpen } = useAuth();
   const [status, setStatus] = useState(() => localStatus(usage, tier));
+  const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     if (!isOpen) return undefined;
     let active = true;
+    setNow(Date.now());
     const refresh = async () => {
       const remote = await requestLimits(currentUser);
       if (active) setStatus(remote || localStatus(usage, tier));
     };
     refresh();
     const interval = window.setInterval(refresh, 30_000);
-    return () => { active = false; window.clearInterval(interval); };
+    const clock = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => { active = false; window.clearInterval(interval); window.clearInterval(clock); };
   }, [isOpen, currentUser, usage, tier]);
 
   const resetLabel = useMemo(() => {
-    const date = new Date(status?.resetAt || Date.now() + 60 * 60 * 1000);
+    const date = new Date(status?.resetAt || Date.now() + 24 * 60 * 60 * 1000);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }, [status?.resetAt]);
   if (!isOpen) return null;
 
   const percent = Math.max(0, Math.min(100, Number(status?.usedPercent) || 0));
-  const blocked = Boolean(status?.blocked || percent >= 100);
+  const cooldownUntil = Date.parse(status?.cooldownUntil || '');
+  const coolingDown = Boolean(status?.softCooldown && Number.isFinite(cooldownUntil) && cooldownUntil > now);
+  const cooldownSeconds = Math.max(0, Math.ceil((cooldownUntil - now) / 1000));
+  const cooldownLabel = `${String(Math.floor(cooldownSeconds / 60)).padStart(2, '0')}:${String(cooldownSeconds % 60).padStart(2, '0')}`;
+  const blocked = !coolingDown && Boolean(status?.blocked || percent >= 100);
   const openPricing = () => { onClose?.(); setIsPricingModalOpen(true); };
 
   return (
@@ -47,7 +58,7 @@ export default function UsageLimitsModal({ isOpen, onClose }) {
           <div className="grid h-12 w-12 place-items-center rounded-2xl border border-cyan-300/20 bg-cyan-300/10 text-cyan-200"><BarChart3 size={22} /></div>
           <div>
             <p className="text-xs font-semibold uppercase tracking-[.2em] text-cyan-200/70">Zulora capacity</p>
-            <h2 className="text-xl font-bold">Hourly usage</h2>
+            <h2 className="text-xl font-bold">Daily usage</h2>
           </div>
           <span className="ml-auto rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs capitalize text-slate-300">{tier} plan</span>
         </div>
@@ -63,23 +74,23 @@ export default function UsageLimitsModal({ isOpen, onClose }) {
           <div className="mt-4 flex items-center gap-2 text-xs text-slate-400"><Clock3 size={14} /> Resets at {resetLabel}</div>
         </div>
 
-        <div className={`relative mt-5 rounded-2xl border p-4 transition-all duration-300 ${blocked ? 'animate-pulse border-violet-300/40 bg-violet-400/10' : 'border-white/10 bg-white/[.025]'}`}>
+        <div className={`relative mt-5 rounded-2xl border p-4 transition-all duration-300 ${blocked ? 'animate-pulse border-violet-300/40 bg-violet-400/10' : coolingDown ? 'border-cyan-300/30 bg-cyan-300/[.06]' : 'border-white/10 bg-white/[.025]'}`}>
           <div className="flex gap-3">
             <div className="mt-0.5 text-violet-200">{blocked ? <Sparkles size={19} /> : <Zap size={19} />}</div>
             <div>
-              <h3 className="font-semibold">{blocked ? 'You’ve reached this hour’s capacity' : 'Usage refreshes automatically'}</h3>
-              <p className="mt-1 text-sm leading-6 text-slate-400">{blocked ? 'Upgrade for a larger hourly pool, or come back after the reset.' : 'Chat, code, image, and video requests share a flexible hourly pool.'}</p>
+              <h3 className="font-semibold">{coolingDown ? 'Taking a 5-minute breather to maintain top performance...' : blocked ? 'You’ve reached today’s token allocation' : 'Usage refreshes automatically'}</h3>
+              <p className="mt-1 text-sm leading-6 text-slate-400">{coolingDown ? `You can continue in ${cooldownLabel}. Your daily token allocation is unchanged.` : blocked ? 'Upgrade for a larger daily pool, or come back after the reset.' : 'Chat, code, image, and video requests share a daily token allocation.'}</p>
             </div>
           </div>
         </div>
 
         <div className="relative mt-6 grid grid-cols-2 gap-3">
           <div className="rounded-2xl border border-white/10 bg-white/[.025] p-4"><Crown className="mb-2 text-violet-200" size={18} /><p className="text-sm font-semibold">Pro</p><p className="mt-1 text-xs text-slate-400">More room for daily work</p></div>
-          <div className="rounded-2xl border border-white/10 bg-white/[.025] p-4"><Check className="mb-2 text-cyan-200" size={18} /><p className="text-sm font-semibold">Resets hourly</p><p className="mt-1 text-xs text-slate-400">Usage stays private</p></div>
+          <div className="rounded-2xl border border-white/10 bg-white/[.025] p-4"><Check className="mb-2 text-cyan-200" size={18} /><p className="text-sm font-semibold">Resets daily</p><p className="mt-1 text-xs text-slate-400">Usage stays private</p></div>
         </div>
-        <button onClick={openPricing} className="relative mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 via-blue-500 to-cyan-400 px-4 py-3 text-sm font-bold shadow-lg shadow-violet-900/30 transition hover:brightness-110">
+        {!coolingDown && <button onClick={openPricing} className="relative mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 via-blue-500 to-cyan-400 px-4 py-3 text-sm font-bold shadow-lg shadow-violet-900/30 transition hover:brightness-110">
           <Sparkles size={16} /> {blocked ? 'Explore upgrade options' : 'View plans'}
-        </button>
+        </button>}
       </section>
     </div>
   );

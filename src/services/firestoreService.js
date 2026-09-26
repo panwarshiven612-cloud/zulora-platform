@@ -50,7 +50,7 @@ export const TIER_PRICING = {
 
 const CHAT_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
 const DAY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
-const TOKEN_WINDOW_MS = 60 * 60 * 1000;
+const TOKEN_WINDOW_MS = DAY_WINDOW_MS;
 const TOKEN_LIMITS = { free: 10_000, pro: 50_000, ultra: 100_000 };
 
 // LocalStorage fallback prefix
@@ -118,7 +118,7 @@ export const getTokenUsagePercent = (usage = {}, tier = TIERS.FREE) => {
   const start = Number(usage.tokenWindowStart) || Date.now();
   const expired = Date.now() - start >= TOKEN_WINDOW_MS || start > Date.now();
   const used = expired ? 0 : Math.max(0, Number(usage.tokenUsed) || 0);
-  return Math.min(100, Math.round((used / limit) * 100));
+  return Math.max(0, Math.min(100, Math.floor((used / limit) * 100)));
 };
 
 const readLocalList = key => {
@@ -153,9 +153,18 @@ export const firestoreService = {
     const key = `zulora_studio_projects_${uid}`;
     const local = readLocalList(key);
     try {
-      const snapshot = await getDocs(query(collection(db, 'users', uid, 'projects'), orderBy('updatedAt', 'desc'), limit(40)));
-      const remote = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
-      const merged = new Map([...remote, ...local].map(project => [project.id, project]));
+      const [snapshot, legacySnapshot] = await Promise.all([
+        getDocs(query(collection(db, 'users', uid, 'studio_projects'), orderBy('updatedAt', 'desc'), limit(40))),
+        getDocs(query(collection(db, 'users', uid, 'projects'), orderBy('updatedAt', 'desc'), limit(40)))
+      ]);
+      const remote = [...snapshot.docs, ...legacySnapshot.docs].map(item => ({ id: item.id, ...item.data() }));
+      const merged = new Map();
+      [...remote, ...local].forEach(project => {
+        const previous = merged.get(project.id);
+        if (!previous || Number(project.updatedAt || project.timestamp || 0) >= Number(previous.updatedAt || previous.timestamp || 0)) {
+          merged.set(project.id, project);
+        }
+      });
       const projects = [...merged.values()].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)).slice(0, 40);
       localStorage.setItem(key, JSON.stringify(projects));
       return projects;
@@ -167,12 +176,21 @@ export const firestoreService = {
 
   async saveStudioProject(uid, project) {
     if (!uid || !project?.id) throw new Error('A signed-in user and project ID are required.');
-    const value = { ...project, title: String(project.title || 'Untitled project').slice(0, 120), updatedAt: Date.now() };
+    const timestamp = Date.now();
     const key = `zulora_studio_projects_${uid}`;
+    const existing = readLocalList(key).find(item => item.id === project.id);
+    const value = {
+      ...project,
+      title: String(project.title || 'Untitled project').slice(0, 120),
+      code: String(project.code || project.html || ''),
+      createdAt: Number(project.createdAt) || Number(existing?.createdAt) || timestamp,
+      updatedAt: timestamp,
+      timestamp
+    };
     const projects = [value, ...readLocalList(key).filter(item => item.id !== value.id)].slice(0, 40);
     localStorage.setItem(key, JSON.stringify(projects));
     try {
-      await setDoc(doc(db, 'users', uid, 'projects', value.id), value, { merge: true });
+      await setDoc(doc(db, 'users', uid, 'studio_projects', value.id), value, { merge: true });
       return { project: value, synced: true };
     } catch (error) {
       console.warn('Firestore studio project save fallback to LocalStorage:', error.message);
@@ -226,7 +244,12 @@ export const firestoreService = {
     if (!uid || !projectId) return;
     const key = `zulora_studio_projects_${uid}`;
     localStorage.setItem(key, JSON.stringify(readLocalList(key).filter(item => item.id !== projectId)));
-    try { await deleteDoc(doc(db, 'users', uid, 'projects', projectId)); }
+    try {
+      await Promise.all([
+        deleteDoc(doc(db, 'users', uid, 'studio_projects', projectId)),
+        deleteDoc(doc(db, 'users', uid, 'projects', projectId))
+      ]);
+    }
     catch (error) { console.warn('Firestore studio project deletion fallback to LocalStorage:', error.message); }
   },
 
@@ -588,11 +611,11 @@ export const firestoreService = {
     const tokenLimit = TOKEN_LIMITS[getTier(profile)];
     const tokenAllowed = tokenUsed < tokenLimit;
     const tokenStatus = {
-      usedPercent: Math.min(100, Math.round((tokenUsed / tokenLimit) * 100)),
+      usedPercent: Math.max(0, Math.min(100, Math.floor((tokenUsed / tokenLimit) * 100))),
       resetAt: new Date((tokenExpired ? Date.now() : tokenWindowStart) + TOKEN_WINDOW_MS).toISOString(),
       blocked: !tokenAllowed
     };
-    if (!tokenAllowed) return { allowed: false, usage: tokenStatus, tier: getTier(profile), error: 'Hourly AI capacity reached.' };
+    if (!tokenAllowed) return { allowed: false, usage: tokenStatus, tier: getTier(profile), error: 'Daily AI token allocation reached.' };
 
     return {
       allowed: true,
