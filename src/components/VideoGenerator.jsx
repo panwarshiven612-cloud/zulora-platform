@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { aiRouter } from '../services/aiRouter';
-import { firestoreService } from '../services/firestoreService';
+import { firestoreService, getTokenUsagePercent } from '../services/firestoreService';
 import { downloadMedia } from '../services/downloadService';
 
 const CAMERA_ANGLES = [
@@ -29,7 +29,8 @@ const CAMERA_ANGLES = [
 ];
 
 export const VideoGenerator = () => {
-  const { currentUser, limits, usage, checkUsage, recordUsage, setIsUsageModalOpen } = useAuth();
+  const { currentUser, tier, usage, checkUsage, recordUsage, setIsUsageModalOpen } = useAuth();
+  const usagePercent = getTokenUsagePercent(usage, tier);
 
   const [prompt, setPrompt] = useState('');
   const [motionSpeed, setMotionSpeed] = useState(5);
@@ -103,8 +104,8 @@ export const VideoGenerator = () => {
       setIsPlaying(true);
     } catch (err) {
       console.error('Video generation error:', err);
-      if (err.status === 403) setIsUsageModalOpen(true);
-      setGenerationError(err.message || 'Video generation could not finish. Please try again.');
+      if (err.status === 429 || err.status === 403) setIsUsageModalOpen(true);
+      setGenerationError(err.status === 429 ? '' : (err.message || 'Video generation could not finish. Please try again.'));
     } finally {
       setLoading(false);
       generatingRef.current = false;
@@ -146,10 +147,8 @@ export const VideoGenerator = () => {
             <Zap className="w-5 h-5" />
           </div>
           <div>
-            <div className="text-[11px] text-slate-400 font-medium">Daily Videos Used</div>
-            <div className="text-sm font-bold text-slate-900 dark:text-white">
-              {usage.videoCount || 0} / <span className="text-indigo-500">{limits.video}</span>
-            </div>
+            <div className="text-[11px] text-slate-400 font-medium">Current usage</div>
+            <div className="text-sm font-bold text-slate-900 dark:text-white">{usagePercent}% <span className="font-medium text-slate-400">used this hour</span></div>
           </div>
         </div>
       </div>

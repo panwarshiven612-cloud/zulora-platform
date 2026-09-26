@@ -71,15 +71,15 @@ export const PricingModal = ({ isOpen, onClose }) => {
               <ul className="text-xs text-slate-600 dark:text-slate-300 space-y-2.5 mb-6">
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  <span>50 Chats per 2 hours</span>
+                  <span>Flexible hourly AI capacity</span>
                 </li>
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  <span>30 Image generations / day</span>
+                  <span>Chat, image, and video generation</span>
                 </li>
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  <span>4 Video generations / day</span>
+                  <span>Live usage and reset estimates</span>
                 </li>
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-slate-400 shrink-0" />
@@ -108,7 +108,7 @@ export const PricingModal = ({ isOpen, onClose }) => {
               : 'border-sky-400/50 dark:border-sky-800/80 bg-white/60 dark:bg-slate-900/60 shadow-lg'
           }`}>
             <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-sky-500 text-white shadow-sm">
-              Most Popular • 2x Limits
+              Most Popular • More Capacity
             </div>
 
             <div>
@@ -125,21 +125,21 @@ export const PricingModal = ({ isOpen, onClose }) => {
                 <div className="text-3xl font-black text-slate-900 dark:text-white">
                   ₹299 <span className="text-xs font-normal text-slate-400">/ month</span>
                 </div>
-                <div className="text-xs text-sky-500 font-semibold">Doubles all free tier quotas (2x)</div>
+                <div className="text-xs text-sky-500 font-semibold">More hourly generation capacity</div>
               </div>
 
               <ul className="text-xs text-slate-600 dark:text-slate-300 space-y-2.5 mb-6">
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-sky-500 shrink-0" />
-                  <span><strong>100 Chats</strong> per 2 hours (2x)</span>
+                  <span>Expanded hourly AI capacity</span>
                 </li>
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-sky-500 shrink-0" />
-                  <span><strong>60 Images</strong> per day (2x)</span>
+                  <span>Priority access to premium models</span>
                 </li>
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-sky-500 shrink-0" />
-                  <span><strong>8 Videos</strong> per day (2x)</span>
+                  <span>Chat, image, and video generation</span>
                 </li>
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-sky-500 shrink-0" />
@@ -188,21 +188,21 @@ export const PricingModal = ({ isOpen, onClose }) => {
                 <div className="text-3xl font-black text-slate-900 dark:text-white">
                   ₹599 <span className="text-xs font-normal text-slate-400">/ month</span>
                 </div>
-                <div className="text-xs text-amber-500 font-semibold">5x usage limits across all features</div>
+                <div className="text-xs text-amber-500 font-semibold">Maximum hourly generation capacity</div>
               </div>
 
               <ul className="text-xs text-slate-600 dark:text-slate-300 space-y-2.5 mb-6">
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                  <span><strong>250 Chats</strong> per 2 hours (5x)</span>
+                  <span>Maximum hourly AI capacity</span>
                 </li>
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                  <span><strong>150 Images</strong> per day (5x)</span>
+                  <span>Priority access to premium models</span>
                 </li>
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                  <span><strong>20 Videos</strong> per day (5x)</span>
+                  <span>Chat, image, and video generation</span>
                 </li>
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-amber-500 shrink-0" />
@@ -273,4 +273,3 @@ export const PricingModal = ({ isOpen, onClose }) => {
 };
 
 export default PricingModal;
-

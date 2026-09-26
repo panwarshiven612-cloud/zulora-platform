@@ -13,6 +13,7 @@ const ImageGenerator = lazy(() => import('./components/ImageGenerator'));
 const VideoGenerator = lazy(() => import('./components/VideoGenerator'));
 const AiBrain = lazy(() => import('./components/AiBrain'));
 const UserVault = lazy(() => import('./components/UserVault'));
+const AIStudio = lazy(() => import('./pages/AIStudio'));
 
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 
@@ -58,7 +59,7 @@ export const App = () => {
 
   const selectTab = useCallback(tab => {
     setActiveTab(tab);
-    if (currentUser) navigate(tab === 'vault' ? '/vault' : '/dashboard');
+    if (currentUser) navigate(tab === 'vault' ? '/vault' : tab === 'studio' ? '/studio' : '/dashboard');
   }, [currentUser, navigate]);
 
   useEffect(() => {
@@ -92,16 +93,18 @@ export const App = () => {
   // ── Post-login redirect logic ──────────────────────────────────────────────
   useEffect(() => {
     if (loading) return;
-    if (currentUser && !['/dashboard', '/vault'].includes(pathname)) {
+    if (currentUser && !['/dashboard', '/vault', '/studio'].includes(pathname)) {
       navigate('/dashboard');
     }
-    if (!currentUser && ['/dashboard', '/vault', '/settings'].includes(pathname)) {
+    if (!currentUser && ['/dashboard', '/vault', '/studio', '/settings'].includes(pathname)) {
       navigate('/signin');
     }
   }, [currentUser, loading, navigate, pathname]);
 
   useEffect(() => {
     if (pathname === '/vault') setActiveTab('vault');
+    else if (pathname === '/studio') setActiveTab('studio');
+    else if (pathname === '/dashboard' && activeTab === 'studio') setActiveTab('chat');
     else if (pathname === '/dashboard' && activeTab === 'vault') setActiveTab('chat');
   }, [pathname, activeTab]);
 
@@ -117,6 +120,12 @@ export const App = () => {
     }
     // All unauthenticated users → Landing Page (also has sign-in)
     return <LandingPage onSignIn={goToDashboard} />;
+  }
+
+  if (pathname === '/studio' || activeTab === 'studio') {
+    return <Suspense fallback={<div className="min-h-screen grid place-items-center bg-[#070914] text-slate-300">Opening AI Studio…</div>}>
+      <AIStudio onExitDashboard={() => { setActiveTab('chat'); navigate('/dashboard'); }} />
+    </Suspense>;
   }
 
   // ── Authenticated: Dashboard ───────────────────────────────────────────────

@@ -1,336 +1,86 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  X, 
-  Zap, 
-  Clock, 
-  Sparkles, 
-  MessageSquare, 
-  Image as ImageIcon, 
-  Film, 
-  Check, 
-  ShieldCheck, 
-  AlertCircle,
-  ExternalLink,
-  Crown
-} from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { BarChart3, Check, Clock3, Crown, Sparkles, X, Zap } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { TIERS } from '../services/firestoreService';
+import { requestLimits } from '../services/generationApi';
 
-export const UsageLimitsModal = ({ isOpen, onClose }) => {
-  const { 
-    tier, 
-    limits, 
-    usage
-  } = useAuth();
+function localStatus(usage, tier) {
+  const cap = tier === 'ultra' ? 100_000 : tier === 'pro' ? 50_000 : 10_000;
+  const start = Number(usage?.tokenWindowStart) || Date.now();
+  const expired = Date.now() - start >= 60 * 60 * 1000 || start > Date.now();
+  const used = expired ? 0 : Number(usage?.tokenUsed) || 0;
+  return { usedPercent: Math.min(100, Math.round((used / cap) * 100)), resetAt: new Date((expired ? Date.now() : start) + 60 * 60 * 1000).toISOString(), blocked: used >= cap };
+}
 
-  const [chatCountdown, setChatCountdown] = useState('');
-  const [dayCountdown, setDayCountdown] = useState('');
+export default function UsageLimitsModal({ isOpen, onClose }) {
+  const { currentUser, tier, usage, setIsPricingModalOpen } = useAuth();
+  const [status, setStatus] = useState(() => localStatus(usage, tier));
 
-  // Dynamic countdown calculations
   useEffect(() => {
-    if (!isOpen) return;
-
-    const updateTimers = () => {
-      const now = Date.now();
-
-      // Chat window (2 hours)
-      const chatStart = usage.chatWindowStart || now;
-      const chatDuration = 2 * 60 * 60 * 1000;
-      const chatLeft = Math.max(0, (chatStart + chatDuration) - now);
-      
-      const cHours = Math.floor(chatLeft / (1000 * 60 * 60));
-      const cMinutes = Math.floor((chatLeft % (1000 * 60 * 60)) / (1000 * 60));
-      const cSeconds = Math.floor((chatLeft % (1000 * 60)) / 1000);
-      setChatCountdown(`${cHours}h ${cMinutes}m ${cSeconds}s`);
-
-      // Day window (24 hours)
-      const imageStart = usage.imageWindowStart || now;
-      const dayDuration = 24 * 60 * 60 * 1000;
-      const dayLeft = Math.max(0, (imageStart + dayDuration) - now);
-
-      const dHours = Math.floor(dayLeft / (1000 * 60 * 60));
-      const dMinutes = Math.floor((dayLeft % (1000 * 60 * 60)) / (1000 * 60));
-      setDayCountdown(`${dHours}h ${dMinutes}m`);
+    if (!isOpen) return undefined;
+    let active = true;
+    const refresh = async () => {
+      const remote = await requestLimits(currentUser);
+      if (active) setStatus(remote || localStatus(usage, tier));
     };
+    refresh();
+    const interval = window.setInterval(refresh, 30_000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, [isOpen, currentUser, usage, tier]);
 
-    updateTimers();
-    const interval = setInterval(updateTimers, 1000);
-    return () => clearInterval(interval);
-  }, [isOpen, usage]);
-
+  const resetLabel = useMemo(() => {
+    const date = new Date(status?.resetAt || Date.now() + 60 * 60 * 1000);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }, [status?.resetAt]);
   if (!isOpen) return null;
 
-  const handlePaymentProof = () => {
-    window.open('https://wa.me/916395211325?text=Hi%20Shiven,%20I%20have%20completed%20the%20payment%20to%20shivenpanwar@fam%20for%20Zulora%20AI%20Pro.%20Here%20is%20my%20registered%20email:', '_blank', 'noopener,noreferrer');
-  };
-
-  const chatPercent = Math.min(100, Math.round(((usage.chatCount || 0) / limits.chat) * 100));
-  const imagePercent = Math.min(100, Math.round(((usage.imageCount || 0) / limits.image) * 100));
-  const videoPercent = Math.min(100, Math.round(((usage.videoCount || 0) / limits.video) * 100));
+  const percent = Math.max(0, Math.min(100, Number(status?.usedPercent) || 0));
+  const blocked = Boolean(status?.blocked || percent >= 100);
+  const openPricing = () => { onClose?.(); setIsPricingModalOpen(true); };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xl animate-fade-in">
-      <div 
-        className="fixed inset-0" 
-        onClick={onClose} 
-      />
+    <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/70 p-4 backdrop-blur-xl" onMouseDown={event => event.target === event.currentTarget && onClose?.()}>
+      <section className="relative w-full max-w-lg overflow-hidden rounded-[28px] border border-white/10 bg-[#101522] p-6 text-white shadow-[0_30px_120px_rgba(0,0,0,.55)] sm:p-8">
+        <div className="pointer-events-none absolute -right-16 -top-24 h-56 w-56 rounded-full bg-violet-500/20 blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-24 -left-16 h-48 w-48 rounded-full bg-cyan-500/15 blur-3xl" />
+        <button aria-label="Close usage" onClick={onClose} className="absolute right-4 top-4 rounded-xl p-2 text-slate-400 transition hover:bg-white/10 hover:text-white"><X size={18} /></button>
+        <div className="relative flex items-center gap-3">
+          <div className="grid h-12 w-12 place-items-center rounded-2xl border border-cyan-300/20 bg-cyan-300/10 text-cyan-200"><BarChart3 size={22} /></div>
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[.2em] text-cyan-200/70">Zulora capacity</p>
+            <h2 className="text-xl font-bold">Hourly usage</h2>
+          </div>
+          <span className="ml-auto rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs capitalize text-slate-300">{tier} plan</span>
+        </div>
 
-      <div className="relative max-w-2xl w-full rounded-3xl glass-pearl dark:glass-dark border border-slate-200 dark:border-slate-800 shadow-2xl p-6 sm:p-8 space-y-6 z-10 max-h-[90vh] overflow-y-auto">
-        
-        {/* Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-slate-200/80 dark:border-slate-800">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-2xl bg-amber-500/10 text-amber-500 border border-amber-500/20">
-              <Zap className="w-6 h-6" />
-            </div>
+        <div className="relative mt-8 rounded-2xl border border-white/10 bg-white/[.035] p-5">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <span className="text-sm text-slate-300">Current usage</span>
+            <span className={`text-sm font-semibold ${blocked ? 'text-rose-300' : 'text-cyan-200'}`}>{percent}% used</span>
+          </div>
+          <div className="h-3 overflow-hidden rounded-full bg-slate-800">
+            <div className={`h-full rounded-full transition-[width] duration-700 ease-out ${blocked ? 'bg-gradient-to-r from-rose-500 to-orange-400' : 'bg-gradient-to-r from-cyan-400 via-blue-400 to-violet-500'}`} style={{ width: `${percent}%` }} />
+          </div>
+          <div className="mt-4 flex items-center gap-2 text-xs text-slate-400"><Clock3 size={14} /> Resets at {resetLabel}</div>
+        </div>
+
+        <div className={`relative mt-5 rounded-2xl border p-4 transition-all duration-300 ${blocked ? 'animate-pulse border-violet-300/40 bg-violet-400/10' : 'border-white/10 bg-white/[.025]'}`}>
+          <div className="flex gap-3">
+            <div className="mt-0.5 text-violet-200">{blocked ? <Sparkles size={19} /> : <Zap size={19} />}</div>
             <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-xl font-extrabold text-slate-900 dark:text-white">
-                  Usage Limits & Quota
-                </h2>
-                <span className="px-2 py-0.5 rounded-lg text-xs font-bold bg-sky-500/10 text-sky-500 border border-sky-500/20 uppercase">
-                  {tier} Plan
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Dynamic quotas tracked in real-time. Upgrade to unlock 2x or 5x capacity.
-              </p>
+              <h3 className="font-semibold">{blocked ? 'You’ve reached this hour’s capacity' : 'Usage refreshes automatically'}</h3>
+              <p className="mt-1 text-sm leading-6 text-slate-400">{blocked ? 'Upgrade for a larger hourly pool, or come back after the reset.' : 'Chat, code, image, and video requests share a flexible hourly pool.'}</p>
             </div>
-          </div>
-
-          <button
-            onClick={onClose}
-            className="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Real-time Usage Progress Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          
-          {/* Chat Quota Card */}
-          <div className="p-4 rounded-2xl bg-white/60 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800/80 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                <MessageSquare className="w-3.5 h-3.5 text-sky-500" />
-                <span>Chats (2h)</span>
-              </span>
-              <span className={`text-xs font-extrabold ${chatPercent >= 100 ? 'text-red-500' : 'text-sky-500'}`}>
-                {chatPercent}%
-              </span>
-            </div>
-
-            <div className="text-xl font-black text-slate-900 dark:text-white">
-              {usage.chatCount || 0} <span className="text-xs font-normal text-slate-400">/ {limits.chat}</span>
-            </div>
-
-            <div className="w-full h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-              <div 
-                className={`h-full rounded-full transition-all duration-500 ${
-                  chatPercent >= 100 ? 'bg-red-500' : 'bg-sky-500'
-                }`}
-                style={{ width: `${chatPercent}%` }}
-              />
-            </div>
-
-            <div className="flex items-center gap-1 text-[10px] text-slate-400 pt-1">
-              <Clock className="w-3 h-3 text-slate-400" />
-              <span>Resets in: {chatCountdown}</span>
-            </div>
-          </div>
-
-          {/* Image Quota Card */}
-          <div className="p-4 rounded-2xl bg-white/60 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800/80 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                <ImageIcon className="w-3.5 h-3.5 text-indigo-500" />
-                <span>Images (24h)</span>
-              </span>
-              <span className={`text-xs font-extrabold ${imagePercent >= 100 ? 'text-red-500' : 'text-indigo-500'}`}>
-                {imagePercent}%
-              </span>
-            </div>
-
-            <div className="text-xl font-black text-slate-900 dark:text-white">
-              {usage.imageCount || 0} <span className="text-xs font-normal text-slate-400">/ {limits.image}</span>
-            </div>
-
-            <div className="w-full h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-              <div 
-                className={`h-full rounded-full transition-all duration-500 ${
-                  imagePercent >= 100 ? 'bg-red-500' : 'bg-indigo-500'
-                }`}
-                style={{ width: `${imagePercent}%` }}
-              />
-            </div>
-
-            <div className="flex items-center gap-1 text-[10px] text-slate-400 pt-1">
-              <Clock className="w-3 h-3 text-slate-400" />
-              <span>Resets in: {dayCountdown}</span>
-            </div>
-          </div>
-
-          {/* Video Quota Card */}
-          <div className="p-4 rounded-2xl bg-white/60 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800/80 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                <Film className="w-3.5 h-3.5 text-purple-500" />
-                <span>Videos (24h)</span>
-              </span>
-              <span className={`text-xs font-extrabold ${videoPercent >= 100 ? 'text-red-500' : 'text-purple-500'}`}>
-                {videoPercent}%
-              </span>
-            </div>
-
-            <div className="text-xl font-black text-slate-900 dark:text-white">
-              {usage.videoCount || 0} <span className="text-xs font-normal text-slate-400">/ {limits.video}</span>
-            </div>
-
-            <div className="w-full h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-              <div 
-                className={`h-full rounded-full transition-all duration-500 ${
-                  videoPercent >= 100 ? 'bg-red-500' : 'bg-purple-500'
-                }`}
-                style={{ width: `${videoPercent}%` }}
-              />
-            </div>
-
-            <div className="flex items-center gap-1 text-[10px] text-slate-400 pt-1">
-              <Clock className="w-3 h-3 text-slate-400" />
-              <span>Resets in: {dayCountdown}</span>
-            </div>
-          </div>
-
-        </div>
-
-        {/* Upgrade Tiers Showcase */}
-        <div>
-          <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-3">
-            Expand Your Computational Limits
-          </h3>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            
-            {/* Pro Upgrade Card (₹299/mo) */}
-            <div className={`p-5 rounded-2xl border transition-all ${
-              tier === TIERS.PRO
-                ? 'border-sky-500 bg-sky-50/50 dark:bg-sky-950/40 ring-2 ring-sky-500/20'
-                : 'border-slate-200 dark:border-slate-800 bg-white/40 dark:bg-slate-900/40 hover:border-sky-400'
-            }`}>
-              <div className="flex justify-between items-start mb-2">
-                <div>
-                  <div className="text-xs font-bold text-sky-500 uppercase tracking-wider">Pro Tier</div>
-                  <div className="text-xl font-black text-slate-900 dark:text-white">
-                    ₹299 <span className="text-xs font-normal text-slate-400">/ month</span>
-                  </div>
-                </div>
-                <span className="px-2 py-1 rounded-lg text-[10px] font-bold bg-sky-500/20 text-sky-400 border border-sky-500/30">
-                  2x Multiplier
-                </span>
-              </div>
-
-              <ul className="text-xs text-slate-600 dark:text-slate-300 space-y-1.5 mb-4">
-                <li className="flex items-center gap-2">
-                  <Check className="w-3.5 h-3.5 text-sky-500 shrink-0" />
-                  <span><strong>100 Chats</strong> per 2 hours (2x)</span>
-                </li>
-                <li className="flex items-center gap-2">
-                  <Check className="w-3.5 h-3.5 text-sky-500 shrink-0" />
-                  <span><strong>60 Images</strong> per day (2x)</span>
-                </li>
-                <li className="flex items-center gap-2">
-                  <Check className="w-3.5 h-3.5 text-sky-500 shrink-0" />
-                  <span><strong>8 Videos</strong> per day (2x)</span>
-                </li>
-              </ul>
-
-              <button
-                onClick={handlePaymentProof}
-                disabled={tier === TIERS.PRO}
-                className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all ${
-                  tier === TIERS.PRO
-                    ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-default'
-                    : 'text-white azure-gradient-btn'
-                }`}
-              >
-                {tier === TIERS.PRO ? 'Verified Pro Plan' : 'Submit Payment Proof'}
-              </button>
-            </div>
-
-            {/* Ultra Pro Max Card (₹599/mo) */}
-            <div className={`p-5 rounded-2xl border transition-all ${
-              tier === TIERS.ULTRA
-                ? 'border-amber-500 bg-amber-50/50 dark:bg-amber-950/40 ring-2 ring-amber-500/20'
-                : 'border-slate-200 dark:border-slate-800 bg-white/40 dark:bg-slate-900/40 hover:border-amber-400'
-            }`}>
-              <div className="flex justify-between items-start mb-2">
-                <div>
-                  <div className="text-xs font-bold text-amber-500 uppercase tracking-wider flex items-center gap-1">
-                    <Crown className="w-3.5 h-3.5" />
-                    <span>Ultra Pro Max</span>
-                  </div>
-                  <div className="text-xl font-black text-slate-900 dark:text-white">
-                    ₹599 <span className="text-xs font-normal text-slate-400">/ month</span>
-                  </div>
-                </div>
-                <span className="px-2 py-1 rounded-lg text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
-                  5x Multiplier
-                </span>
-              </div>
-
-              <ul className="text-xs text-slate-600 dark:text-slate-300 space-y-1.5 mb-4">
-                <li className="flex items-center gap-2">
-                  <Check className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                  <span><strong>250 Chats</strong> per 2 hours (5x)</span>
-                </li>
-                <li className="flex items-center gap-2">
-                  <Check className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                  <span><strong>150 Images</strong> per day (5x)</span>
-                </li>
-                <li className="flex items-center gap-2">
-                  <Check className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                  <span><strong>20 Videos</strong> per day (5x)</span>
-                </li>
-              </ul>
-
-              <button
-                onClick={handlePaymentProof}
-                disabled={tier === TIERS.ULTRA}
-                className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all ${
-                  tier === TIERS.ULTRA
-                    ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-default'
-                    : 'text-white bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 shadow-md'
-                }`}
-              >
-                {tier === TIERS.ULTRA ? 'Verified Ultra Plan' : 'Submit Payment Proof'}
-              </button>
-            </div>
-
           </div>
         </div>
 
-        {/* WhatsApp Quick Support */}
-        <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <span className="text-emerald-500 font-bold text-xs">WhatsApp Helpline:</span>
-            <span className="text-xs text-slate-700 dark:text-slate-300 font-medium">+91 6395211325</span>
-          </div>
-          <a
-            href="https://wa.me/916395211325?text=Hello%20Shiven,%20I%20want%20to%20upgrade%20my%20Zulora%20AI%20tier"
-            target="_blank"
-            rel="noreferrer"
-            className="text-xs font-bold text-emerald-500 hover:underline flex items-center gap-1"
-          >
-            <span>Message Founder</span>
-            <ExternalLink className="w-3 h-3" />
-          </a>
+        <div className="relative mt-6 grid grid-cols-2 gap-3">
+          <div className="rounded-2xl border border-white/10 bg-white/[.025] p-4"><Crown className="mb-2 text-violet-200" size={18} /><p className="text-sm font-semibold">Pro</p><p className="mt-1 text-xs text-slate-400">More room for daily work</p></div>
+          <div className="rounded-2xl border border-white/10 bg-white/[.025] p-4"><Check className="mb-2 text-cyan-200" size={18} /><p className="text-sm font-semibold">Resets hourly</p><p className="mt-1 text-xs text-slate-400">Usage stays private</p></div>
         </div>
-
-      </div>
+        <button onClick={openPricing} className="relative mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 via-blue-500 to-cyan-400 px-4 py-3 text-sm font-bold shadow-lg shadow-violet-900/30 transition hover:brightness-110">
+          <Sparkles size={16} /> {blocked ? 'Explore upgrade options' : 'View plans'}
+        </button>
+      </section>
     </div>
   );
-};
-
-export default UsageLimitsModal;
-
+}

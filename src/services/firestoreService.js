@@ -50,6 +50,8 @@ export const TIER_PRICING = {
 
 const CHAT_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
 const DAY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+const TOKEN_WINDOW_MS = 60 * 60 * 1000;
+const TOKEN_LIMITS = { free: 10_000, pro: 50_000, ultra: 100_000 };
 
 // LocalStorage fallback prefix
 const STORAGE_PREFIX = 'zulora_store_';
@@ -110,6 +112,15 @@ const getTier = profile => {
   return TIERS.FREE;
 };
 
+export const getTokenUsagePercent = (usage = {}, tier = TIERS.FREE) => {
+  const normalizedTier = getTier({ planTier: tier });
+  const limit = TOKEN_LIMITS[normalizedTier];
+  const start = Number(usage.tokenWindowStart) || Date.now();
+  const expired = Date.now() - start >= TOKEN_WINDOW_MS || start > Date.now();
+  const used = expired ? 0 : Math.max(0, Number(usage.tokenUsed) || 0);
+  return Math.min(100, Math.round((used / limit) * 100));
+};
+
 const readLocalList = key => {
   try { return JSON.parse(localStorage.getItem(key) || '[]'); }
   catch { return []; }
@@ -137,6 +148,46 @@ const normalizeChatSession = session => {
 };
 
 export const firestoreService = {
+  async getStudioProjects(uid) {
+    if (!uid) return [];
+    const key = `zulora_studio_projects_${uid}`;
+    const local = readLocalList(key);
+    try {
+      const snapshot = await getDocs(query(collection(db, 'users', uid, 'projects'), orderBy('updatedAt', 'desc'), limit(40)));
+      const remote = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+      const merged = new Map([...remote, ...local].map(project => [project.id, project]));
+      const projects = [...merged.values()].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)).slice(0, 40);
+      localStorage.setItem(key, JSON.stringify(projects));
+      return projects;
+    } catch (error) {
+      console.warn('Firestore studio project list fallback to LocalStorage:', error.message);
+      return local.sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+    }
+  },
+
+  async saveStudioProject(uid, project) {
+    if (!uid || !project?.id) throw new Error('A signed-in user and project ID are required.');
+    const value = { ...project, title: String(project.title || 'Untitled project').slice(0, 120), updatedAt: Date.now() };
+    const key = `zulora_studio_projects_${uid}`;
+    const projects = [value, ...readLocalList(key).filter(item => item.id !== value.id)].slice(0, 40);
+    localStorage.setItem(key, JSON.stringify(projects));
+    try {
+      await setDoc(doc(db, 'users', uid, 'projects', value.id), value, { merge: true });
+      return { project: value, synced: true };
+    } catch (error) {
+      console.warn('Firestore studio project save fallback to LocalStorage:', error.message);
+      return { project: value, synced: false };
+    }
+  },
+
+  async deleteStudioProject(uid, projectId) {
+    if (!uid || !projectId) return;
+    const key = `zulora_studio_projects_${uid}`;
+    localStorage.setItem(key, JSON.stringify(readLocalList(key).filter(item => item.id !== projectId)));
+    try { await deleteDoc(doc(db, 'users', uid, 'projects', projectId)); }
+    catch (error) { console.warn('Firestore studio project deletion fallback to LocalStorage:', error.message); }
+  },
+
   async getVault(uid) {
     if (!uid) return normalizeVault({});
     const cached = readCachedVault(uid);
@@ -399,6 +450,14 @@ export const firestoreService = {
               profileData[type === 'chat' ? 'textUsed' : `${type}Used`] = usage[countKey];
             }
           }
+          const localTokenStart = Number(local.usage?.tokenWindowStart) || 0;
+          const remoteTokenStart = Number(usage.tokenWindowStart) || 0;
+          if (localTokenStart && (!remoteTokenStart || localTokenStart >= remoteTokenStart)) {
+            usage.tokenWindowStart = localTokenStart;
+            usage.tokenUsed = localTokenStart === remoteTokenStart
+              ? Math.max(Number(usage.tokenUsed) || 0, Number(local.usage?.tokenUsed) || 0)
+              : Number(local.usage?.tokenUsed) || 0;
+          }
           profileData.usage = usage;
           profileData.usageLocalOnly = true;
         }
@@ -480,38 +539,28 @@ export const firestoreService = {
   async checkUsageAllowance(uid, type = 'chat') {
     let profile = await this.getUserProfile(uid);
     profile = this.evaluateUsageWindows(profile);
-    const limits = this.getProfileLimits(profile);
-    const usageKey = `${type}Count`;
-    const topLevelCounter = type === 'chat' ? 'textUsed' : `${type}Used`;
-    const currentCount = Number(profile[topLevelCounter] ?? profile.usage[usageKey] ?? 0);
-    const maxLimit = limits[type];
 
-    if (currentCount >= maxLimit) {
-      const windowStart = profile.usage[`${type}WindowStart`] || Date.now();
-      const windowDuration = type === 'chat' ? CHAT_WINDOW_MS : DAY_WINDOW_MS;
-      const resetsInMs = Math.max(0, (windowStart + windowDuration) - Date.now());
-
-      return {
-        allowed: false,
-        currentCount,
-        maxLimit,
-        resetsInMs,
-        tier: profile.planTier || profile.tier || TIERS.FREE,
-        error: `Limit reached for ${type}. Current plan: ${profile.tier}. Upgrade to increase limits.`
-      };
-    }
+    const tokenWindowStart = Number(profile.usage?.tokenWindowStart) || Date.now();
+    const tokenExpired = Date.now() - tokenWindowStart >= TOKEN_WINDOW_MS || tokenWindowStart > Date.now();
+    const tokenUsed = tokenExpired ? 0 : Math.max(0, Number(profile.usage?.tokenUsed) || 0);
+    const tokenLimit = TOKEN_LIMITS[getTier(profile)];
+    const tokenAllowed = tokenUsed < tokenLimit;
+    const tokenStatus = {
+      usedPercent: Math.min(100, Math.round((tokenUsed / tokenLimit) * 100)),
+      resetAt: new Date((tokenExpired ? Date.now() : tokenWindowStart) + TOKEN_WINDOW_MS).toISOString(),
+      blocked: !tokenAllowed
+    };
+    if (!tokenAllowed) return { allowed: false, usage: tokenStatus, tier: getTier(profile), error: 'Hourly AI capacity reached.' };
 
     return {
       allowed: true,
-      currentCount,
-      maxLimit,
-      remaining: maxLimit - currentCount,
+      usage: tokenStatus,
       tier: profile.planTier || profile.tier || TIERS.FREE
     };
   },
 
   /** Local quota cache used when a generation is served by a browser fallback. */
-  recordLocalUsage(uid, type) {
+  recordLocalUsage(uid, type, estimatedTokens = undefined) {
     if (!['chat', 'image', 'video'].includes(type)) return null;
     const localKey = `${STORAGE_PREFIX}user_${uid}`;
     let profile = {};
@@ -519,23 +568,15 @@ export const firestoreService = {
     catch { profile = {}; }
     profile = this.evaluateUsageWindows(profile);
     const now = Date.now();
-    const countKey = `${type}Count`;
-    const usedKey = type === 'chat' ? 'textUsed' : `${type}Used`;
-    const startKey = `${type}WindowStart`;
-    const limits = this.getProfileLimits(profile);
     const usage = {
       ...(profile.usage || {}),
-      [countKey]: Number(profile[usedKey] ?? profile.usage?.[countKey] ?? 0) + 1,
-      [startKey]: Number(profile.usage?.[startKey]) || now
+      tokenWindowStart: (Number(profile.usage?.tokenWindowStart) && now - Number(profile.usage.tokenWindowStart) < TOKEN_WINDOW_MS) ? Number(profile.usage.tokenWindowStart) : now,
+      tokenUsed: ((Number(profile.usage?.tokenWindowStart) && now - Number(profile.usage.tokenWindowStart) < TOKEN_WINDOW_MS) ? Number(profile.usage?.tokenUsed) || 0 : 0) + Math.max(1, Math.ceil(Number(estimatedTokens) || (type === 'image' ? 2_048 : type === 'video' ? 4_096 : 1_000)))
     };
     profile = {
       ...profile,
-      [usedKey]: usage[countKey],
       usage,
-      usageLocalOnly: true,
-      textLimit: limits.chat,
-      imageLimit: limits.image,
-      videoLimit: limits.video
+      usageLocalOnly: true
     };
     localStorage.setItem(localKey, JSON.stringify(profile));
     return profile;

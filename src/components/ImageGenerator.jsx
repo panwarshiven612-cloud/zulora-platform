@@ -18,7 +18,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { aiRouter } from '../services/aiRouter';
 import { imageFileToDataUrl } from '../services/imageUtils';
-import { firestoreService, TIERS } from '../services/firestoreService';
+import { firestoreService, getTokenUsagePercent } from '../services/firestoreService';
 import { downloadMedia } from '../services/downloadService';
 
 const STYLES = [
@@ -46,7 +46,8 @@ const IMAGE_MODELS = [
 ];
 
 export const ImageGenerator = () => {
-  const { currentUser, limits, usage, checkUsage, recordUsage, isPro, setIsUsageModalOpen, setIsPricingModalOpen } = useAuth();
+  const { currentUser, tier, usage, checkUsage, recordUsage, isPro, setIsUsageModalOpen, setIsPricingModalOpen } = useAuth();
+  const usagePercent = getTokenUsagePercent(usage, tier);
 
   const [prompt, setPrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
@@ -120,11 +121,13 @@ export const ImageGenerator = () => {
       setGallery(prev => [saved, ...prev]);
     } catch (err) {
       console.error('Image generation error:', err);
-      if (err.status === 403) {
+      if (err.status === 429) {
+        setIsUsageModalOpen(true);
+      } else if (err.status === 403) {
         if (err.payload?.upgradeRequired) setIsPricingModalOpen(true);
         else setIsUsageModalOpen(true);
       }
-      alert(err.message || 'Encountered an issue generating image.');
+      if (err.status !== 429) alert(err.message || 'Encountered an issue generating image.');
     } finally {
       setLoading(false);
       generatingRef.current = false;
@@ -201,10 +204,8 @@ export const ImageGenerator = () => {
             <Zap className="w-5 h-5" />
           </div>
           <div>
-            <div className="text-[11px] text-slate-400 font-medium">Daily Images Used</div>
-            <div className="text-sm font-bold text-slate-900 dark:text-white">
-              {usage.imageCount || 0} / <span className="text-sky-500">{limits.image}</span>
-            </div>
+            <div className="text-[11px] text-slate-400 font-medium">Current usage</div>
+            <div className="text-sm font-bold text-slate-900 dark:text-white">{usagePercent}% <span className="font-medium text-slate-400">used this hour</span></div>
           </div>
         </div>
       </div>

@@ -5,16 +5,8 @@ import { buildSystemPrompt } from '../src/services/systemPrompt.js';
 export const config = { maxDuration: 60 };
 
 const CHAT_ORDER = ['gemini', 'groq', 'cerebras', 'openrouter', 'mistral'];
-const COUNTERS = {
-  chat: { used: 'textUsed', limit: 'textLimit', count: 'chatCount', window: 'chatWindowStart', duration: 2 * 60 * 60 * 1000 },
-  image: { used: 'imageUsed', limit: 'imageLimit', count: 'imageCount', window: 'imageWindowStart', duration: 24 * 60 * 60 * 1000 },
-  video: { used: 'videoUsed', limit: 'videoLimit', count: 'videoCount', window: 'videoWindowStart', duration: 24 * 60 * 60 * 1000 }
-};
-const PLAN_LIMITS = {
-  free: { chat: 50, image: 30, video: 4 },
-  pro: { chat: 100, image: 60, video: 8 },
-  ultra: { chat: 250, image: 150, video: 20 }
-};
+const TOKEN_LIMITS = { free: 10_000, pro: 50_000, ultra: 100_000 };
+const TOKEN_WINDOW_MS = 60 * 60 * 1000;
 let cachedFirestoreToken = null;
 let cachedFirebaseCertificates = null;
 
@@ -175,58 +167,68 @@ async function readUsageProfile(uid, token, transaction) {
   return { profile: readProfile(await response.json()) };
 }
 
-function usageState(profile, type, now = Date.now()) {
-  const spec = COUNTERS[type];
-  const usage = { ...(profile.usage || {}) };
-  const rawTiers = [profile.planTier, profile.tier].map(value => String(value || '').toLowerCase().replace(/[ _-]/g, ''));
-  const tier = rawTiers.some(value => value.includes('ultra'))
-    ? 'ultra'
-    : rawTiers.some(value => value.includes('pro')) ? 'pro' : 'free';
-  const windowStart = Number(usage[spec.window]) || now;
-  const expired = now - windowStart >= spec.duration;
-  const current = expired ? 0 : Number(profile[spec.used] ?? usage[spec.count] ?? 0);
-  const limit = PLAN_LIMITS[tier][type];
-  return { usage: { ...usage, [spec.count]: current, [spec.window]: expired ? now : windowStart }, current, limit, allowed: current < limit, normalizedTier: tier };
-}
-
-async function checkUsage(uid, type) {
+async function readPlan(uid) {
   const adminToken = await firestoreAccessToken();
   const { profile, error } = await readUsageProfile(uid, adminToken);
   if (error) return { allowed: false, error };
-  const state = usageState(profile, type);
-  return { ...state, planTier: state.normalizedTier };
+  const values = [profile.planTier, profile.tier].map(value => String(value || '').toLowerCase().replace(/[ _-]/g, ''));
+  const planTier = values.some(value => value.includes('ultra')) ? 'ultra' : values.some(value => value.includes('pro')) ? 'pro' : 'free';
+  return { planTier };
 }
 
-async function incrementUsage(uid, type) {
+function tokenUsageState(profile, now = Date.now()) {
+  const usage = { ...(profile.usage || {}) };
+  const rawTiers = [profile.planTier, profile.tier].map(value => String(value || '').toLowerCase().replace(/[ _-]/g, ''));
+  const tier = rawTiers.some(value => value.includes('ultra')) ? 'ultra' : rawTiers.some(value => value.includes('pro')) ? 'pro' : 'free';
+  const previousStart = Number(usage.tokenWindowStart) || now;
+  const expired = now - previousStart >= TOKEN_WINDOW_MS || previousStart > now;
+  const windowStart = expired ? now : previousStart;
+  const current = expired ? 0 : Math.max(0, Number(usage.tokenUsed) || 0);
+  const limit = TOKEN_LIMITS[tier];
+  return { usage, tier, current, limit, windowStart, resetAt: windowStart + TOKEN_WINDOW_MS, allowed: current < limit };
+}
+
+async function readTokenUsageState(uid) {
+  const token = await firestoreAccessToken();
+  const { profile, error } = await readUsageProfile(uid, token);
+  if (error) throw new Error(error);
+  return tokenUsageState(profile);
+}
+
+async function incrementTokenUsage(uid, estimatedTokens = 1000) {
   const adminToken = await firestoreAccessToken();
+  const charge = Math.max(1, Math.min(20_000, Math.ceil(Number(estimatedTokens) || 1000)));
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const begin = await fetchWithTimeout(`${firestoreRoot()}:beginTransaction`, {
       method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ options: { readWrite: {} } })
     }, 8_000);
-    if (!begin.ok) throw new Error('Could not start Firestore usage transaction.');
+    if (!begin.ok) throw new Error('Could not start Firestore token usage transaction.');
     const transaction = (await begin.json()).transaction;
-    if (!transaction) throw new Error('Firestore did not return a usage transaction.');
     const { profile, error } = await readUsageProfile(uid, adminToken, transaction);
     if (error) throw new Error(error);
-    const state = usageState(profile, type);
-    if (!state.allowed) return { allowed: false, current: state.current, limit: state.limit, planTier: profile.planTier || 'Free' };
-    const spec = COUNTERS[type];
-    const next = state.current + 1;
-    const usage = { ...state.usage, [spec.count]: next };
-    const fields = { [spec.used]: next, usage };
+    const state = tokenUsageState(profile);
+    if (!state.allowed) return { allowed: false, usedPercent: 100, resetAt: state.resetAt, planTier: state.tier };
+    const usage = { ...state.usage, tokenUsed: state.current + charge, tokenWindowStart: state.windowStart };
     const write = {
-      update: { name: firestoreDoc(uid), fields: Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, toFirestoreValue(value)])) },
-      updateMask: { fieldPaths: [spec.used, 'usage'] }
+      update: { name: firestoreDoc(uid), fields: { usage: toFirestoreValue(usage) } },
+      updateMask: { fieldPaths: ['usage'] }
     };
     const commit = await fetchWithTimeout(`${firestoreRoot()}:commit`, {
       method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction, writes: [write] })
     }, 8_000);
-    if (commit.ok) return { allowed: true, current: next, limit: state.limit };
+    if (commit.ok) return { allowed: true, usedPercent: Math.min(100, Math.round(((state.current + charge) / state.limit) * 100)), resetAt: state.resetAt, planTier: state.tier };
     const details = await commit.text();
     if (attempt < 2 && (commit.status === 409 || details.includes('ABORTED'))) continue;
-    throw new Error('Firestore rejected the usage update.');
+    throw new Error('Firestore rejected the token usage update.');
   }
-  throw new Error('Firestore usage update could not be committed.');
+  throw new Error('Firestore token usage update could not be committed.');
+}
+
+export async function verifyRequestUser(req) { return verifyUser(req); }
+
+export async function getTokenUsageStatus(uid) {
+  const state = await readTokenUsageState(uid);
+  return { usedPercent: Math.min(100, Math.round((state.current / state.limit) * 100)), resetAt: new Date(state.resetAt).toISOString(), blocked: !state.allowed, tier: state.tier };
 }
 
 const parseRetryAfter = response => {
@@ -427,21 +429,27 @@ async function generateChat(body, streamOptions = {}) {
   const coding = Boolean(body.coding) || /(?:\bcode\b|\bhtml\b|\bcss\b|\bjs\b|\bjavascript\b|\breact\b|\bfunction\b|\bbuild\s+(?:a\s+)?ui\b|\bwebsite\b|\bwebpage\b|\bweb\s+app\b|\blanding\s+page\b|\b(?:1000|\d{4,})\s*(?:\+\s*)?lines?\b|\bfull\s+(?:landing\s+page|website|web\s+app|application)\b|\binteractive\s+app\b|\bcomplete\s+(?:landing\s+page|website|web\s+app|application)\b)/i.test(latestUserPrompt);
   const complex = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(requestedPreference) ||
     /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(latestUserPrompt);
-  const preference = requestedPreference === 'auto' ? (coding ? 'llama' : complex ? 'pro' : 'flash') : requestedPreference;
+  const preference = requestedPreference === 'auto' ? (coding ? 'pro' : complex ? 'pro' : 'flash') : requestedPreference;
   const useProModel = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference);
   const geminiModel = useProModel ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
   const groqModel = preference === 'think' ? 'openai/gpt-oss-120b' : preference === 'flash' ? 'llama-3.1-8b-instant' : 'llama-3.3-70b-versatile';
-  const order = chooseChatOrder(preference, vision, Boolean(body.enableWebSearch), requestedPreference === 'auto');
+  const order = vision
+      ? ['gemini']
+      : preference === 'think'
+      ? ['openrouter', 'gemini-pro', 'gemini', 'groq', 'cerebras', 'mistral']
+      : useProModel
+        ? ['openrouter', 'gemini-pro', 'gemini', 'groq', 'cerebras', 'mistral']
+        : chooseChatOrder(preference, vision, Boolean(body.enableWebSearch), requestedPreference === 'auto');
   for (const provider of order) {
-    let result = provider === 'gemini'
-      ? await tryGemini(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: vision && !useProModel ? 'gemini-2.5-flash' : geminiModel, coding, ...streamOptions })
+    let result = provider === 'gemini' || provider === 'gemini-pro'
+      ? await tryGemini(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: provider === 'gemini-pro' ? 'gemini-2.5-pro' : vision || useProModel ? 'gemini-2.5-flash' : geminiModel, coding, ...streamOptions })
       : await tryOpenAiProvider(provider, messages, {
         attachments: body.attachments,
         vision,
         coding,
         model: provider === 'groq'
           ? groqModel
-          : provider === 'openrouter' && preference === 'think'
+          : provider === 'openrouter' && useProModel
             ? 'deepseek/deepseek-r1'
             : provider === 'openrouter' && preference === 'llama'
               ? 'meta-llama/llama-3.3-70b-instruct'
@@ -780,6 +788,16 @@ async function generateVideo(body) {
   throw new Error('Pollinations, Fal AI, and Replicate video providers are unavailable. Configure POLLINATIONS_API_KEY, FAL_API_KEY, or REPLICATE_API_TOKEN on the server, then retry.');
 }
 
+function estimateRequestTokens(type, body, output = {}) {
+  if (type === 'image') return 2_048;
+  if (type === 'video') return 4_096;
+  const inputChars = (Array.isArray(body.messages) ? body.messages : [])
+    .reduce((total, message) => total + String(message?.content || '').length, 0);
+  const imageChars = (Array.isArray(body.attachments) ? body.attachments : []).reduce((total, item) => total + String(item?.base64 || '').length, 0);
+  const outputChars = String(output.text || '').length;
+  return Math.max(1, Math.ceil((inputChars + outputChars) / 4) + Math.ceil(imageChars / 5_000));
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return safeError(res, 405, 'Method not allowed.');
   let body = req.body;
@@ -806,24 +824,23 @@ export default async function handler(req, res) {
     if (allowanceOnly) {
       if (!firestoreAdminCredentials()) return json(res, 200, { allowance: null, quotaSource: 'client' });
       let before;
-      try { before = await checkUsage(uid, type); }
+      try { before = await readPlan(uid); }
       catch (error) {
         console.warn('Server quota preflight fell back to the client store:', error.message);
         return json(res, 200, { allowance: null, quotaSource: 'client' });
       }
       if (before.error) return json(res, 200, { allowance: null, quotaSource: 'client' });
-      if (!before.allowed) return safeError(res, 403, `${type} limit reached. Upgrade your subscription to continue.`, { limit: before.limit, used: before.current, planTier: before.planTier });
-      return json(res, 200, { allowance: { type, allowed: true, used: before.current, limit: before.limit, planTier: before.planTier } });
+      const bucket = await readTokenUsageState(uid);
+      const status = { usedPercent: Math.min(100, Math.round((bucket.current / bucket.limit) * 100)), resetAt: new Date(bucket.resetAt).toISOString(), tier: bucket.tier };
+      if (!bucket.allowed) return safeError(res, 429, 'Your hourly AI capacity is used. Upgrade or wait for the reset to continue.', { upgradeRequired: true, usage: { ...status, blocked: true } });
+      return json(res, 200, { allowance: { type, allowed: true, planTier: before.planTier, usage: { ...status, blocked: false } } });
     }
 
     if (usageOnly) {
       if (!firestoreAdminCredentials()) return json(res, 200, { usage: { type, tracked: false, source: 'client' } });
       try {
-        const before = await checkUsage(uid, type);
-        if (before.error || !before.allowed) return json(res, 200, { usage: { type, tracked: false, source: 'client' } });
-        const updated = await incrementUsage(uid, type);
-        if (!updated.allowed) return json(res, 200, { usage: { type, tracked: false, source: 'client' } });
-        return json(res, 200, { usage: { type, tracked: true, used: updated.current, limit: updated.limit } });
+        const updated = await incrementTokenUsage(uid, body.estimatedTokens || (type === 'image' ? 2_048 : type === 'video' ? 4_096 : 1_000));
+        return json(res, 200, { usage: { type, tracked: true, ...updated } });
       } catch (error) {
         console.warn('Server usage write fell back to the client store:', error.message);
         return json(res, 200, { usage: { type, tracked: false, source: 'client' } });
@@ -834,13 +851,13 @@ export default async function handler(req, res) {
     let profileTier = null;
     if (firestoreAdminCredentials()) {
       try {
-        const before = await checkUsage(uid, type);
+        const before = await readPlan(uid);
         profileTier = before.planTier;
         if (before.error) {
           console.warn('Server quota check fell back to the client store:', before.error);
-        } else if (!before.allowed) {
-          return safeError(res, 403, `${type} limit reached. Upgrade your subscription to continue.`, { limit: before.limit, used: before.current, planTier: before.planTier });
         } else {
+          const tokenState = await readTokenUsageState(uid);
+          if (!tokenState.allowed) return safeError(res, 429, 'Your hourly AI capacity is used. Upgrade or wait for the reset to continue.', { upgradeRequired: true });
           usageTrackingAvailable = true;
         }
       } catch (error) {
@@ -888,8 +905,8 @@ export default async function handler(req, res) {
         let usage = { type, tracked: false };
         if (usageTrackingAvailable) {
           try {
-            const updated = await incrementUsage(uid, type);
-            if (updated.allowed) usage = { type, tracked: true, used: updated.current, limit: updated.limit };
+            const tokenUpdate = await incrementTokenUsage(uid, estimateRequestTokens(type, body, output));
+            usage = { type, tracked: true, ...tokenUpdate };
           } catch (error) {
             console.warn('Firestore usage write fell back to the client store:', error?.message || 'Could not save usage.');
           }
@@ -906,12 +923,8 @@ export default async function handler(req, res) {
     let usage = { type, tracked: false };
     if (usageTrackingAvailable) {
       try {
-        const updated = await incrementUsage(uid, type);
-        if (!updated.allowed) {
-          usage = { type, tracked: false, source: 'client' };
-        } else {
-          usage = { type, tracked: true, used: updated.current, limit: updated.limit };
-        }
+        const tokenUpdate = await incrementTokenUsage(uid, estimateRequestTokens(type, body, output));
+        usage = { type, tracked: true, ...tokenUpdate };
       } catch (error) {
         console.warn('Server usage write fell back to the client store:', error?.message || 'Could not save usage.');
       }

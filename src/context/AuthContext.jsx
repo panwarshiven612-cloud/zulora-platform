@@ -37,18 +37,16 @@ export const AuthProvider = ({ children }) => {
     return profile;
   }, []);
 
-  const recordUsage = useCallback(async (type, serverTracked = false) => {
+  const recordUsage = useCallback(async (type, serverTracked = false, estimatedTokens = undefined) => {
     if (!currentUser?.uid) return null;
     try {
       if (serverTracked) {
         firestoreService.clearLocalUsage(currentUser.uid);
         return await refreshProfile(currentUser.uid, currentUser);
       }
-      const profile = firestoreService.recordLocalUsage(currentUser.uid, type);
+      const profile = firestoreService.recordLocalUsage(currentUser.uid, type, estimatedTokens);
       if (profile) setUserProfile(profile);
-      const syncedProfile = await firestoreService.syncLocalUsageToFirestore(currentUser.uid, profile, type);
-      if (syncedProfile) setUserProfile(syncedProfile);
-      return syncedProfile || profile;
+      return profile;
     } catch (error) {
       console.warn('Could not update the usage display:', error.message);
       return null;

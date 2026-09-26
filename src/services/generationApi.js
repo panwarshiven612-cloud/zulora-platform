@@ -44,6 +44,18 @@ export async function requestGeneration(action, payload, currentUser) {
   return data;
 }
 
+export async function requestLimits(currentUser) {
+  if (!currentUser?.getIdToken) return null;
+  let token;
+  try { token = await currentUser.getIdToken(); } catch { return null; }
+  try {
+    const response = await fetch('/api/limits', { headers: { Authorization: `Bearer ${token}` } });
+    if (response.status === 404) return null;
+    const data = await response.json().catch(() => ({}));
+    return response.ok ? data.usage || null : null;
+  } catch { return null; }
+}
+
 /** Requests chat output as authenticated server-sent events and forwards each token to the UI. */
 export async function requestGenerationStream(payload, currentUser, onToken) {
   if (!currentUser?.getIdToken) return null;
@@ -113,16 +125,24 @@ export async function requestGenerationStream(payload, currentUser, onToken) {
 }
 
 export async function checkGenerationAllowance(type, currentUser) {
-  const result = await requestGeneration('allowance', { usageType: type }, currentUser);
+  let result;
+  try { result = await requestGeneration('allowance', { usageType: type }, currentUser); }
+  catch (error) {
+    if (error instanceof GenerationApiError && [403, 429].includes(error.status)) {
+      return { allowed: false, upgradeRequired: Boolean(error.payload?.upgradeRequired), usage: error.payload?.usage, tier: error.payload?.planTier };
+    }
+    throw error;
+  }
   if (!currentUser?.uid) return result?.allowance || null;
+  if (result?.allowance) return result.allowance;
   const clientAllowance = await firestoreService.checkUsageAllowance(currentUser.uid, type);
   if (clientAllowance && !clientAllowance.allowed) return clientAllowance;
   return result?.allowance || clientAllowance || null;
 }
 
-export async function trackSuccessfulUsage(type, currentUser) {
+export async function trackSuccessfulUsage(type, currentUser, estimatedTokens = undefined) {
   try {
-    const result = await requestGeneration('usage', { usageType: type }, currentUser);
+    const result = await requestGeneration('usage', { usageType: type, estimatedTokens }, currentUser);
     return result?.usage || { type, tracked: false };
   } catch (error) {
     if (error instanceof GenerationApiError && (error.status === 401 || error.status === 403 || error.status >= 500)) throw error;

@@ -181,14 +181,15 @@ const withProviderRetry = async (operation, attempts = 2) => {
 };
 const syncUsage = async (result, type, currentUser) => {
   if (result?.usage?.tracked) return result;
-  return { ...result, usage: await trackSuccessfulUsage(type, currentUser) };
+  const estimatedTokens = type === 'chat' ? Math.max(512, Math.ceil(String(result?.text || '').length / 4) + 256) : undefined;
+  return { ...result, usage: await trackSuccessfulUsage(type, currentUser, estimatedTokens) };
 };
 const isQuotaAuthorityError = error => error instanceof GenerationApiError &&
-  (error.status === 401 || error.status === 403 || (error.status >= 500 && /Firestore|quota|usage|plan validation|verify sign-in|session/i.test(error.message)));
+  (error.status === 401 || error.status === 403 || error.status === 429 || error.payload?.upgradeRequired || (error.status >= 500 && /Firestore|quota|usage|plan validation|verify sign-in|session/i.test(error.message)));
 const ensureGenerationAllowance = async (type, currentUser) => {
   const allowance = await checkGenerationAllowance(type, currentUser);
   if (allowance && !allowance.allowed) {
-    throw new GenerationApiError(`${type} limit reached. Upgrade your subscription to continue.`, 403, allowance);
+    throw new GenerationApiError(`${type} limit reached. Upgrade your subscription to continue.`, allowance.usage?.blocked ? 429 : 403, { ...allowance, upgradeRequired: true });
   }
 };
 
@@ -539,7 +540,7 @@ export const apiRouter = {
     const coding = isCodingPrompt(prompt);
     const tier = vision
       ? (requestedTier === 'think' || requestedTier === 'pro' ? requestedTier : 'flash')
-      : requestedTier === 'auto' ? (coding ? 'llama' : isComplexPrompt(prompt) ? 'pro' : 'flash') : requestedTier;
+      : requestedTier === 'auto' ? (coding ? 'think' : isComplexPrompt(prompt) ? 'pro' : 'flash') : requestedTier;
     options = { ...options, coding };
     const errors = [];
     const geminiPool = getGeminiKeyPool();
@@ -598,11 +599,6 @@ export const apiRouter = {
           errors.push(`OpenRouter DeepSeek R1[${i}]: ${err.message}`);
         }
       }
-      try {
-        return await syncUsage(await withProviderRetry(() => tryGroq(prompt, contextMessages, tier, options), 2), 'chat', options.currentUser);
-      } catch (err) {
-        errors.push(`Groq reasoning: ${err.message}`);
-      }
       for (let attempt = 0; attempt < geminiPool.length; attempt++) {
         const key = geminiPool[(activeGeminiIdx + attempt) % geminiPool.length];
         try {
@@ -612,6 +608,21 @@ export const apiRouter = {
         } catch (err) {
           errors.push(`Gemini 2.5 Pro[${attempt + 1}/${geminiPool.length}]: ${err.message}`);
         }
+      }
+      for (let attempt = 0; attempt < geminiPool.length; attempt++) {
+        const key = geminiPool[(activeGeminiIdx + attempt) % geminiPool.length];
+        try {
+          const result = await tryGeminiKey(key, prompt, contextMessages, 'flash', options);
+          activeGeminiIdx = (activeGeminiIdx + attempt + 1) % geminiPool.length;
+          return await syncUsage(result, 'chat', options.currentUser);
+        } catch (err) {
+          errors.push(`Gemini 2.5 Flash[${attempt + 1}/${geminiPool.length}]: ${err.message}`);
+        }
+      }
+      try {
+        return await syncUsage(await withProviderRetry(() => tryGroq(prompt, contextMessages, tier, options), 2), 'chat', options.currentUser);
+      } catch (err) {
+        errors.push(`Groq reasoning: ${err.message}`);
       }
       throw new Error('DeepSeek R1, Groq reasoning, and Gemini 2.5 Pro are temporarily unavailable.');
     }

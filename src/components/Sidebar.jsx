@@ -127,6 +127,12 @@ export const Sidebar = ({
     return diff >= oneDay && diff < sevenDays;
   });
   const olderSessions = sessions.filter(s => now - (s.updatedAt || 0) >= sevenDays);
+  const tokenCap = tier === TIERS.ULTRA ? 100_000 : tier === TIERS.PRO ? 50_000 : 10_000;
+  const tokenWindowStart = Number(usage.tokenWindowStart) || Date.now();
+  const tokenWindowExpired = Date.now() - tokenWindowStart >= 60 * 60 * 1000;
+  const tokenPercent = tokenWindowExpired ? 0 : Math.min(100, Math.round(((Number(usage.tokenUsed) || 0) / tokenCap) * 100));
+  const tokenResetAt = new Date((tokenWindowExpired ? Date.now() : tokenWindowStart) + 60 * 60 * 1000)
+    .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   const renderSessionItem = (session) => {
     const isSelected = currentChatId === session.id;
@@ -336,41 +342,21 @@ export const Sidebar = ({
             </span>
             <span className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1">
               <Clock className="w-3 h-3 text-slate-400" />
-              <span>{resetCountdown}</span>
+              <span>Resets {tokenResetAt}</span>
             </span>
           </div>
 
-          {/* Chat Limit Bar */}
+          {/* Hourly token bucket */}
           <div>
             <div className="flex justify-between text-[10px] text-slate-500 dark:text-slate-400 mb-1">
-              <span>Chats (2h)</span>
-              <span>{usage.chatCount || 0} / {limits.chat}</span>
+              <span>Current usage</span>
+              <span>{tokenPercent}% used</span>
             </div>
             <div className="w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
               <div 
-                className="h-full bg-sky-500 rounded-full transition-all duration-300"
-                style={{ width: `${Math.min(100, ((usage.chatCount || 0) / limits.chat) * 100)}%` }}
+                className={`h-full rounded-full transition-all duration-300 ${tokenPercent >= 90 ? 'bg-amber-500' : 'bg-sky-500'}`}
+                style={{ width: `${tokenPercent}%` }}
               />
-            </div>
-          </div>
-
-          <div>
-            <div className="flex justify-between text-[10px] text-slate-500 dark:text-slate-400 mb-1">
-              <span>Images (24h)</span>
-              <span>{usage.imageCount || 0} / {limits.image}</span>
-            </div>
-            <div className="w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-              <div className="h-full bg-indigo-500 rounded-full transition-all duration-300" style={{ width: `${Math.min(100, ((usage.imageCount || 0) / limits.image) * 100)}%` }} />
-            </div>
-          </div>
-
-          <div>
-            <div className="flex justify-between text-[10px] text-slate-500 dark:text-slate-400 mb-1">
-              <span>Videos (24h)</span>
-              <span>{usage.videoCount || 0} / {limits.video}</span>
-            </div>
-            <div className="w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-              <div className="h-full bg-purple-500 rounded-full transition-all duration-300" style={{ width: `${Math.min(100, ((usage.videoCount || 0) / limits.video) * 100)}%` }} />
             </div>
           </div>
 

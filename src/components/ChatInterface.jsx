@@ -755,7 +755,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
 
       const finalMessages = [...newMessages, aiMsg];
       setMessages(finalMessages);
-      await recordUsage('chat', Boolean(result.usage?.tracked));
+      const estimatedTokens = Math.max(512, Math.ceil((fullPrompt.length + String(result.text || '').length) / 4));
+      await recordUsage('chat', Boolean(result.usage?.tracked), estimatedTokens);
       if (currentUser?.uid) firestoreService.recordQueryContext(currentUser.uid, basePrompt, enableWebSearch ? 'search' : 'chat');
       const generatedCode = Array.from(String(result.text || '').matchAll(/```([^\r\n]*)\r?\n([\s\S]*?)```/g))
         .map(([, language, source]) => `\`\`\`${language.trim()}\n${source.replace(/\n$/, '')}\n\`\`\``)
@@ -780,6 +781,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
 
     } catch (err) {
       console.error('Chat error:', err);
+      if (err.status === 429 || (err.payload?.upgradeRequired && err.payload?.usage?.blocked)) {
+        setMessages(newMessages);
+        setIsUsageModalOpen(true);
+        return;
+      }
       if (err.status === 403) {
         if (err.payload?.upgradeRequired) setIsPricingModalOpen(true);
         else setIsUsageModalOpen(true);
