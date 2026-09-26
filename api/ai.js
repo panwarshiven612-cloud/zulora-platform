@@ -1,12 +1,14 @@
 import { createPublicKey, createSign, verify as verifySignature } from 'node:crypto';
 import { apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
-import { buildSystemPrompt } from '../src/services/systemPrompt.js';
+import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from '../src/services/systemPrompt.js';
 
 export const maxDuration = 60;
 export const config = { maxDuration };
 
 const CHAT_ORDER = ['gemini', 'groq', 'cerebras', 'mistral', 'openrouter'];
-const GEMINI_FLASH_VARIANTS = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-8b'];
+const GEMINI_FAST_MODEL = process.env.GEMINI_FAST_MODEL || 'gemini-3.5-flash-lite';
+const GEMINI_HIGH_CAPACITY_MODEL = process.env.GEMINI_HIGH_CAPACITY_MODEL || 'gemini-3.8-flash';
+const GEMINI_FLASH_VARIANTS = [...new Set([GEMINI_HIGH_CAPACITY_MODEL, 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'])];
 const TOKEN_LIMITS = { free: 10_000, pro: 50_000, ultra: 100_000 };
 const TOKEN_WINDOW_MS = 24 * 60 * 60 * 1000;
 const PROMPT_BURST_WINDOW_MS = 2 * 60 * 1000;
@@ -206,7 +208,7 @@ async function readTokenUsageState(uid) {
   return tokenUsageState(profile);
 }
 
-async function incrementTokenUsage(uid, estimatedTokens = 1000) {
+async function incrementTokenUsage(uid, estimatedTokens = 1000, allowOverage = false) {
   const adminToken = await firestoreAccessToken();
   const charge = Math.max(1, Math.min(20_000, Math.ceil(Number(estimatedTokens) || 1000)));
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -218,7 +220,7 @@ async function incrementTokenUsage(uid, estimatedTokens = 1000) {
     const { profile, error } = await readUsageProfile(uid, adminToken, transaction);
     if (error) throw new Error(error);
     const state = tokenUsageState(profile);
-    if (!state.allowed) return { allowed: false, usedPercent: 100, resetAt: state.resetAt, planTier: state.tier };
+    if (!state.allowed && !allowOverage) return { allowed: false, usedPercent: 100, resetAt: state.resetAt, planTier: state.tier };
     const usage = { ...state.usage, tokenUsed: state.current + charge, tokenWindowStart: state.windowStart };
     const write = {
       update: { name: firestoreDoc(uid), fields: { usage: toFirestoreValue(usage) } },
@@ -227,7 +229,15 @@ async function incrementTokenUsage(uid, estimatedTokens = 1000) {
     const commit = await fetchWithTimeout(`${firestoreRoot()}:commit`, {
       method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction, writes: [write] })
     }, 8_000);
-    if (commit.ok) return { allowed: true, usedPercent: Math.max(0, Math.min(100, Math.floor(((state.current + charge) / state.limit) * 100))), resetAt: state.resetAt, planTier: state.tier };
+    if (commit.ok) return {
+      allowed: true,
+      usedTokens: state.current + charge,
+      processedTokens: charge,
+      tokenLimit: state.limit,
+      usedPercent: Math.max(0, Math.min(100, Math.floor(((state.current + charge) / state.limit) * 100))),
+      resetAt: state.resetAt,
+      planTier: state.tier
+    };
     const details = await commit.text();
     if (attempt < 2 && (commit.status === 409 || details.includes('ABORTED'))) continue;
     throw new Error('Firestore rejected the token usage update.');
@@ -375,7 +385,7 @@ function plainMessages(messages, systemPrompt) {
   ];
 }
 
-async function readProviderEventStream(response, readToken, onToken, streamState) {
+async function readProviderEventStream(response, readToken, onToken, streamState, onUsage = undefined) {
   if (!response.body) throw new Error('The model returned no response stream.');
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -386,6 +396,7 @@ async function readProviderEventStream(response, readToken, onToken, streamState
       .map(line => line.slice(5).trim()).join('\n');
     if (!data || data === '[DONE]') return;
     const event = JSON.parse(data);
+    if (event.usageMetadata || event.usage) onUsage?.(event.usageMetadata || event.usage);
     const token = readToken(event);
     if (typeof token === 'string' && token) {
       output += token;
@@ -471,12 +482,18 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
       }, options.stream ? 12_000 : 15_000, options.stream ? 1 : 3);
       if (response.ok) {
         options.onProvider?.(config.label, config.model);
-        const text = options.stream
-          ? await readProviderEventStream(response, event => event.choices?.[0]?.delta?.content, options.onToken, options.streamState)
-          : (await response.json()).choices?.[0]?.message?.content;
+        let tokenUsage;
+        let text;
+        if (options.stream) {
+          text = await readProviderEventStream(response, event => event.choices?.[0]?.delta?.content, options.onToken, options.streamState, usage => { tokenUsage = normalizeTokenUsage(usage); });
+        } else {
+          const data = await response.json();
+          text = data.choices?.[0]?.message?.content;
+          tokenUsage = normalizeTokenUsage(data.usage);
+        }
         if (typeof text === 'string' && (text.trim() || (options.stream && options.streamState?.sent))) {
           apiKeyPool.succeeded(provider, index);
-          return { text: text.trim(), provider: `${config.label}${provider === 'openrouter' ? ` (Key #${index + 1})` : ''}`, model: config.model };
+          return { text: text.trim(), tokenUsage, provider: `${config.label}${provider === 'openrouter' ? ` (Key #${index + 1})` : ''}`, model: config.model };
         }
       }
       console.warn(`${config.label} text request failed with HTTP ${response.status}.`);
@@ -502,8 +519,9 @@ async function tryGemini(messages, options = {}) {
       ? parts.map(part => ({ inline_data: { mime_type: part.mimeType, data: part.data } })) : [])]
   }));
   if (!contents.length) contents.push({ role: 'user', parts: [{ text: 'Hello' }] });
-  const keys = apiKeyPool.candidates('gemini');
+  const keys = apiKeyPool.candidates('gemini', { preferBest: Boolean(options.preferBestKey) });
   for (const { key, index } of keys) {
+    const startedAt = Date.now();
     try {
       const model = options.model || 'gemini-2.5-flash';
       const endpoint = options.stream ? 'streamGenerateContent?alt=sse' : 'generateContent';
@@ -513,7 +531,7 @@ async function tryGemini(messages, options = {}) {
           contents,
           ...(systemPrompt ? { system_instruction: { parts: [{ text: systemPrompt }] } } : {}),
           ...(options.enableWebSearch ? { tools: [{ google_search: {} }] } : {}),
-          generationConfig: { temperature: 0.7, maxOutputTokens: options.coding ? 8192 : (options.model === 'gemini-2.5-pro' ? 8192 : 4096) }
+          generationConfig: { temperature: 0.7, maxOutputTokens: options.coding || options.flagship ? 8192 : (options.model === 'gemini-2.5-pro' ? 8192 : 4096) }
         })
       }, options.stream ? 12_000 : 16_000, options.stream ? 1 : 3);
       if (response.ok) {
@@ -521,19 +539,20 @@ async function tryGemini(messages, options = {}) {
         let data;
         let text;
         if (options.stream) {
-          text = await readProviderEventStream(response, event => event.candidates?.[0]?.content?.parts?.map(part => part.text || '').join(''), options.onToken, options.streamState);
-          data = {};
+          let usageMetadata;
+          text = await readProviderEventStream(response, event => event.candidates?.[0]?.content?.parts?.map(part => part.text || '').join(''), options.onToken, options.streamState, usage => { usageMetadata = usage; });
+          data = { usageMetadata };
         } else {
           data = await response.json();
           text = data.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('').trim();
         }
         const candidate = data.candidates?.[0];
         if (text || (options.stream && options.streamState?.sent)) {
-          apiKeyPool.succeeded('gemini', index);
+          apiKeyPool.succeeded('gemini', index, Date.now() - startedAt);
           const grounding = candidate?.groundingMetadata || {};
           const chunks = grounding.groundingChunks || [];
           const sources = chunks.map(chunk => chunk.web && ({ title: chunk.web.title || chunk.web.uri, url: chunk.web.uri })).filter(Boolean);
-          return { text, provider: `Google Gemini (Key #${index + 1})`, model, sources };
+          return { text, tokenUsage: normalizeTokenUsage(data.usageMetadata), provider: `Google Gemini (Key #${index + 1})`, model, sources };
         }
       }
       console.warn(`Google Gemini text request failed with HTTP ${response.status}.`);
@@ -597,8 +616,8 @@ function normalizeModelPreference(value) {
   if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra')) return 'think';
   if (selected === 'llama' || (selected.includes('llama') && selected.includes('70b'))) return 'llama';
   if (selected === 'groq' || selected.includes('groq')) return 'groq';
+  if (selected === 'gemini' || selected === 'flash' || selected.includes('gemini flash') || (/^gemini\s+\d/.test(selected) && selected.includes('flash'))) return 'gemini';
   if (selected === 'pro 3.14' || selected === 'zulora pro 3.14' || selected === 'pro' || selected === 'pro 314') return 'pro';
-  if (selected === 'flash' || selected.includes('gemini 2.5 flash')) return 'gemini-2.5-flash';
   if (selected === 'auto' || !selected) return 'auto';
   if (['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'think';
   return 'auto';
@@ -610,12 +629,13 @@ function chooseChatOrder(preference, autoSelected = false) {
 }
 
 async function generateChat(body, streamOptions = {}) {
-  const systemPrompt = buildSystemPrompt(body.contextMemory, new Date(), body.aiBrain, body.userVault);
+  const requestedPreference = normalizeModelPreference(body.modelPreference || body.model);
+  const flagship = requestedPreference === 'think';
+  const systemPrompt = `${buildSystemPrompt(body.contextMemory, new Date(), body.aiBrain, body.userVault)}${flagship ? FLAGSHIP_SYSTEM_PROMPT : ''}`;
   const messages = plainMessages(body.messages, systemPrompt);
   const attachments = attachmentParts(body.attachments);
   if (body.attachments?.length && !attachments.length) throw new Error('The attached image format is unsupported. Use PNG, JPEG, WebP, or GIF.');
   const vision = attachments.length > 0;
-  const requestedPreference = normalizeModelPreference(body.modelPreference || body.model);
   const latestUserPrompt = [...messages].reverse().find(message => message.role === 'user')?.content || '';
   const coding = Boolean(body.coding) || /(?:\bcode\b|\bhtml\b|\bcss\b|\bjs\b|\bjavascript\b|\breact\b|\bfunction\b|\bbuild\s+(?:a\s+)?ui\b|\bwebsite\b|\bwebpage\b|\bweb\s+app\b|\blanding\s+page\b|\b(?:1000|\d{4,})\s*(?:\+\s*)?lines?\b|\bfull\s+(?:landing\s+page|website|web\s+app|application)\b|\binteractive\s+app\b|\bcomplete\s+(?:landing\s+page|website|web\s+app|application)\b)/i.test(latestUserPrompt);
   const complex = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(requestedPreference) ||
@@ -624,20 +644,22 @@ async function generateChat(body, streamOptions = {}) {
   const useProModel = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference);
   const geminiModel = String(preference).startsWith('gemini-')
     ? preference
-    : useProModel ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+    : requestedPreference === 'gemini' ? (coding || complex ? GEMINI_HIGH_CAPACITY_MODEL : GEMINI_FAST_MODEL)
+      : flagship ? GEMINI_HIGH_CAPACITY_MODEL
+        : useProModel ? GEMINI_HIGH_CAPACITY_MODEL : GEMINI_FAST_MODEL;
   const groqModel = 'llama-3.3-70b-versatile';
   const order = chooseChatOrder(preference, requestedPreference === 'auto');
   for (const provider of order) {
     try {
       const result = provider === 'gemini'
-        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: geminiModel, coding, maxTokens: 8192, ...streamOptions })
+        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: 8192, ...streamOptions })
         : await tryOpenAiProvider(provider, messages, {
           attachments: body.attachments,
           vision,
           coding,
           model: provider === 'groq' ? groqModel : undefined,
           reasoning: preference === 'think' && provider === 'groq',
-          maxTokens: coding || useProModel ? 8192 : 4096,
+          maxTokens: coding || useProModel || flagship ? 8192 : 4096,
           ...streamOptions
         });
       if (result) return result;
@@ -653,7 +675,7 @@ async function generateChat(body, streamOptions = {}) {
   }
   if (!vision) {
     try {
-      const output = await tryPollinationsText(messages, { coding });
+      const output = await tryPollinationsText(messages, { coding, flagship });
       if (streamOptions.stream) {
         streamOptions.onProvider?.(output.provider, output.model);
         if (streamOptions.streamState) streamOptions.streamState.sent = true;
@@ -1093,9 +1115,19 @@ async function generateVideo(body) {
   throw new Error('Pollinations, Replicate, Hugging Face, and Fal AI video providers are unavailable. Configure the matching server API keys, then retry.');
 }
 
+function normalizeTokenUsage(usage) {
+  if (!usage || typeof usage !== 'object') return undefined;
+  const inputTokens = Math.max(0, Number(usage.promptTokenCount ?? usage.prompt_tokens ?? usage.inputTokens) || 0);
+  const outputTokens = Math.max(0, Number(usage.candidatesTokenCount ?? usage.completion_tokens ?? usage.outputTokens) || 0);
+  const totalTokens = Math.max(0, Number(usage.totalTokenCount ?? usage.total_tokens ?? usage.totalTokens) || inputTokens + outputTokens);
+  if (!totalTokens) return undefined;
+  return { inputTokens, outputTokens, totalTokens };
+}
+
 function estimateRequestTokens(type, body, output = {}) {
   if (type === 'image') return 2_048;
   if (type === 'video') return 4_096;
+  if (Number(output.tokenUsage?.totalTokens) > 0) return Math.ceil(Number(output.tokenUsage.totalTokens));
   const inputChars = (Array.isArray(body.messages) ? body.messages : [])
     .reduce((total, message) => total + String(message?.content || '').length, 0);
   const imageChars = (Array.isArray(body.attachments) ? body.attachments : []).reduce((total, item) => total + String(item?.base64 || '').length, 0);
@@ -1124,6 +1156,7 @@ export default async function handler(req, res) {
   try { uid = await verifyUser(req); }
   catch { return safeError(res, 503, 'Could not verify sign-in. Please retry.'); }
   if (!uid) return safeError(res, 401, 'Your sign-in session has expired. Sign in again.');
+  const flagshipRequest = type === 'chat' && normalizeModelPreference(body.modelPreference || body.model) === 'think';
 
   try {
     if (allowanceOnly) {
@@ -1143,8 +1176,8 @@ export default async function handler(req, res) {
         softCooldown: bucket.softCooldown,
         cooldownUntil: bucket.softCooldown ? new Date(bucket.cooldownUntil).toISOString() : null
       };
-      if (!bucket.allowed) return safeError(res, 429, 'Your daily AI token allocation is used. Upgrade or wait for the reset to continue.', { upgradeRequired: true, usage: { ...status, blocked: true } });
-      if (bucket.softCooldown) return safeError(res, 429, 'Taking a 5-minute breather to maintain top performance...', { softCooldown: true, cooldownUntil: status.cooldownUntil, upgradeRequired: false, usage: { ...status, blocked: false } });
+      if (!bucket.allowed && !flagshipRequest) return safeError(res, 429, 'Your daily AI token allocation is used. Upgrade or wait for the reset to continue.', { upgradeRequired: true, usage: { ...status, blocked: true } });
+      if (bucket.softCooldown && !flagshipRequest) return safeError(res, 429, 'Taking a 5-minute breather to maintain top performance...', { softCooldown: true, cooldownUntil: status.cooldownUntil, upgradeRequired: false, usage: { ...status, blocked: false } });
       return json(res, 200, { allowance: { type, allowed: true, planTier: before.planTier, usage: { ...status, blocked: false } } });
     }
 
@@ -1168,9 +1201,11 @@ export default async function handler(req, res) {
         if (before.error) {
           console.warn('Server quota check fell back to the client store:', before.error);
         } else {
-          const tokenState = await readTokenUsageState(uid);
-          if (!tokenState.allowed) return safeError(res, 429, 'Your daily AI token allocation is used. Upgrade or wait for the reset to continue.', { upgradeRequired: true, usage: { blocked: true, usedPercent: 100, resetAt: new Date(tokenState.resetAt).toISOString() } });
-          if (tokenState.softCooldown) return safeError(res, 429, 'Taking a 5-minute breather to maintain top performance...', { softCooldown: true, cooldownUntil: new Date(tokenState.cooldownUntil).toISOString(), upgradeRequired: false });
+          if (!flagshipRequest) {
+            const tokenState = await readTokenUsageState(uid);
+            if (!tokenState.allowed) return safeError(res, 429, 'Your daily AI token allocation is used. Upgrade or wait for the reset to continue.', { upgradeRequired: true, usage: { blocked: true, usedPercent: 100, resetAt: new Date(tokenState.resetAt).toISOString() } });
+            if (tokenState.softCooldown) return safeError(res, 429, 'Taking a 5-minute breather to maintain top performance...', { softCooldown: true, cooldownUntil: new Date(tokenState.cooldownUntil).toISOString(), upgradeRequired: false });
+          }
           usageTrackingAvailable = true;
         }
       } catch (error) {
@@ -1185,7 +1220,7 @@ export default async function handler(req, res) {
       }
     }
 
-    if (firestoreAdminCredentials()) {
+    if (firestoreAdminCredentials() && !flagshipRequest) {
       try {
         const promptRate = await registerPromptAttempt(uid);
         if (!promptRate.allowed) {
@@ -1239,7 +1274,7 @@ export default async function handler(req, res) {
         let usage = { type, tracked: false };
         if (usageTrackingAvailable) {
           try {
-            const tokenUpdate = await incrementTokenUsage(uid, estimateRequestTokens(type, body, output));
+            const tokenUpdate = await incrementTokenUsage(uid, estimateRequestTokens(type, body, output), flagshipRequest);
             usage = { type, tracked: true, ...tokenUpdate };
           } catch (error) {
             console.warn('Firestore usage write fell back to the client store:', error?.message || 'Could not save usage.');
@@ -1261,7 +1296,7 @@ export default async function handler(req, res) {
     let usage = { type, tracked: false };
     if (usageTrackingAvailable) {
       try {
-        const tokenUpdate = await incrementTokenUsage(uid, estimateRequestTokens(type, body, output));
+        const tokenUpdate = await incrementTokenUsage(uid, estimateRequestTokens(type, body, output), flagshipRequest);
         usage = { type, tracked: true, ...tokenUpdate };
       } catch (error) {
         console.warn('Server usage write fell back to the client store:', error?.message || 'Could not save usage.');

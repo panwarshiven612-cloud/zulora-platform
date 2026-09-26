@@ -489,6 +489,10 @@ export const firestoreService = {
     };
   },
 
+  getProfileTokenLimit(profile = {}) {
+    return TOKEN_LIMITS[getTier(profile)];
+  },
+
   /**
    * Get or create User Profile with usage and tier tracking
    * Sends EmailJS welcome email on first registration
@@ -688,12 +692,12 @@ export const firestoreService = {
     profile = this.evaluateUsageWindows(profile);
 
     const limits = this.getProfileLimits(profile);
-    const actionStatus = await rateLimiter.check(uid, type, limits[type]);
+    const tokenLimit = this.getProfileTokenLimit(profile);
+    const actionStatus = await rateLimiter.check(uid, type, limits[type], tokenLimit);
 
     const tokenWindowStart = Number(profile.usage?.tokenWindowStart) || Date.now();
     const tokenExpired = Date.now() - tokenWindowStart >= TOKEN_WINDOW_MS || tokenWindowStart > Date.now();
     const tokenUsed = tokenExpired ? 0 : Math.max(0, Number(profile.usage?.tokenUsed) || 0);
-    const tokenLimit = TOKEN_LIMITS[getTier(profile)];
     const tokenAllowed = tokenUsed < tokenLimit;
     const tokenStatus = {
       usedPercent: Math.max(0, Math.min(100, Math.floor((tokenUsed / tokenLimit) * 100))),
@@ -708,7 +712,7 @@ export const firestoreService = {
           ...tokenStatus,
           actionCount: actionStatus.count,
           actionLimit: actionStatus.limit,
-          actionUsedPercent: actionStatus.usedPercent,
+          actionUsedPercent: actionStatus.actionUsedPercent,
           actionResetAt: new Date(actionStatus.resetAt).toISOString(),
           blocked: true
         },
@@ -724,7 +728,7 @@ export const firestoreService = {
         ...tokenStatus,
         actionCount: actionStatus.count,
         actionLimit: actionStatus.limit,
-        actionUsedPercent: actionStatus.usedPercent,
+        actionUsedPercent: actionStatus.actionUsedPercent,
         actionResetAt: new Date(actionStatus.resetAt).toISOString()
       },
       tier: profile.planTier || profile.tier || TIERS.FREE

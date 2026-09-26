@@ -30,6 +30,7 @@ const providers = Object.fromEntries(Object.keys(providerKeyNames).map(provider 
 
 const cursors = Object.fromEntries(Object.keys(providers).map(name => [name, 0]));
 const failures = Object.fromEntries(Object.keys(providers).map(name => [name, new Map()]));
+const performance = Object.fromEntries(Object.keys(providers).map(name => [name, new Map()]));
 
 export const providerKeys = Object.freeze({
   pollinations: readFirstKey('POLLINATIONS_API_KEY', 'POLLINATIONS_KEY', 'VITE_POLLINATIONS_API_KEY', 'VITE_POLLINATIONS_KEY'),
@@ -41,19 +42,36 @@ export const providerKeys = Object.freeze({
 });
 
 export const apiKeyPool = {
-  candidates(provider) {
+  candidates(provider, { preferBest = false } = {}) {
     // Read Groq's server key per request so runtime environment updates are respected.
     const keys = provider === 'groq' ? providerKeysFor('groq') : providers[provider] || [];
     const now = Date.now();
     const start = cursors[provider] || 0;
-    return keys.map((key, index) => ({ key, index }))
+    const candidates = keys.map((key, index) => ({ key, index }))
       .filter(({ key, index }) => key && (failures[provider].get(index)?.until || 0) <= now)
       .sort((a, b) => ((a.index - start + keys.length) % keys.length) - ((b.index - start + keys.length) % keys.length));
+    if (preferBest) candidates.sort((a, b) => {
+      const score = ({ index }) => {
+        const state = performance[provider].get(index);
+        if (!state) return 0;
+        return state.averageMs + state.failures * 25_000 - Math.min(state.successes, 5) * 500;
+      };
+      return score(a) - score(b) || ((a.index - start + keys.length) % keys.length) - ((b.index - start + keys.length) % keys.length);
+    });
+    return candidates;
   },
-  succeeded(provider, index) {
+  succeeded(provider, index, elapsedMs = undefined) {
     const length = provider === 'groq' ? providerKeysFor('groq').length : providers[provider]?.length || 0;
     cursors[provider] = (index + 1) % (length || 1);
     failures[provider]?.delete(index);
+    if (Number.isFinite(Number(elapsedMs))) {
+      const previous = performance[provider]?.get(index) || { successes: 0, failures: 0, averageMs: Number(elapsedMs) };
+      performance[provider]?.set(index, {
+        successes: previous.successes + 1,
+        failures: Math.max(0, previous.failures - 1),
+        averageMs: Math.round(previous.averageMs * 0.7 + Number(elapsedMs) * 0.3)
+      });
+    }
   },
   advance(provider, index) {
     const length = provider === 'groq' ? providerKeysFor('groq').length : providers[provider]?.length || 0;
@@ -64,6 +82,8 @@ export const apiKeyPool = {
     const count = (state?.count || 0) + 1;
     const backoff = Math.min(15 * 60_000, 1_000 * (2 ** Math.min(count - 1, 10)));
     failures[provider].set(index, { count, until: Date.now() + Math.max(backoff, retryAfterMs) });
+    const metric = performance[provider]?.get(index) || { successes: 0, failures: 0, averageMs: 100_000 };
+    performance[provider]?.set(index, { ...metric, failures: metric.failures + 1 });
     const length = provider === 'groq' ? providerKeysFor('groq').length : providers[provider]?.length || 0;
     cursors[provider] = (index + 1) % (length || 1);
   }

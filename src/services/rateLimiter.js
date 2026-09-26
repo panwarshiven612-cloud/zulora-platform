@@ -1,5 +1,6 @@
 const TWO_HOURS = 2 * 60 * 60 * 1000;
 const ONE_DAY = 24 * 60 * 60 * 1000;
+const TOKEN_WINDOW_MS = ONE_DAY;
 const DATABASE_NAME = 'zulora-rate-limits';
 const DATABASE_VERSION = 1;
 const STORE_NAME = 'usage-windows';
@@ -59,28 +60,34 @@ function normalizeTokenEvents(records, now, windowMs) {
   (records || []).forEach(item => {
     const timestamp = Number(item?.timestamp);
     const tokens = Math.max(0, Number(item?.tokens) || 0);
-    if (Number.isFinite(timestamp) && timestamp <= now && timestamp > earliest) unique.set(`${timestamp}:${tokens}`, { timestamp, tokens });
+    const id = String(item?.id || `${timestamp}:${tokens}`);
+    if (Number.isFinite(timestamp) && timestamp <= now && timestamp > earliest) unique.set(id, { id, timestamp, tokens });
   });
   return [...unique.values()].sort((a, b) => a.timestamp - b.timestamp);
 }
 
-function stateFor(uid, type, events, limit, now = Date.now(), tokenEvents = []) {
+function stateFor(uid, type, events, limit, tokenLimit = 10_000, now = Date.now(), tokenEvents = []) {
   const windowMs = windows[type];
   const timestamps = normalizeEvents(events, now, windowMs);
-  const currentTokenEvents = normalizeTokenEvents(tokenEvents, now, windowMs);
+  const currentTokenEvents = normalizeTokenEvents(tokenEvents, now, TOKEN_WINDOW_MS);
   const count = timestamps.length;
+  const tokenCount = currentTokenEvents.reduce((total, event) => total + event.tokens, 0);
   return {
     uid,
     type,
     timestamps,
     tokenEvents: currentTokenEvents,
-    tokenCount: currentTokenEvents.reduce((total, event) => total + event.tokens, 0),
+    tokenCount,
+    tokenLimit: Math.max(1, Number(tokenLimit) || 10_000),
+    tokenWindowStart: currentTokenEvents[0]?.timestamp || now,
+    tokenResetAt: (currentTokenEvents[0]?.timestamp || now) + TOKEN_WINDOW_MS,
     count,
     limit,
     windowMs,
     windowStart: timestamps[0] || now,
     resetAt: timestamps.length ? timestamps[0] + windowMs : now + windowMs,
-    usedPercent: Math.min(100, Math.floor((count / limit) * 100)),
+    usedPercent: Math.min(100, Math.floor((tokenCount / Math.max(1, Number(tokenLimit) || 10_000)) * 100)),
+    actionUsedPercent: Math.min(100, Math.floor((count / Math.max(1, Number(limit) || defaults[type])) * 100)),
     allowed: count < limit,
   };
 }
@@ -97,7 +104,7 @@ async function getEvents(uid, type, now) {
   const tokenEvents = normalizeTokenEvents([
     ...(Array.isArray(localRecord.tokenEvents) ? localRecord.tokenEvents : []),
     ...(Array.isArray(indexedRecord?.tokenEvents) ? indexedRecord.tokenEvents : [])
-  ], now, windows[type]);
+  ], now, TOKEN_WINDOW_MS);
   return { id, database, timestamps, tokenEvents };
 }
 
@@ -114,7 +121,7 @@ function writeIndexed(database, record) {
         merged = {
           ...record,
           timestamps: normalizeEvents([...(record.timestamps || []), ...(current?.timestamps || [])], Date.now(), record.windowMs),
-          tokenEvents: normalizeTokenEvents([...(record.tokenEvents || []), ...(current?.tokenEvents || [])], Date.now(), record.windowMs)
+          tokenEvents: normalizeTokenEvents([...(record.tokenEvents || []), ...(current?.tokenEvents || [])], Date.now(), TOKEN_WINDOW_MS)
         };
         store.put(merged);
       };
@@ -126,19 +133,19 @@ function writeIndexed(database, record) {
 }
 
 export const rateLimiter = {
-  async getStatus(uid, type, limit = defaults[type]) {
-    if (!uid || !windows[type]) return stateFor(uid, type, [], limit);
+  async getStatus(uid, type, limit = defaults[type], tokenLimit = 10_000) {
+    if (!uid || !windows[type]) return stateFor(uid, type, [], limit, tokenLimit);
     const now = Date.now();
     const { timestamps, tokenEvents } = await getEvents(uid, type, now);
-    return stateFor(uid, type, timestamps, Math.max(1, Number(limit) || defaults[type]), now, tokenEvents);
+    return stateFor(uid, type, timestamps, Math.max(1, Number(limit) || defaults[type]), tokenLimit, now, tokenEvents);
   },
 
-  async check(uid, type, limit = defaults[type]) {
-    const status = await this.getStatus(uid, type, limit);
+  async check(uid, type, limit = defaults[type], tokenLimit = 10_000) {
+    const status = await this.getStatus(uid, type, limit, tokenLimit);
     return { ...status, blocked: !status.allowed };
   },
 
-  async record(uid, type, limit = defaults[type], estimatedTokens = undefined) {
+  async record(uid, type, limit = defaults[type], estimatedTokens = undefined, options = {}) {
     if (!uid || !windows[type]) return null;
     const now = Date.now();
     const { id, database, timestamps, tokenEvents } = await getEvents(uid, type, now);
@@ -147,8 +154,8 @@ export const rateLimiter = {
       id,
       uid,
       type,
-      timestamps: normalizeEvents([...timestamps, now], now, windows[type]),
-      tokenEvents: normalizeTokenEvents([...tokenEvents, { timestamp: now, tokens }], now, windows[type]),
+      timestamps: normalizeEvents(options.countAction === false ? timestamps : [...timestamps, now], now, windows[type]),
+      tokenEvents: normalizeTokenEvents([...tokenEvents, { id: `${uid}:${now}:${Math.random().toString(36).slice(2, 10)}`, timestamp: now, tokens }], now, TOKEN_WINDOW_MS),
       windowMs: windows[type],
       updatedAt: now
     };
@@ -157,10 +164,10 @@ export const rateLimiter = {
     allRecords[type] = {
       ...record,
       timestamps: normalizeEvents(stored.timestamps, Date.now(), windows[type]),
-      tokenEvents: normalizeTokenEvents(stored.tokenEvents, Date.now(), windows[type])
+      tokenEvents: normalizeTokenEvents(stored.tokenEvents, Date.now(), TOKEN_WINDOW_MS)
     };
     writeLocal(uid, allRecords);
-    return stateFor(uid, type, allRecords[type].timestamps, Math.max(1, Number(limit) || defaults[type]), Date.now(), allRecords[type].tokenEvents);
+    return stateFor(uid, type, allRecords[type].timestamps, Math.max(1, Number(limit) || defaults[type]), options.tokenLimit, Date.now(), allRecords[type].tokenEvents);
   },
 };
 

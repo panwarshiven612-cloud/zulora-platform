@@ -69,21 +69,15 @@ const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 ].forEach(([name, language]) => SyntaxHighlighter.registerLanguage(name, language));
 
 const MODEL_OPTIONS = [
-  ...['auto', 'groq', 'flash', 'llama', 'think'].map(id => MODEL_TIERS[id]).map(t => ({
+  ...['auto', 'gemini', 'groq', 'think'].map(id => MODEL_TIERS[id]).map(t => ({
     id: t.id,
     label: t.label,
     shortLabel: t.shortLabel,
-    icon: t.id === 'flash' || t.id === 'groq' ? Zap : t.id === 'think' ? FlaskConical : t.id === 'llama' ? Code2 : Sparkles,
+    icon: t.id === 'gemini' || t.id === 'groq' ? Zap : t.id === 'think' ? FlaskConical : Sparkles,
     color: t.color,
     badge: t.badge,
     tier: t.tier,
-  })),
-  ...[
-    ['gemini-2.5-flash', 'Gemini 2.5 Flash'],
-    ['gemini-2.5-flash-lite', 'Gemini 2.5 Flash Lite'],
-    ['gemini-1.5-flash', 'Gemini 1.5 Flash'],
-    ['gemini-1.5-flash-8b', 'Gemini 1.5 Flash 8B'],
-  ].map(([id, label]) => ({ id, label, shortLabel: label.replace('Gemini ', ''), icon: Zap, color: 'text-sky-500', badge: '⚡', tier: 'free' }))
+  }))
 ];
 
 const SUGGESTION_CARDS = [
@@ -645,18 +639,20 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
       return;
     }
     sendingRef.current = true;
-    let allowance;
-    try {
-      allowance = await checkUsage('chat');
-    } catch (error) {
-      sendingRef.current = false;
-      console.warn('Could not check chat usage:', error.message);
-      setIsUsageModalOpen(true);
-      return;
-    }
-    if (!allowance.allowed) {
-      sendingRef.current = false;
-      return;
+    if (modelPreference !== 'think') {
+      let allowance;
+      try {
+        allowance = await checkUsage('chat');
+      } catch (error) {
+        sendingRef.current = false;
+        console.warn('Could not check chat usage:', error.message);
+        setIsUsageModalOpen(true);
+        return;
+      }
+      if (!allowance.allowed) {
+        sendingRef.current = false;
+        return;
+      }
     }
 
     // Keep image data separate from prompt text; only text document contents are appended.
@@ -812,7 +808,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
       const finalMessages = [...newMessages, aiMsg];
       setMessages(finalMessages);
       const estimatedTokens = Math.max(512, Math.ceil((fullPrompt.length + String(result.text || '').length) / 4));
-      await recordUsage('chat', Boolean(result.usage?.tracked), estimatedTokens);
+      const processedTokens = Number(result.tokenUsage?.totalTokens || result.usage?.processedTokens) || estimatedTokens;
+      await recordUsage('chat', Boolean(result.usage?.tracked), processedTokens, modelPreference === 'think');
       if (currentUser?.uid) firestoreService.recordQueryContext(currentUser.uid, basePrompt, enableWebSearch ? 'search' : 'chat');
       const generatedCode = Array.from(String(result.text || '').matchAll(/```([^\r\n]*)\r?\n([\s\S]*?)```/g))
         .map(([, language, source]) => `\`\`\`${language.trim()}\n${source.replace(/\n$/, '')}\n\`\`\``)

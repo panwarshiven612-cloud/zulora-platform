@@ -8,9 +8,18 @@ const AuthContext = createContext(null);
 async function hydratePersistentUsage(uid, profile) {
   if (!uid || !profile) return profile;
   const limits = firestoreService.getProfileLimits(profile);
+  const tokenLimit = firestoreService.getProfileTokenLimit(profile);
   const types = ['chat', 'image', 'video'];
-  const states = await Promise.all(types.map(type => rateLimiter.getStatus(uid, type, limits[type])));
+  const states = await Promise.all(types.map(type => rateLimiter.getStatus(uid, type, limits[type], tokenLimit)));
   const usage = { ...(profile.usage || {}) };
+  const now = Date.now();
+  const localTokens = states.reduce((total, state) => total + state.tokenCount, 0);
+  const storedStart = Number(usage.tokenWindowStart) || 0;
+  const storedIsCurrent = storedStart > 0 && storedStart <= now && now - storedStart < 24 * 60 * 60 * 1000;
+  const storedTokens = storedIsCurrent ? Math.max(0, Number(usage.tokenUsed) || 0) : 0;
+  const consumedTokens = Math.max(storedTokens, localTokens);
+  const tokenStarts = states.map(state => state.tokenCount ? state.tokenWindowStart : 0).filter(Boolean);
+  const tokenWindowStart = Math.min(...[storedIsCurrent ? storedStart : 0, ...tokenStarts].filter(Boolean)) || now;
   types.forEach((type, index) => {
     const state = states[index];
     usage[`${type}Count`] = state.count;
@@ -19,6 +28,9 @@ async function hydratePersistentUsage(uid, profile) {
     usage[`${type}ResetAt`] = state.resetAt;
     usage[`${type}TokenCount`] = state.tokenCount;
   });
+  usage.tokenUsed = consumedTokens;
+  usage.tokenWindowStart = tokenWindowStart;
+  usage.tokenUsedPercent = Math.min(100, Math.floor((consumedTokens / tokenLimit) * 100));
   const hydrated = {
     ...profile,
     textUsed: states[0].count,
@@ -65,23 +77,27 @@ export const AuthProvider = ({ children }) => {
     return hydrated;
   }, []);
 
-  const recordUsage = useCallback(async (type, serverTracked = false, estimatedTokens = undefined) => {
+  const recordUsage = useCallback(async (type, serverTracked = false, estimatedTokens = undefined, skipActionLimit = false) => {
     if (!currentUser?.uid) return null;
     try {
-      await rateLimiter.record(currentUser.uid, type, firestoreService.getProfileLimits(userProfile || {})[type], estimatedTokens);
+      const profile = userProfile || {};
+      await rateLimiter.record(currentUser.uid, type, firestoreService.getProfileLimits(profile)[type], estimatedTokens, {
+        countAction: !skipActionLimit,
+        tokenLimit: firestoreService.getProfileTokenLimit(profile)
+      });
       if (serverTracked) {
         firestoreService.clearLocalUsage(currentUser.uid);
         return await refreshProfile(currentUser.uid, currentUser);
       }
-      const profile = firestoreService.recordLocalUsage(currentUser.uid, type, estimatedTokens);
-      const hydrated = await hydratePersistentUsage(currentUser.uid, profile);
+      const localProfile = firestoreService.recordLocalUsage(currentUser.uid, type, estimatedTokens);
+      const hydrated = await hydratePersistentUsage(currentUser.uid, localProfile);
       if (hydrated) setUserProfile(hydrated);
       return hydrated;
     } catch (error) {
       console.warn('Could not update the usage display:', error.message);
       return null;
     }
-  }, [currentUser, refreshProfile]);
+  }, [currentUser, userProfile, refreshProfile]);
 
   // Resolve the first auth event and any OAuth redirect before exposing protected tools.
   useEffect(() => {

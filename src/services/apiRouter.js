@@ -15,7 +15,7 @@
  */
 import { requestGeneration, requestGenerationStream, trackSuccessfulUsage, checkGenerationAllowance, GenerationApiError } from './generationApi';
 import { generateVideo as generateVideoWithProviders } from './videoService';
-import { buildSystemPrompt } from './systemPrompt';
+import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from './systemPrompt';
 
 // ─── SAFE ENVIRONMENT EXTRACTOR ──────────────────────────────────────────────
 const clientEnv = import.meta.env || {};
@@ -25,7 +25,9 @@ export const GROQ_MODELS = Object.freeze({
   fastStream: 'llama-3.1-8b-instant',
   fallback: 'gemini-2.5-flash',
 });
-const GEMINI_FLASH_VARIANTS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-1.5-flash', 'gemini-1.5-flash-8b'];
+const GEMINI_FAST_MODEL = getEnv('VITE_GEMINI_FAST_MODEL') || 'gemini-3.5-flash-lite';
+const GEMINI_HIGH_CAPACITY_MODEL = getEnv('VITE_GEMINI_HIGH_CAPACITY_MODEL') || 'gemini-3.8-flash';
+const GEMINI_FLASH_VARIANTS = [GEMINI_HIGH_CAPACITY_MODEL, 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
 
 // ─── DYNAMIC GEMINI KEY POOL ─────────────────────────────────────────────────
 const GEMINI_KEYS = Array.from({ length: 7 }, (_, index) => getEnv(`VITE_GEMINI_KEY_${index + 1}`) || getEnv(`VITE_GEMINI_API_KEY_${index + 1}`));
@@ -65,6 +67,9 @@ const CLOUDFLARE_TOKEN = getEnv('VITE_CLOUDFLARE_API_TOKEN');
 
 // Round-robin tracking index
 let activeGeminiIdx = 0;
+const geminiKeyPerformance = new Map();
+
+const providerSystemPrompt = options => `${buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault)}${options.flagship ? FLAGSHIP_SYSTEM_PROMPT : ''}`;
 
 // ─── MODEL TIERS ─────────────────────────────────────────────────────────────
 export const MODEL_TIERS = {
@@ -75,7 +80,7 @@ export const MODEL_TIERS = {
     description: 'Automatically selects a fast model or coding model',
     badge: '✦',
     color: 'text-sky-500',
-    geminiModel: 'gemini-2.5-flash',
+    geminiModel: GEMINI_FAST_MODEL,
     groqModel: GROQ_MODELS.primary,
     cerebrasModel: 'llama3.1-70b',
     openrouterModel: 'openrouter/free',
@@ -85,17 +90,32 @@ export const MODEL_TIERS = {
   },
   flash: {
     id: 'flash',
-    label: 'Gemini 2.5 Flash',
-    shortLabel: 'Gemini Flash',
+    label: 'Gemini',
+    shortLabel: 'Gemini',
     description: 'Ultra-fast lightweight responses',
     badge: '⚡',
     color: 'text-sky-500',
-    geminiModel: 'gemini-2.5-flash',
+    geminiModel: GEMINI_FAST_MODEL,
     groqModel: GROQ_MODELS.fastStream,
     cerebrasModel: 'llama3.1-8b',
     openrouterModel: 'meta-llama/llama-3.1-8b-instruct:free',
     mistralModel: 'mistral-7b-instruct',
     maxTokens: 4096,
+    tier: 'free',
+  },
+  gemini: {
+    id: 'gemini',
+    label: 'Gemini',
+    shortLabel: 'Gemini',
+    description: 'Selects a Gemini Flash model for the request type',
+    badge: '⚡',
+    color: 'text-sky-500',
+    geminiModel: GEMINI_FAST_MODEL,
+    groqModel: GROQ_MODELS.fastStream,
+    cerebrasModel: 'llama3.1-8b',
+    openrouterModel: 'meta-llama/llama-3.1-8b-instruct:free',
+    mistralModel: 'mistral-7b-instruct',
+    maxTokens: 8192,
     tier: 'free',
   },
   llama: {
@@ -105,7 +125,7 @@ export const MODEL_TIERS = {
     description: 'Long-form coding and text generation',
     badge: '⌘',
     color: 'text-emerald-500',
-    geminiModel: 'gemini-2.5-flash',
+    geminiModel: GEMINI_FAST_MODEL,
     groqModel: 'llama-3.3-70b-versatile',
     cerebrasModel: 'llama-3.3-70b',
     openrouterModel: 'meta-llama/llama-3.3-70b-instruct',
@@ -115,7 +135,7 @@ export const MODEL_TIERS = {
   },
   groq: {
     id: 'groq',
-    label: 'Groq LPU (Llama 3.3 70B)',
+    label: 'Groq LPU',
     shortLabel: 'Groq LPU',
     description: 'Fast Groq LPU responses with Gemini Flash fallback',
     badge: '⚡',
@@ -135,7 +155,7 @@ export const MODEL_TIERS = {
     description: 'Complex analysis and high-reasoning tasks',
     badge: '🚀',
     color: 'text-violet-500',
-    geminiModel: 'gemini-2.5-pro',
+    geminiModel: GEMINI_HIGH_CAPACITY_MODEL,
     groqModel: GROQ_MODELS.primary,
     cerebrasModel: 'llama-3.3-70b',
     openrouterModel: 'meta-llama/llama-3.3-70b-instruct',
@@ -146,11 +166,11 @@ export const MODEL_TIERS = {
   think: {
     id: 'think',
     label: 'Zulora 3.5 Pro Ultra',
-    shortLabel: 'Thinking',
+    shortLabel: 'Pro Ultra',
     description: 'Extended reasoning & complex analysis',
     badge: '🧠',
     color: 'text-amber-500',
-    geminiModel: 'gemini-2.5-pro',
+    geminiModel: GEMINI_HIGH_CAPACITY_MODEL,
     groqModel: 'openai/gpt-oss-120b',
     cerebrasModel: 'qwq-32b',
     openrouterModel: 'deepseek/deepseek-r1',
@@ -287,8 +307,8 @@ const normalizeModelPreference = value => {
   if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra') || ['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'think';
   if (selected === 'llama' || (selected.includes('llama') && selected.includes('70b'))) return 'llama';
   if (selected === 'groq' || selected.includes('groq')) return 'groq';
+  if (selected === 'gemini' || selected === 'flash' || selected.includes('gemini flash') || (/^gemini\s+\d/.test(selected) && selected.includes('flash'))) return 'gemini';
   if (selected === 'pro' || selected === 'pro 314' || selected === 'zulora pro 3.14') return 'pro';
-  if (selected === 'flash' || selected.includes('gemini 2.5 flash')) return GROQ_MODELS.fallback;
   return 'auto';
 };
 
@@ -309,12 +329,13 @@ const withProviderRetry = async (operation, attempts = 2) => {
 };
 const syncUsage = async (result, type, currentUser) => {
   if (result?.usage?.tracked) return result;
-  const estimatedTokens = type === 'chat' ? Math.max(512, Math.ceil(String(result?.text || '').length / 4) + 256) : undefined;
+  const estimatedTokens = type === 'chat' ? Math.max(1, Number(result?.tokenUsage?.totalTokens) || Math.ceil(String(result?.text || '').length / 4) + 256) : undefined;
   return { ...result, usage: await trackSuccessfulUsage(type, currentUser, estimatedTokens) };
 };
 const isQuotaAuthorityError = error => error instanceof GenerationApiError &&
   (error.status === 401 || error.status === 403 || error.status === 429 || error.payload?.upgradeRequired || (error.status >= 500 && /Firestore|quota|usage|plan validation|verify sign-in|session/i.test(error.message)));
-const ensureGenerationAllowance = async (type, currentUser) => {
+const ensureGenerationAllowance = async (type, currentUser, bypass = false) => {
+  if (bypass) return;
   const allowance = await checkGenerationAllowance(type, currentUser);
   if (allowance && !allowance.allowed) {
     if (allowance.softCooldown) {
@@ -340,7 +361,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
   const model = String(tier).startsWith('gemini-') ? tier : tierConfig.geminiModel;
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault) },
+    { role: 'system', content: providerSystemPrompt(options) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt },
   ];
@@ -362,7 +383,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
         body: JSON.stringify({
           model,
           messages,
-          max_tokens: options.coding ? 8192 : tierConfig.maxTokens,
+          max_tokens: options.coding || options.flagship ? 8192 : tierConfig.maxTokens,
           ...(options.onToken ? { stream: true } : {}),
           temperature: 0.7
         })
@@ -402,9 +423,9 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
           })),
           { role: 'user', parts: [{ text: prompt }, ...imageParts] }
         ],
-        system_instruction: { parts: [{ text: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault) }] },
+        system_instruction: { parts: [{ text: providerSystemPrompt(options) }] },
         generationConfig: {
-          maxOutputTokens: options.coding ? 8192 : tierConfig.maxTokens,
+          maxOutputTokens: options.coding || options.flagship ? 8192 : tierConfig.maxTokens,
           temperature: 0.7
         }
       })
@@ -437,13 +458,26 @@ async function tryGeminiKeyWaterfall(prompt, contextMessages, preferredModel, op
   for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
     const model = models[modelIndex];
     let modelUnavailable = false;
-    for (let offset = 0; offset < keys.length; offset += 1) {
-      const keyIndex = (activeGeminiIdx + offset) % keys.length;
+    const candidates = keys.map((key, index) => ({ key, index }));
+    if (options.preferBestKey) candidates.sort((left, right) => {
+      const score = item => {
+        const value = geminiKeyPerformance.get(item.index);
+        return value ? value.averageMs + value.failures * 25_000 - Math.min(value.successes, 5) * 500 : 0;
+      };
+      return score(left) - score(right) || ((left.index - activeGeminiIdx + keys.length) % keys.length) - ((right.index - activeGeminiIdx + keys.length) % keys.length);
+    });
+    for (const { key, index: keyIndex } of candidates) {
+      const startedAt = Date.now();
       try {
-        const result = await tryGeminiKey(keys[keyIndex], prompt, contextMessages, model, options);
+        const result = await tryGeminiKey(key, prompt, contextMessages, model, options);
+        const elapsed = Date.now() - startedAt;
+        const previous = geminiKeyPerformance.get(keyIndex) || { successes: 0, failures: 0, averageMs: elapsed };
+        geminiKeyPerformance.set(keyIndex, { successes: previous.successes + 1, failures: Math.max(0, previous.failures - 1), averageMs: Math.round(previous.averageMs * 0.7 + elapsed * 0.3) });
         activeGeminiIdx = (keyIndex + 1) % keys.length;
         return result;
       } catch (error) {
+        const previous = geminiKeyPerformance.get(keyIndex) || { successes: 0, failures: 0, averageMs: 100_000 };
+        geminiKeyPerformance.set(keyIndex, { ...previous, failures: previous.failures + 1 });
         errors.push(`${model} (Gemini key ${keyIndex + 1}/${keys.length}): ${error.message}`);
         if (/Gemini HTTP (404|503)|model.{0,30}(not found|unavailable)|model.{0,30}404/i.test(error.message || '')) modelUnavailable = true;
         if (options.streamState?.sent) {
@@ -468,7 +502,7 @@ const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
   const model = tierConfig.groqModel;
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault) },
+    { role: 'system', content: providerSystemPrompt(options) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt }
   ];
@@ -485,8 +519,8 @@ const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
         model,
         messages,
         ...(tier === 'think'
-          ? { max_completion_tokens: tierConfig.maxTokens, reasoning_effort: 'high', reasoning_format: 'hidden', temperature: 0.6 }
-          : { max_tokens: options.coding ? 8192 : tierConfig.maxTokens, temperature: 0.7 }),
+          ? { max_completion_tokens: options.flagship ? 8192 : tierConfig.maxTokens, reasoning_effort: 'high', reasoning_format: 'hidden', temperature: 0.6 }
+          : { max_tokens: options.coding || options.flagship ? 8192 : tierConfig.maxTokens, temperature: 0.7 }),
         ...(options.onToken ? { stream: true } : {})
       })
     },
@@ -518,7 +552,7 @@ const tryCerebras = async (prompt, contextMessages, tier = 'pro', options = {}) 
   const model = tierConfig.cerebrasModel;
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault) },
+    { role: 'system', content: providerSystemPrompt(options) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt }
   ];
@@ -534,7 +568,7 @@ const tryCerebras = async (prompt, contextMessages, tier = 'pro', options = {}) 
       body: JSON.stringify({
         model,
         messages,
-        max_tokens: options.coding ? 8192 : tierConfig.maxTokens,
+        max_tokens: options.coding || options.flagship ? 8192 : tierConfig.maxTokens,
         temperature: 0.7,
         ...(options.onToken ? { stream: true } : {})
       })
@@ -564,7 +598,7 @@ const tryOpenRouter = async (prompt, contextMessages, tier = 'pro', keyIdx = 0, 
   const model = tierConfig.openrouterModel;
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault) },
+    { role: 'system', content: providerSystemPrompt(options) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt }
   ];
@@ -582,7 +616,7 @@ const tryOpenRouter = async (prompt, contextMessages, tier = 'pro', keyIdx = 0, 
       body: JSON.stringify({
         model,
         messages,
-        max_tokens: options.coding ? 8192 : tierConfig.maxTokens,
+        max_tokens: options.coding || options.flagship ? 8192 : tierConfig.maxTokens,
         ...(options.onToken ? { stream: true } : {})
       })
     },
@@ -610,7 +644,7 @@ const tryMistral = async (prompt, contextMessages, tier = 'pro', options = {}) =
   const model = tierConfig.mistralModel;
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault) },
+    { role: 'system', content: providerSystemPrompt(options) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt }
   ];
@@ -626,7 +660,7 @@ const tryMistral = async (prompt, contextMessages, tier = 'pro', options = {}) =
       body: JSON.stringify({
         model,
         messages,
-        max_tokens: options.coding ? 8192 : tierConfig.maxTokens,
+        max_tokens: options.coding || options.flagship ? 8192 : tierConfig.maxTokens,
         ...(options.onToken ? { stream: true } : {})
       })
     },
@@ -650,7 +684,7 @@ const tryMistral = async (prompt, contextMessages, tier = 'pro', options = {}) =
  */
 const tryPollinationsText = async (prompt, options = {}, contextMessages = []) => {
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault) },
+    { role: 'system', content: providerSystemPrompt(options) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt }
   ];
@@ -658,7 +692,7 @@ const tryPollinationsText = async (prompt, options = {}, contextMessages = []) =
     ? await fetchWithTimeout('https://gen.pollinations.ai/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${POLLINATIONS_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'mistralai/mistral-small-3.2', messages, max_tokens: options.coding ? 8192 : 4096 })
+      body: JSON.stringify({ model: 'mistralai/mistral-small-3.2', messages, max_tokens: options.coding || options.flagship ? 8192 : 4096 })
     }, 20_000)
     : await fetchWithTimeout(
       `https://text.pollinations.ai/${encodeURIComponent(messages.map(message => `${message.role}: ${message.content}`).join('\n\n'))}?model=mistral&seed=${Date.now() % 10000}`,
@@ -713,16 +747,20 @@ export const apiRouter = {
     const requestedTier = normalizeModelPreference(options.model);
     const vision = (options.attachments || []).some(item => String(item.mimeType || '').startsWith('image/'));
     const coding = isCodingPrompt(prompt);
+    const complex = isComplexPrompt(prompt);
+    const flagship = requestedTier === 'think';
     const directGeminiModel = String(requestedTier).startsWith('gemini-');
+    const geminiSelected = requestedTier === 'gemini';
+    const intentGeminiModel = coding || complex || flagship ? GEMINI_HIGH_CAPACITY_MODEL : GEMINI_FAST_MODEL;
     const tier = vision
-      ? directGeminiModel ? requestedTier : (requestedTier === 'think' || requestedTier === 'pro' ? requestedTier : 'flash')
-      : requestedTier === 'auto' ? (coding ? 'think' : isComplexPrompt(prompt) ? 'pro' : 'flash') : requestedTier;
-    options = { ...options, coding, streamState: options.streamState || { sent: false } };
+      ? directGeminiModel ? requestedTier : (geminiSelected ? 'gemini' : requestedTier === 'think' || requestedTier === 'pro' ? requestedTier : 'flash')
+      : requestedTier === 'auto' ? (coding ? 'think' : complex ? 'pro' : 'flash') : requestedTier;
+    options = { ...options, coding, flagship, preferBestKey: flagship, streamState: options.streamState || { sent: false } };
     const errors = [];
     const messages = [...buildHistory(contextMessages), { role: 'user', content: prompt }];
-    const geminiModel = directGeminiModel ? requestedTier : (MODEL_TIERS[tier]?.geminiModel || MODEL_TIERS.flash.geminiModel);
+    const geminiModel = directGeminiModel ? requestedTier : geminiSelected ? intentGeminiModel : flagship ? GEMINI_HIGH_CAPACITY_MODEL : (MODEL_TIERS[tier]?.geminiModel || MODEL_TIERS.flash.geminiModel);
 
-    await ensureGenerationAllowance('chat', options.currentUser);
+    await ensureGenerationAllowance('chat', options.currentUser, flagship);
 
     let emittedStreamTokens = false;
     try {
@@ -731,10 +769,11 @@ export const apiRouter = {
         contextMemory: options.contextMemory,
         aiBrain: options.aiBrain || null,
         userVault: options.userVault || null,
-        modelPreference: requestedTier === 'auto' ? 'auto' : tier,
+        modelPreference: requestedTier,
         enableWebSearch: Boolean(options.webSearch),
         attachments: options.attachments || [],
-        coding
+        coding,
+        flagship
       };
       const serverResult = options.onToken
         ? await requestGenerationStream(chatPayload, options.currentUser, token => {

@@ -16,6 +16,8 @@ RESPONSE GUIDANCE
 
 const COMPLETE_CODE_GUIDANCE = `\n\nCODE AND WEBSITE OUTPUT\nFor website, UI, and browser-script requests, default to one complete, production-ready HTML file with embedded CSS and JavaScript so it can be previewed and downloaded as an artifact. For other runtimes, provide complete runnable source with required imports and clear file boundaries. Use up to 8192 output tokens when supported. Never silently truncate, omit required implementation, or use placeholders such as TODO, ellipses, “// insert rest here,” or “rest of code here.” When the user asks for 1000+ lines, use the full available completion budget. For polished interface requests, use responsive layouts, glassmorphism, modern components, smooth transitions, keyframe animations, and accessible reduced-motion behavior. If the complete artifact cannot fit in one response, split it at complete file or section boundaries and clearly identify what remains.`;
 
+export const FLAGSHIP_SYSTEM_PROMPT = `\n\nZULORA 3.5 PRO ULTRA FLAGSHIP MODE\nWork with high precision. Follow the user’s requirements closely, check that all requested parts are present, and return complete interactive code without truncation. For website and UI tasks, provide the entire self-contained HTML document with embedded CSS and JavaScript. Use the full 8192-token output budget when supported. Never replace working code with TODOs, omitted sections, or placeholders.`;
+
 export function buildSystemPrompt(contextMemory = [], now = new Date(), userBrain = {}, userVault = {}) {
   const recentContext = Array.isArray(contextMemory)
     ? contextMemory.map(item => String(item || '').trim()).filter(Boolean).slice(-8)
