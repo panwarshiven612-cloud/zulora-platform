@@ -5,10 +5,24 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { firestoreService } from '../services/firestoreService';
-import { doc, deleteDoc, collection, getDocs, query, where } from 'firebase/firestore';
+import { doc, deleteDoc, collection, getDocs, query, where, limit, startAfter } from 'firebase/firestore';
 import { db } from '../services/firebase';
 
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
+
+const deleteCollectionInBatches = async collectionRef => {
+  let cursor = null;
+  while (true) {
+    const pageQuery = cursor
+      ? query(collectionRef, limit(20), startAfter(cursor))
+      : query(collectionRef, limit(20));
+    const page = await getDocs(pageQuery);
+    if (page.empty) break;
+    await Promise.all(page.docs.map(item => deleteDoc(item.ref)));
+    if (page.size < 20) break;
+    cursor = page.docs[page.docs.length - 1];
+  }
+};
 
 /* ─── Delete Confirmation Modal ─── */
 const DeleteConfirmModal = ({ onConfirm, onCancel, loading }) => {
@@ -105,17 +119,13 @@ export const AccountSettings = ({ onClose }) => {
       // Delete all chat sessions
       try {
         const sessionsRef = collection(db, 'users', uid, 'sessions');
-        const sessionsSnap = await getDocs(sessionsRef);
-        const sessionDeletions = sessionsSnap.docs.map(d => deleteDoc(d.ref));
-        await Promise.all(sessionDeletions);
+        await deleteCollectionInBatches(sessionsRef);
       } catch (e) { console.warn('Session deletion error:', e); }
 
       // Delete all generated assets
       try {
         const assetsRef = collection(db, 'users', uid, 'assets');
-        const assetsSnap = await getDocs(assetsRef);
-        const assetDeletions = assetsSnap.docs.map(d => deleteDoc(d.ref));
-        await Promise.all(assetDeletions);
+        await deleteCollectionInBatches(assetsRef);
       } catch (e) { console.warn('Assets deletion error:', e); }
 
       // Delete user profile document
@@ -264,4 +274,3 @@ export const AccountSettings = ({ onClose }) => {
 };
 
 export default AccountSettings;
-

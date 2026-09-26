@@ -8,6 +8,7 @@ import {
   where,
   orderBy,
   limit,
+  startAfter,
   getDocs,
   addDoc,
   deleteDoc,
@@ -56,6 +57,9 @@ const TOKEN_LIMITS = { free: 10_000, pro: 50_000, ultra: 100_000 };
 
 // LocalStorage fallback prefix
 const STORAGE_PREFIX = 'zulora_store_';
+const MAX_HISTORY_ITEMS = 20;
+const PROFILE_CACHE_TTL_MS = 60 * 1000;
+const firestoreWriteTimers = new Map();
 const AI_BRAIN_STORAGE_KEY = 'zulora_user_memory';
 const VAULT_STORAGE_PREFIX = 'zulora_user_vault_';
 const USER_HISTORY_STORAGE_KEY = 'zulora_user_history';
@@ -94,7 +98,7 @@ function writeUserHistory(uid, entries) {
       return !Array.isArray(value) && value && typeof value === 'object' ? value : {};
     } catch { return {}; }
   })();
-  parsed[uid] = entries.slice(0, 40);
+  parsed[uid] = entries.slice(0, MAX_HISTORY_ITEMS);
   localStorage.setItem(USER_HISTORY_STORAGE_KEY, JSON.stringify(parsed));
 }
 
@@ -126,6 +130,38 @@ const readLocalList = key => {
   try { return JSON.parse(localStorage.getItem(key) || '[]'); }
   catch { return []; }
 };
+const hasLocalCache = key => localStorage.getItem(key) !== null;
+
+function debounceFirestoreWrite(key, write) {
+  const previous = firestoreWriteTimers.get(key);
+  if (previous?.timer) clearTimeout(previous.timer);
+  const timer = setTimeout(async () => {
+    firestoreWriteTimers.delete(key);
+    try { await write(); }
+    catch (error) { console.warn('Debounced Firestore write failed:', error.message); }
+  }, 1000);
+  firestoreWriteTimers.set(key, { timer, write });
+}
+
+function cancelDebouncedFirestoreWrite(key) {
+  const pending = firestoreWriteTimers.get(key);
+  if (pending?.timer) clearTimeout(pending.timer);
+  firestoreWriteTimers.delete(key);
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', () => {
+    for (const [key, pending] of firestoreWriteTimers) {
+      clearTimeout(pending.timer);
+      firestoreWriteTimers.delete(key);
+      Promise.resolve(pending.write()).catch(error => console.warn('Queued Firestore save on page exit failed:', error.message));
+    }
+  });
+}
+
+const newestFirst = (items, maxItems = MAX_HISTORY_ITEMS) => items
+  .sort((a, b) => Number(b.updatedAt || b.timestamp || b.createdAt || 0) - Number(a.updatedAt || a.timestamp || a.createdAt || 0))
+  .slice(0, maxItems);
 
 export const deriveChatTitle = prompt => {
   const stopWords = new Set(['a', 'an', 'the', 'for', 'to', 'of', 'in', 'on', 'with', 'and', 'or', 'is', 'are', 'what', 'how', 'why', 'when', 'where', 'can', 'could', 'please', 'help', 'me', 'my', 'write', 'create', 'design', 'build', 'make', 'explain', 'show', 'give', 'generate', 'scalable', 'production', 'secure', 'complete', 'efficient']);
@@ -153,11 +189,12 @@ export const firestoreService = {
     if (!uid) return [];
     const key = `zulora_studio_projects_${uid}`;
     const local = readLocalList(key);
+    if (local.length || hasLocalCache(key)) return newestFirst(local);
     try {
-      const [snapshot, legacySnapshot] = await Promise.all([
-        getDocs(query(collection(db, 'users', uid, 'studio_projects'), orderBy('updatedAt', 'desc'), limit(40))),
-        getDocs(query(collection(db, 'users', uid, 'projects'), orderBy('updatedAt', 'desc'), limit(40)))
-      ]);
+      const snapshot = await getDocs(query(collection(db, 'users', uid, 'studio_projects'), orderBy('updatedAt', 'desc'), limit(MAX_HISTORY_ITEMS)));
+      const legacySnapshot = snapshot.empty
+        ? await getDocs(query(collection(db, 'users', uid, 'projects'), orderBy('updatedAt', 'desc'), limit(MAX_HISTORY_ITEMS)))
+        : { docs: [] };
       const remote = [...snapshot.docs, ...legacySnapshot.docs].map(item => ({ id: item.id, ...item.data() }));
       const merged = new Map();
       [...remote, ...local].forEach(project => {
@@ -166,7 +203,7 @@ export const firestoreService = {
           merged.set(project.id, project);
         }
       });
-      const projects = [...merged.values()].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)).slice(0, 40);
+      const projects = newestFirst([...merged.values()]);
       localStorage.setItem(key, JSON.stringify(projects));
       return projects;
     } catch (error) {
@@ -188,15 +225,10 @@ export const firestoreService = {
       updatedAt: timestamp,
       timestamp
     };
-    const projects = [value, ...readLocalList(key).filter(item => item.id !== value.id)].slice(0, 40);
+    const projects = [value, ...readLocalList(key).filter(item => item.id !== value.id)].slice(0, MAX_HISTORY_ITEMS);
     localStorage.setItem(key, JSON.stringify(projects));
-    try {
-      await setDoc(doc(db, 'users', uid, 'studio_projects', value.id), value, { merge: true });
-      return { project: value, synced: true };
-    } catch (error) {
-      console.warn('Firestore studio project save fallback to LocalStorage:', error.message);
-      return { project: value, synced: false };
-    }
+    debounceFirestoreWrite(`studio:${uid}:${value.id}`, () => setDoc(doc(db, 'users', uid, 'studio_projects', value.id), value, { merge: true }));
+    return { project: value, synced: false, queued: true };
   },
 
   setActiveCodeProject(uid, project) {
@@ -245,12 +277,15 @@ export const firestoreService = {
     if (!uid) return [];
     const key = `zulora_code_projects_${uid}`;
     const local = readLocalList(key);
+    if (local.length || hasLocalCache(key)) return newestFirst(local);
     try {
-      const [codeSnapshot, studioSnapshot, legacySnapshot] = await Promise.all([
-        getDocs(query(collection(db, 'users', uid, 'code_projects'), orderBy('updatedAt', 'desc'), limit(80))),
-        getDocs(query(collection(db, 'users', uid, 'studio_projects'), orderBy('updatedAt', 'desc'), limit(40))),
-        getDocs(query(collection(db, 'users', uid, 'projects'), orderBy('updatedAt', 'desc'), limit(40)))
-      ]);
+      const codeSnapshot = await getDocs(query(collection(db, 'users', uid, 'code_projects'), orderBy('updatedAt', 'desc'), limit(MAX_HISTORY_ITEMS)));
+      const studioSnapshot = codeSnapshot.empty
+        ? await getDocs(query(collection(db, 'users', uid, 'studio_projects'), orderBy('updatedAt', 'desc'), limit(MAX_HISTORY_ITEMS)))
+        : { docs: [] };
+      const legacySnapshot = codeSnapshot.empty && studioSnapshot.empty
+        ? await getDocs(query(collection(db, 'users', uid, 'projects'), orderBy('updatedAt', 'desc'), limit(MAX_HISTORY_ITEMS)))
+        : { docs: [] };
       const remote = [...codeSnapshot.docs, ...studioSnapshot.docs, ...legacySnapshot.docs]
         .map(snapshot => ({ id: snapshot.id, ...snapshot.data() }));
       const merged = new Map();
@@ -260,7 +295,7 @@ export const firestoreService = {
           merged.set(project.id, project);
         }
       });
-      const projects = [...merged.values()].sort((a, b) => Number(b.updatedAt || b.timestamp || 0) - Number(a.updatedAt || a.timestamp || 0)).slice(0, 80);
+      const projects = newestFirst([...merged.values()]);
       try { localStorage.setItem(key, JSON.stringify(projects)); }
       catch (error) { console.warn('Local code project cache could not be refreshed:', error.message); }
       return projects;
@@ -289,13 +324,8 @@ export const firestoreService = {
     } catch (error) {
       console.warn('Local code project cache could not be saved; syncing to Firestore:', error.message);
     }
-    try {
-      await setDoc(doc(db, 'users', uid, 'code_projects', value.id), value, { merge: true });
-      return { project: value, synced: true };
-    } catch (error) {
-      console.warn('Firestore code project save fallback to LocalStorage:', error.message);
-      return { project: value, synced: false };
-    }
+    debounceFirestoreWrite(`code:${uid}:${value.id}`, () => setDoc(doc(db, 'users', uid, 'code_projects', value.id), value, { merge: true }));
+    return { project: value, synced: false, queued: true };
   },
 
   async recordCodeSearch(uid, queryText, model = 'auto') {
@@ -311,6 +341,8 @@ export const firestoreService = {
   async deleteCodeProject(uid, projectId) {
     if (!uid || !projectId) return;
     const key = `zulora_code_projects_${uid}`;
+    cancelDebouncedFirestoreWrite(`code:${uid}:${projectId}`);
+    cancelDebouncedFirestoreWrite(`studio:${uid}:${projectId}`);
     try { localStorage.setItem(key, JSON.stringify(readLocalList(key).filter(item => item.id !== projectId))); }
     catch (error) { console.warn('Local code project cache could not be updated:', error.message); }
     try {
@@ -325,6 +357,7 @@ export const firestoreService = {
   async deleteStudioProject(uid, projectId) {
     if (!uid || !projectId) return;
     const key = `zulora_studio_projects_${uid}`;
+    cancelDebouncedFirestoreWrite(`studio:${uid}:${projectId}`);
     localStorage.setItem(key, JSON.stringify(readLocalList(key).filter(item => item.id !== projectId)));
     try {
       await Promise.all([
@@ -338,6 +371,7 @@ export const firestoreService = {
   async getVault(uid) {
     if (!uid) return normalizeVault({});
     const cached = readCachedVault(uid);
+    if (cached) return cached;
     try {
       const snapshot = await getDoc(doc(db, 'users', uid, 'vault', 'personal'));
       if (snapshot.exists()) {
@@ -384,31 +418,37 @@ export const firestoreService = {
       createdAt: Number(value.createdAt) || Date.now()
     };
     try {
-      const updated = [record, ...readUserHistory(uid)].slice(0, 40);
+      const updated = [record, ...readUserHistory(uid)].slice(0, MAX_HISTORY_ITEMS);
       writeUserHistory(uid, updated);
     } catch (error) {
       console.warn('Could not save user activity to LocalStorage:', error.message);
     }
-    addDoc(collection(db, 'users', uid, 'search_vault'), record)
-      .catch(error => console.warn('Firestore search vault fallback to LocalStorage:', error.message));
+    debounceFirestoreWrite(`history:${uid}:${clientId}`, () => addDoc(collection(db, 'users', uid, 'search_vault'), record));
     return record;
   },
 
-  async getUserHistory(uid, maxItems = 40) {
+  async getUserHistory(uid, maxItems = MAX_HISTORY_ITEMS) {
     if (!uid) return [];
     const local = readUserHistory(uid);
+    const cappedLimit = Math.max(1, Math.min(MAX_HISTORY_ITEMS, Number(maxItems) || MAX_HISTORY_ITEMS));
+    let historyCacheExists = false;
+    try {
+      const parsed = JSON.parse(localStorage.getItem(USER_HISTORY_STORAGE_KEY) || '{}');
+      historyCacheExists = Array.isArray(parsed) || Object.prototype.hasOwnProperty.call(parsed, uid);
+    } catch { /* fetch history when the cache is malformed */ }
+    if (local.length || historyCacheExists) return local.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)).slice(0, cappedLimit);
     try {
       const activityRef = collection(db, 'users', uid, 'search_vault');
-      const snapshot = await getDocs(query(activityRef, orderBy('createdAt', 'desc'), limit(maxItems)));
+      const snapshot = await getDocs(query(activityRef, orderBy('createdAt', 'desc'), limit(cappedLimit)));
       const remote = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
       const merged = new Map();
       [...remote, ...local].forEach(item => merged.set(item.clientId || item.id, item));
-      const history = [...merged.values()].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)).slice(0, maxItems);
+      const history = [...merged.values()].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)).slice(0, cappedLimit);
       try { writeUserHistory(uid, history); } catch { /* keep Firestore results available for this view */ }
       return history;
     } catch (error) {
       console.warn('Firestore history fallback to LocalStorage:', error.message);
-      return local.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)).slice(0, maxItems);
+      return local.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)).slice(0, cappedLimit);
     }
   },
 
@@ -433,6 +473,7 @@ export const firestoreService = {
   async getAiBrain(uid) {
     if (!uid) return null;
     const cached = readCachedAiBrain(uid);
+    if (cached) return cached;
     try {
       const snapshot = await getDoc(doc(db, 'users', uid));
       const remoteBrain = snapshot.exists() ? snapshot.data()?.ai_brain : null;
@@ -499,6 +540,13 @@ export const firestoreService = {
    */
   async getUserProfile(uid, initialUser = {}) {
     const localKey = `${STORAGE_PREFIX}user_${uid}`;
+    const cachedRaw = localStorage.getItem(localKey);
+    if (cachedRaw) {
+      try {
+        const cached = JSON.parse(cachedRaw);
+        if (Date.now() - Number(cached._cacheUpdatedAt || 0) < PROFILE_CACHE_TTL_MS) return cached;
+      } catch { /* refresh malformed cache from Firestore */ }
+    }
     let profileData = null;
     let isNewUser = false;
 
@@ -641,6 +689,7 @@ export const firestoreService = {
       imageCount: Number(profileData.imageUsed ?? profileData.usage?.imageCount ?? 0),
       videoCount: Number(profileData.videoUsed ?? profileData.usage?.videoCount ?? 0)
     };
+    profileData._cacheUpdatedAt = Date.now();
     localStorage.setItem(localKey, JSON.stringify(profileData));
     return profileData;
   },
@@ -752,7 +801,8 @@ export const firestoreService = {
     profile = {
       ...profile,
       usage,
-      usageLocalOnly: true
+      usageLocalOnly: true,
+      _cacheUpdatedAt: now
     };
     localStorage.setItem(localKey, JSON.stringify(profile));
     return profile;
@@ -786,6 +836,7 @@ export const firestoreService = {
 
       const localKey = `${STORAGE_PREFIX}user_${uid}`;
       const merged = { ...localProfile, ...synced };
+      merged._cacheUpdatedAt = Date.now();
       delete merged.usageLocalOnly;
       localStorage.setItem(localKey, JSON.stringify(merged));
       return merged;
@@ -873,22 +924,17 @@ export const firestoreService = {
       } else {
         existing.unshift(updated);
       }
-      localStorage.setItem(localKey, JSON.stringify(existing));
+      localStorage.setItem(localKey, JSON.stringify(newestFirst(existing)));
     } catch (err) {
       console.warn('Local chat cache save error:', err.message);
     }
 
-    try {
-      const localSessions = readLocalList(localKey);
-      const localSession = localSessions.find(session => session.id === chatId);
-      const payload = { ...localSession, ...sessionData, id: chatId, updatedAt: now };
-      const title = payload.title && payload.title !== 'Untitled Chat'
-        ? payload.title
-        : deriveChatTitle(payload.messages?.find(message => message.role === 'user')?.displayContent || payload.messages?.find(message => message.role === 'user')?.content);
-      await setDoc(doc(db, 'users', uid, 'chats', chatId), { ...payload, title }, { merge: true });
-    } catch (err) {
-      console.warn('Firestore saveChatSession fallback:', err.message);
-    }
+    const localSession = readLocalList(localKey).find(session => session.id === chatId) || {};
+    const payload = { ...localSession, ...sessionData, id: chatId, updatedAt: now };
+    const title = payload.title && payload.title !== 'Untitled Chat'
+      ? payload.title
+      : deriveChatTitle(payload.messages?.find(message => message.role === 'user')?.displayContent || payload.messages?.find(message => message.role === 'user')?.content);
+    debounceFirestoreWrite(`chat:${uid}:${chatId}`, () => setDoc(doc(db, 'users', uid, 'chats', chatId), { ...payload, title }, { merge: true }));
   },
 
   /**
@@ -897,15 +943,16 @@ export const firestoreService = {
   async getChatSessions(uid) {
     const localKey = `${STORAGE_PREFIX}chats_${uid}`;
     const localSessions = readLocalList(localKey).map(normalizeChatSession);
+    if (localSessions.length || hasLocalCache(localKey)) return newestFirst(localSessions);
 
     try {
       const chatsRef = collection(db, 'users', uid, 'chats');
-      const snapshot = await getDocs(chatsRef);
+      const snapshot = await getDocs(query(chatsRef, orderBy('updatedAt', 'desc'), limit(MAX_HISTORY_ITEMS)));
       const remoteSessions = snapshot.docs.map(docSnap => {
         const raw = { id: docSnap.id, ...docSnap.data() };
         const normalized = normalizeChatSession(raw);
         if (normalized.title !== raw.title) {
-          setDoc(doc(db, 'users', uid, 'chats', docSnap.id), { title: normalized.title }, { merge: true }).catch(() => {});
+          debounceFirestoreWrite(`chat:${uid}:${docSnap.id}`, () => setDoc(doc(db, 'users', uid, 'chats', docSnap.id), { title: normalized.title }, { merge: true }));
         }
         return normalized;
       });
@@ -916,7 +963,7 @@ export const firestoreService = {
           ? { ...session, ...cached }
           : session);
       });
-      const sessions = [...merged.values()].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+      const sessions = newestFirst([...merged.values()]);
       localStorage.setItem(localKey, JSON.stringify(sessions));
       return sessions;
     } catch (err) {
@@ -929,17 +976,18 @@ export const firestoreService = {
   async getChatSession(uid, chatId) {
     const localKey = `${STORAGE_PREFIX}chats_${uid}`;
     const cached = readLocalList(localKey).find(session => session.id === chatId) || null;
+    if (cached) return normalizeChatSession(cached);
     try {
       const snapshot = await getDoc(doc(db, 'users', uid, 'chats', chatId));
       if (snapshot.exists()) {
         const rawSession = { id: snapshot.id, ...snapshot.data() };
         const session = normalizeChatSession(rawSession);
         if (session.title !== rawSession.title) {
-          setDoc(doc(db, 'users', uid, 'chats', chatId), { title: session.title }, { merge: true }).catch(() => {});
+          debounceFirestoreWrite(`chat:${uid}:${chatId}`, () => setDoc(doc(db, 'users', uid, 'chats', chatId), { title: session.title }, { merge: true }));
         }
         const sessions = readLocalList(localKey).filter(item => item.id !== chatId);
         sessions.unshift(session);
-        localStorage.setItem(localKey, JSON.stringify(sessions));
+        localStorage.setItem(localKey, JSON.stringify(newestFirst([session, ...sessions])));
         return session;
       }
     } catch (err) {
@@ -962,18 +1010,14 @@ export const firestoreService = {
     try { localStorage.setItem(localKey, JSON.stringify(updated)); }
     catch (error) { console.warn('Local chat rename fallback:', error.message); }
 
-    try {
-      const chatDocRef = doc(db, 'users', uid, 'chats', chatId);
-      await setDoc(chatDocRef, { ...cachedSession, id: chatId, title: newTitle, updatedAt }, { merge: true });
-    } catch (err) {
-      console.warn('Firestore renameChatSession fallback:', err.message);
-    }
+    debounceFirestoreWrite(`chat:${uid}:${chatId}`, () => setDoc(doc(db, 'users', uid, 'chats', chatId), { ...cachedSession, id: chatId, title: newTitle, updatedAt }, { merge: true }));
   },
 
   /**
    * Delete a chat session
    */
   async deleteChatSession(uid, chatId) {
+    cancelDebouncedFirestoreWrite(`chat:${uid}:${chatId}`);
     try {
       const chatDocRef = doc(db, 'users', uid, 'chats', chatId);
       await deleteDoc(chatDocRef);
@@ -1004,6 +1048,15 @@ export const firestoreService = {
       id: assetData.id || 'asset_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       createdAt: Date.now()
     };
+    const localKey = `${STORAGE_PREFIX}assets_${uid}`;
+    const typedLocalKey = `${localKey}_${asset.type || 'other'}`;
+    try {
+      const next = [asset, ...readLocalList(localKey).filter(item => item.id !== asset.id)];
+      localStorage.setItem(localKey, JSON.stringify(next.slice(0, MAX_HISTORY_ITEMS)));
+      const typed = [asset, ...readLocalList(typedLocalKey).filter(item => item.id !== asset.id)];
+      localStorage.setItem(typedLocalKey, JSON.stringify(typed.slice(0, MAX_HISTORY_ITEMS)));
+    }
+    catch (error) { console.warn('Local asset cache save failed:', error.message); }
 
     if (asset.url?.startsWith('data:')) {
       try {
@@ -1017,19 +1070,17 @@ export const firestoreService = {
     }
 
     try {
+      for (const cacheKey of [localKey, typedLocalKey]) {
+        const assets = [asset, ...readLocalList(cacheKey).filter(item => item.id !== asset.id)].slice(0, MAX_HISTORY_ITEMS);
+        localStorage.setItem(cacheKey, JSON.stringify(assets));
+      }
+    } catch (error) { console.warn('Local asset cache refresh failed:', error.message); }
+
+    try {
       const assetDocRef = doc(db, 'users', uid, 'assets', asset.id);
-      await setDoc(assetDocRef, asset);
+      debounceFirestoreWrite(`asset:${uid}:${asset.id}`, () => setDoc(assetDocRef, asset));
     } catch (err) {
       console.warn('Firestore saveAsset fallback:', err.message);
-    }
-
-    const localKey = `${STORAGE_PREFIX}assets_${uid}`;
-    try {
-      const existing = JSON.parse(localStorage.getItem(localKey) || '[]');
-      existing.unshift(asset);
-      localStorage.setItem(localKey, JSON.stringify(existing.slice(0, 100)));
-    } catch (e) {
-      console.error(e);
     }
 
     return asset;
@@ -1039,23 +1090,23 @@ export const firestoreService = {
    * Get assets by type ('image' | 'video' | null for all)
    */
   async getUserAssets(uid, type = null) {
-    const localKey = `${STORAGE_PREFIX}assets_${uid}`;
-    let assets = [];
+    const localKey = `${STORAGE_PREFIX}assets_${uid}${type ? `_${type}` : ''}`;
+    const cached = readLocalList(localKey);
+    if (cached.length || hasLocalCache(localKey)) return type ? cached.filter(asset => asset.type === type) : cached;
 
     try {
       const assetsRef = collection(db, 'users', uid, 'assets');
       const q = type 
-        ? query(assetsRef, where('type', '==', type), orderBy('createdAt', 'desc'))
-        : query(assetsRef, orderBy('createdAt', 'desc'));
+        ? query(assetsRef, where('type', '==', type), orderBy('createdAt', 'desc'), limit(MAX_HISTORY_ITEMS))
+        : query(assetsRef, orderBy('createdAt', 'desc'), limit(MAX_HISTORY_ITEMS));
       const snapshot = await getDocs(q);
 
       if (!snapshot.empty) {
-        snapshot.forEach(docSnap => {
-          assets.push({ id: docSnap.id, ...docSnap.data() });
-        });
+        const assets = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
         localStorage.setItem(localKey, JSON.stringify(assets));
         return assets;
       }
+      localStorage.setItem(localKey, JSON.stringify([]));
     } catch (err) {
       console.warn('Firestore getUserAssets fallback:', err.message);
     }
@@ -1072,6 +1123,7 @@ export const firestoreService = {
    * Delete an asset
    */
   async deleteAsset(uid, assetId) {
+    cancelDebouncedFirestoreWrite(`asset:${uid}:${assetId}`);
     try {
       const assetDocRef = doc(db, 'users', uid, 'assets', assetId);
       await deleteDoc(assetDocRef);
@@ -1079,13 +1131,9 @@ export const firestoreService = {
       console.warn('Firestore deleteAsset fallback:', err.message);
     }
 
-    const localKey = `${STORAGE_PREFIX}assets_${uid}`;
-    try {
-      const existing = JSON.parse(localStorage.getItem(localKey) || '[]');
-      const filtered = existing.filter(a => a.id !== assetId);
-      localStorage.setItem(localKey, JSON.stringify(filtered));
-    } catch (e) {
-      console.error(e);
+    for (const localKey of [`${STORAGE_PREFIX}assets_${uid}`, `${STORAGE_PREFIX}assets_${uid}_image`, `${STORAGE_PREFIX}assets_${uid}_video`, `${STORAGE_PREFIX}assets_${uid}_other`]) {
+      try { localStorage.setItem(localKey, JSON.stringify(readLocalList(localKey).filter(asset => asset.id !== assetId))); }
+      catch (error) { console.warn('Local asset cache delete failed:', error.message); }
     }
   }
 };

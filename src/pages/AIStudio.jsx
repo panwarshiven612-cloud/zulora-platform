@@ -377,7 +377,7 @@ export default function AIStudio({ onExitDashboard }) {
         .then(() => firestoreService.setActiveCodeProject(currentUser.uid, project))
         .then(loadProjects)
         .catch(error => console.warn('Could not autosave Studio code:', error.message));
-    }, 850);
+    }, 1100);
     return () => window.clearTimeout(timer);
   }, [isEditingCode, isGenerating, artifact, projectId, currentUser?.uid, prompt, messages, loadProjects]);
 
