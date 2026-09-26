@@ -17,6 +17,7 @@ import {
 import { db, storage } from './firebase';
 import { ref, uploadString, getDownloadURL } from 'firebase/storage';
 import { emailService } from './emailService';
+import { rateLimiter } from './rateLimiter';
 
 export const TIERS = {
   FREE: 'free',
@@ -236,8 +237,89 @@ export const firestoreService = {
     const id = projectId || `chat-code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const project = { id, title: deriveChatTitle(prompt), prompt: String(prompt || ''), code: source, ...files, model: String(model || ''), updatedAt: Date.now() };
     this.setActiveCodeProject(uid, project);
-    await this.saveStudioProject(uid, project);
+    await this.saveCodeProject(uid, project);
     return project;
+  },
+
+  async getCodeProjects(uid) {
+    if (!uid) return [];
+    const key = `zulora_code_projects_${uid}`;
+    const local = readLocalList(key);
+    try {
+      const [codeSnapshot, studioSnapshot, legacySnapshot] = await Promise.all([
+        getDocs(query(collection(db, 'users', uid, 'code_projects'), orderBy('updatedAt', 'desc'), limit(80))),
+        getDocs(query(collection(db, 'users', uid, 'studio_projects'), orderBy('updatedAt', 'desc'), limit(40))),
+        getDocs(query(collection(db, 'users', uid, 'projects'), orderBy('updatedAt', 'desc'), limit(40)))
+      ]);
+      const remote = [...codeSnapshot.docs, ...studioSnapshot.docs, ...legacySnapshot.docs]
+        .map(snapshot => ({ id: snapshot.id, ...snapshot.data() }));
+      const merged = new Map();
+      [...remote, ...local].forEach(project => {
+        const previous = merged.get(project.id);
+        if (!previous || Number(project.updatedAt || project.timestamp || 0) >= Number(previous.updatedAt || previous.timestamp || 0)) {
+          merged.set(project.id, project);
+        }
+      });
+      const projects = [...merged.values()].sort((a, b) => Number(b.updatedAt || b.timestamp || 0) - Number(a.updatedAt || a.timestamp || 0)).slice(0, 80);
+      try { localStorage.setItem(key, JSON.stringify(projects)); }
+      catch (error) { console.warn('Local code project cache could not be refreshed:', error.message); }
+      return projects;
+    } catch (error) {
+      console.warn('Firestore code project list fallback to LocalStorage:', error.message);
+      return local.sort((a, b) => Number(b.updatedAt || b.timestamp || 0) - Number(a.updatedAt || a.timestamp || 0));
+    }
+  },
+
+  async saveCodeProject(uid, project) {
+    if (!uid || !project?.id) throw new Error('A signed-in user and code project ID are required.');
+    const key = `zulora_code_projects_${uid}`;
+    const existing = readLocalList(key).find(item => item.id === project.id);
+    const now = Date.now();
+    const value = {
+      ...project,
+      kind: project.kind || 'project',
+      title: String(project.title || 'Untitled project').slice(0, 120),
+      code: String(project.code || project.html || ''),
+      createdAt: Number(project.createdAt) || Number(existing?.createdAt) || now,
+      updatedAt: now,
+      timestamp: now
+    };
+    try {
+      localStorage.setItem(key, JSON.stringify([value, ...readLocalList(key).filter(item => item.id !== value.id)].slice(0, 80)));
+    } catch (error) {
+      console.warn('Local code project cache could not be saved; syncing to Firestore:', error.message);
+    }
+    try {
+      await setDoc(doc(db, 'users', uid, 'code_projects', value.id), value, { merge: true });
+      return { project: value, synced: true };
+    } catch (error) {
+      console.warn('Firestore code project save fallback to LocalStorage:', error.message);
+      return { project: value, synced: false };
+    }
+  },
+
+  async recordCodeSearch(uid, queryText, model = 'auto') {
+    const text = String(queryText || '').trim().slice(0, 4000);
+    if (!uid || !text) return null;
+    const now = Date.now();
+    const id = `search-${now}-${Math.random().toString(36).slice(2, 8)}`;
+    const record = { id, kind: 'search', title: text.slice(0, 100), query: text, prompt: text, model, createdAt: now, updatedAt: now, timestamp: now };
+    await this.saveCodeProject(uid, record);
+    return record;
+  },
+
+  async deleteCodeProject(uid, projectId) {
+    if (!uid || !projectId) return;
+    const key = `zulora_code_projects_${uid}`;
+    try { localStorage.setItem(key, JSON.stringify(readLocalList(key).filter(item => item.id !== projectId))); }
+    catch (error) { console.warn('Local code project cache could not be updated:', error.message); }
+    try {
+      await Promise.all([
+        deleteDoc(doc(db, 'users', uid, 'code_projects', projectId)),
+        deleteDoc(doc(db, 'users', uid, 'studio_projects', projectId)),
+        deleteDoc(doc(db, 'users', uid, 'projects', projectId))
+      ]);
+    } catch (error) { console.warn('Firestore code project deletion fallback to LocalStorage:', error.message); }
   },
 
   async deleteStudioProject(uid, projectId) {
@@ -605,6 +687,9 @@ export const firestoreService = {
     let profile = await this.getUserProfile(uid);
     profile = this.evaluateUsageWindows(profile);
 
+    const limits = this.getProfileLimits(profile);
+    const actionStatus = await rateLimiter.check(uid, type, limits[type]);
+
     const tokenWindowStart = Number(profile.usage?.tokenWindowStart) || Date.now();
     const tokenExpired = Date.now() - tokenWindowStart >= TOKEN_WINDOW_MS || tokenWindowStart > Date.now();
     const tokenUsed = tokenExpired ? 0 : Math.max(0, Number(profile.usage?.tokenUsed) || 0);
@@ -615,11 +700,33 @@ export const firestoreService = {
       resetAt: new Date((tokenExpired ? Date.now() : tokenWindowStart) + TOKEN_WINDOW_MS).toISOString(),
       blocked: !tokenAllowed
     };
+    if (!actionStatus.allowed) {
+      return {
+        allowed: false,
+        upgradeRequired: true,
+        usage: {
+          ...tokenStatus,
+          actionCount: actionStatus.count,
+          actionLimit: actionStatus.limit,
+          actionUsedPercent: actionStatus.usedPercent,
+          actionResetAt: new Date(actionStatus.resetAt).toISOString(),
+          blocked: true
+        },
+        tier: getTier(profile),
+        error: `${type} quota reached. Please wait for the quota window to reset.`
+      };
+    }
     if (!tokenAllowed) return { allowed: false, usage: tokenStatus, tier: getTier(profile), error: 'Daily AI token allocation reached.' };
 
     return {
       allowed: true,
-      usage: tokenStatus,
+      usage: {
+        ...tokenStatus,
+        actionCount: actionStatus.count,
+        actionLimit: actionStatus.limit,
+        actionUsedPercent: actionStatus.usedPercent,
+        actionResetAt: new Date(actionStatus.resetAt).toISOString()
+      },
       tier: profile.planTier || profile.tier || TIERS.FREE
     };
   },

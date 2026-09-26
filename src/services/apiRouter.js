@@ -47,6 +47,8 @@ export const getGeminiKeyPool = () => {
 
 // ─── SECONDARY ENGINE KEYS ───────────────────────────────────────────────────
 const GROQ_KEY = getEnv('VITE_GROQ_KEY') || getEnv('VITE_GROQ_API_KEY');
+const HF_IMAGE_KEY = getEnv('VITE_HF_API_KEY') || getEnv('VITE_HUGGINGFACE_API_KEY');
+const REPLICATE_IMAGE_KEY = getEnv('VITE_REPLICATE_API_TOKEN') || getEnv('VITE_REPLICATE_KEY');
 const CEREBRAS_KEY = getEnv('VITE_CEREBRAS_KEY');
 const OPENROUTER_KEYS = [
   getEnv('VITE_OPENROUTER_KEY_1') || getEnv('VITE_OPENROUTER_API_KEY_1'),
@@ -170,18 +172,67 @@ const fetchWithTimeout = async (url, options = {}, timeoutMs = 15000) => {
   }
 };
 
+const blobToDataUrl = blob => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result || ''));
+  reader.onerror = () => reject(new Error('Could not decode the image provider response.'));
+  reader.readAsDataURL(blob);
+});
+
+async function browserHuggingFaceImage(prompt, modelId) {
+  if (!HF_IMAGE_KEY) throw new Error('No Hugging Face browser key is configured.');
+  const response = await fetchWithTimeout(`https://router.huggingface.co/hf-inference/models/${modelId.split('/').map(encodeURIComponent).join('/')}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${HF_IMAGE_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ inputs: prompt })
+  }, 30_000);
+  if (!response.ok) throw new Error(`Hugging Face image request failed (HTTP ${response.status}).`);
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.startsWith('image/')) throw new Error('Hugging Face returned a non-image payload.');
+  const blob = await response.blob();
+  if (blob.size < 2_000) throw new Error('Hugging Face returned an empty image.');
+  if (typeof createImageBitmap === 'function') {
+    const bitmap = await createImageBitmap(blob);
+    bitmap.close?.();
+  }
+  return blobToDataUrl(blob);
+}
+
+async function browserReplicateImage(prompt, aspectRatio) {
+  if (!REPLICATE_IMAGE_KEY) throw new Error('No Replicate browser key is configured.');
+  const response = await fetchWithTimeout('https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${REPLICATE_IMAGE_KEY}`, 'Content-Type': 'application/json', Prefer: 'wait=15' },
+    body: JSON.stringify({ input: { prompt, aspect_ratio: aspectRatio || '1:1', num_outputs: 1 } })
+  }, 20_000);
+  if (!response.ok) throw new Error(`Replicate image request failed (HTTP ${response.status}).`);
+  let data = await response.json();
+  const pollUrl = data.urls?.get;
+  for (let attempt = 0; pollUrl && data.status !== 'succeeded' && data.status !== 'failed' && attempt < 4; attempt += 1) {
+    await new Promise(resolve => window.setTimeout(resolve, 1_200));
+    const poll = await fetchWithTimeout(pollUrl, { headers: { Authorization: `Bearer ${REPLICATE_IMAGE_KEY}` } }, 8_000);
+    if (!poll.ok) throw new Error('Replicate image result could not be fetched.');
+    data = await poll.json();
+  }
+  const url = Array.isArray(data.output) ? data.output[0] : data.output;
+  if (!url || data.status === 'failed') throw new Error('Replicate returned no generated image.');
+  return String(url);
+}
+
 const buildHistory = (contextMessages = []) =>
   contextMessages.map((m) => ({ role: m.role, content: m.content }));
 
 const isCodingPrompt = prompt => /(?:\bcode\b|\bhtml\b|\bcss\b|\bjs\b|\bjavascript\b|\breact\b|\bfunction\b|\bbuild\s+(?:a\s+)?ui\b|\bwebsite\b|\bwebpage\b|\bweb\s+app\b|\blanding\s+page\b|\b(?:1000|\d{4,})\s*(?:\+\s*)?lines?\b|\bfull\s+(?:landing\s+page|website|web\s+app|application)\b|\binteractive\s+app\b|\bcomplete\s+(?:landing\s+page|website|web\s+app|application)\b)/i.test(String(prompt || ''));
 const isComplexPrompt = prompt => /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(String(prompt || ''));
 const normalizeModelPreference = value => {
-  const selected = String(value || 'auto').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+  const raw = String(value || 'auto').trim().toLowerCase();
+  if (/^gemini-\d+(?:\.\d+)?-[a-z0-9.-]+$/.test(raw)) return raw;
+  const selected = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
   if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra') || ['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'think';
   if (selected === 'llama' || (selected.includes('llama') && selected.includes('70b'))) return 'llama';
   if (selected === 'groq' || selected.includes('groq')) return 'groq';
   if (selected === 'pro' || selected === 'pro 314' || selected === 'zulora pro 3.14') return 'pro';
-  if (selected === 'flash' || selected.includes('gemini 2.5 flash')) return 'flash';
+  if (selected === 'flash' || selected.includes('gemini 2.5 flash')) return GROQ_MODELS.fallback;
   return 'auto';
 };
 
@@ -230,7 +281,7 @@ const ensureGenerationAllowance = async (type, currentUser) => {
 const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options = {}) => {
   if (!key) throw new Error('Empty Gemini key');
   const tierConfig = MODEL_TIERS[tier] || MODEL_TIERS.pro;
-  const model = tierConfig.geminiModel;
+  const model = String(tier).startsWith('gemini-') ? tier : tierConfig.geminiModel;
 
   const messages = [
     { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault) },
@@ -567,8 +618,9 @@ export const apiRouter = {
     const requestedTier = normalizeModelPreference(options.model);
     const vision = (options.attachments || []).some(item => String(item.mimeType || '').startsWith('image/'));
     const coding = isCodingPrompt(prompt);
+    const directGeminiModel = String(requestedTier).startsWith('gemini-');
     const tier = vision
-      ? (requestedTier === 'think' || requestedTier === 'pro' ? requestedTier : 'flash')
+      ? directGeminiModel ? requestedTier : (requestedTier === 'think' || requestedTier === 'pro' ? requestedTier : 'flash')
       : requestedTier === 'auto' ? (coding ? 'think' : isComplexPrompt(prompt) ? 'pro' : 'flash') : requestedTier;
     options = { ...options, coding };
     const errors = [];
@@ -623,6 +675,20 @@ export const apiRouter = {
           errors.push(`Gemini 2.5 Flash fallback[${attempt + 1}/${geminiPool.length}]: ${err.message}`);
         }
       }
+    }
+
+    if (!vision && directGeminiModel) {
+      for (let attempt = 0; attempt < geminiPool.length; attempt++) {
+        const key = geminiPool[(activeGeminiIdx + attempt) % geminiPool.length];
+        try {
+          const result = await tryGeminiKey(key, prompt, contextMessages, requestedTier, options);
+          activeGeminiIdx = (activeGeminiIdx + attempt + 1) % geminiPool.length;
+          return await syncUsage(result, 'chat', options.currentUser);
+        } catch (err) {
+          errors.push(`${requestedTier}[${attempt + 1}/${geminiPool.length}]: ${err.message}`);
+        }
+      }
+      throw new Error(`The selected Gemini model (${requestedTier}) is unavailable. Select Auto to use provider fallback.`);
     }
 
     // Explicit Llama selections stay within Groq and OpenRouter. Auto may continue to the wider fallback pool.
@@ -796,9 +862,25 @@ export const apiRouter = {
     const styledPrompt = prompt.trim();
     const encoded = encodeURIComponent(styledPrompt);
 
+    if (imageEngine === 'hf-flux-dev' || imageEngine === 'hf-sdxl') {
+      const model = imageEngine === 'hf-sdxl'
+        ? 'stabilityai/stable-diffusion-xl-base-1.0'
+        : 'black-forest-labs/FLUX.1-dev';
+      try {
+        const imageUrl = await browserHuggingFaceImage(styledPrompt, model);
+        return await syncUsage({
+          url: imageUrl, imageUrl, provider: 'Hugging Face Inference API', model,
+          prompt: prompt.trim(), enhancedPrompt: styledPrompt, seed
+        }, 'image', currentUser);
+      } catch (error) {
+        console.warn('[Image] Selected Hugging Face model failed; switching providers:', error.message);
+      }
+    }
+
     // ── Engine 1: Pollinations FLUX ──
     try {
-      const fluxUrl = `https://image.pollinations.ai/prompt/${encoded}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&model=flux&nologo=true`;
+      const selectedPollinationsModel = imageEngine === 'pollinations-hd' ? 'flux-hd' : 'flux';
+      const fluxUrl = `https://image.pollinations.ai/prompt/${encoded}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&model=${selectedPollinationsModel}&nologo=true`;
       const fluxRes = await fetchWithTimeout(fluxUrl, {}, 18000);
       const fluxType = fluxRes.headers.get('content-type') || '';
       const fluxBlob = fluxType.startsWith('image/') ? await fluxRes.blob() : null;
@@ -814,6 +896,19 @@ export const apiRouter = {
       }, 'image', currentUser);
     } catch (e) {
       console.warn('[Image] Pollinations primary failed:', e.message);
+    }
+
+    if (HF_IMAGE_KEY) {
+      try {
+        const model = 'black-forest-labs/FLUX.1-schnell';
+        const imageUrl = await browserHuggingFaceImage(styledPrompt, model);
+        return await syncUsage({
+          url: imageUrl, imageUrl, provider: 'Hugging Face Inference API', model,
+          prompt: prompt.trim(), enhancedPrompt: styledPrompt, seed
+        }, 'image', currentUser);
+      } catch (error) {
+        console.warn('[Image] Hugging Face fallback failed:', error.message);
+      }
     }
 
     // ── Engine 2: Fal AI FLUX Schnell ──
@@ -892,6 +987,19 @@ export const apiRouter = {
     }
 
     // ── Final Deterministic High-Definition Fallback ──
+    if (REPLICATE_IMAGE_KEY) {
+      try {
+        const model = 'black-forest-labs/flux-schnell';
+        const imageUrl = await browserReplicateImage(styledPrompt, aspectRatio);
+        return await syncUsage({
+          url: imageUrl, imageUrl, provider: 'Replicate', model,
+          prompt: prompt.trim(), enhancedPrompt: styledPrompt, seed
+        }, 'image', currentUser);
+      } catch (error) {
+        console.warn('[Image] Replicate fallback failed:', error.message);
+      }
+    }
+
     const fallbackUrl = `https://picsum.photos/seed/${seed}/${targetWidth}/${targetHeight}`;
     return await syncUsage({
       url: fallbackUrl,

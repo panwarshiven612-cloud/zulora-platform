@@ -21,7 +21,7 @@ function buildPrompt(prompt, options) {
 async function pollinationsVideo(prompt, duration, aspectRatio) {
   const encodedPrompt = encodeURIComponent(prompt);
   const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=video&duration=${Math.min(Number(duration) || 4, 8)}&aspectRatio=${encodeURIComponent(aspectRatio || '16:9')}`;
-  const response = await fetchWithTimeout(url, {}, 240_000);
+  const response = await fetchWithTimeout(url, {}, 38_000);
   if (!response.ok) throw new Error(`Pollinations video generation failed (HTTP ${response.status}).`);
 
   const contentType = response.headers.get('content-type') || '';

@@ -21,6 +21,9 @@ export async function requestGeneration(action, payload, currentUser, endpoint =
   }
 
   let response;
+  const timeoutMs = action === 'video' ? 52_000 : action === 'image' ? 48_000 : 35_000;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     response = await fetch(endpoint, {
       method: 'POST',
@@ -28,10 +31,16 @@ export async function requestGeneration(action, payload, currentUser, endpoint =
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`
       },
-      body: JSON.stringify({ action, ...payload })
+      body: JSON.stringify({ action, ...payload }),
+      signal: controller.signal
     });
-  } catch {
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new GenerationApiError(`${action} generation timed out; switching to available fallbacks.`, 504);
+    }
     return null;
+  } finally {
+    window.clearTimeout(timer);
   }
 
   const contentType = response.headers.get('content-type') || '';
@@ -153,11 +162,12 @@ export async function checkGenerationAllowance(type, currentUser) {
     }
     throw error;
   }
-  if (!currentUser?.uid) return result?.allowance || null;
-  if (result?.allowance) return result.allowance;
+  const serverAllowance = result?.allowance || null;
+  if (serverAllowance && !serverAllowance.allowed) return serverAllowance;
+  if (!currentUser?.uid) return serverAllowance;
   const clientAllowance = await firestoreService.checkUsageAllowance(currentUser.uid, type);
   if (clientAllowance && !clientAllowance.allowed) return clientAllowance;
-  return result?.allowance || clientAllowance || null;
+  return serverAllowance || clientAllowance || null;
 }
 
 export async function trackSuccessfulUsage(type, currentUser, estimatedTokens = undefined) {

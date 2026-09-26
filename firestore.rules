@@ -48,6 +48,10 @@ service cloud.firestore {
       match /studio_projects/{projectId} {
         allow read, write: if isOwner(uid);
       }
+
+      match /code_projects/{projectId} {
+        allow read, write: if isOwner(uid);
+      }
     }
   }
 }

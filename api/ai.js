@@ -543,13 +543,34 @@ async function tryGemini(messages, options = {}) {
   return null;
 }
 
+async function tryPollinationsText(messages, options = {}) {
+  const prompt = messages.map(message => `${message.role}: ${message.content}`).join('\n\n');
+  const response = providerKeys.pollinations
+    ? await fetchWithTimeout('https://gen.pollinations.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${providerKeys.pollinations}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'mistralai/mistral-small-3.2', messages, max_tokens: options.coding ? 8192 : 4096 })
+    }, 18_000)
+    : await fetchWithTimeout(`https://text.pollinations.ai/${encodeURIComponent(prompt)}?model=mistral&seed=${Date.now() % 10000}`, {}, 18_000);
+  if (!response.ok) throw new Error(`Pollinations text request failed (HTTP ${response.status}).`);
+  const contentType = response.headers.get('content-type') || '';
+  const data = contentType.includes('json') ? await response.json() : null;
+  const text = data
+    ? data.choices?.[0]?.message?.content || data.output_text || data.output?.[0]?.content?.[0]?.text || ''
+    : await response.text();
+  if (!text || text.trim().length < 5) throw new Error('Pollinations returned an empty response.');
+  return { text, provider: 'Pollinations', model: 'mistralai/mistral-small-3.2' };
+}
+
 function normalizeModelPreference(value) {
-  const selected = String(value || 'auto').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+  const raw = String(value || 'auto').trim().toLowerCase();
+  if (/^gemini-\d+(?:\.\d+)?-[a-z0-9.-]+$/.test(raw)) return raw;
+  const selected = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
   if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra')) return 'think';
   if (selected === 'llama' || (selected.includes('llama') && selected.includes('70b'))) return 'llama';
   if (selected === 'groq' || selected.includes('groq')) return 'groq';
   if (selected === 'pro 3.14' || selected === 'zulora pro 3.14' || selected === 'pro' || selected === 'pro 314') return 'pro';
-  if (selected === 'flash' || selected.includes('gemini 2.5 flash')) return 'flash';
+  if (selected === 'flash' || selected.includes('gemini 2.5 flash')) return 'gemini-2.5-flash';
   if (selected === 'auto' || !selected) return 'auto';
   if (['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'think';
   return 'auto';
@@ -557,6 +578,7 @@ function normalizeModelPreference(value) {
 
 function chooseChatOrder(preference, vision, search, autoSelected = false) {
   if (vision) return ['gemini'];
+  if (String(preference).startsWith('gemini-')) return ['gemini'];
   if (autoSelected || preference === 'groq') return ['groq', 'gemini', 'cerebras', 'openrouter', 'mistral'];
   if (search) return ['gemini', 'groq', 'openrouter', ...CHAT_ORDER.filter(provider => provider !== 'gemini' && provider !== 'groq' && provider !== 'openrouter')];
   if (preference === 'llama') return autoSelected ? ['groq', 'openrouter', 'gemini', 'cerebras', 'mistral'] : ['groq', 'openrouter'];
@@ -583,7 +605,9 @@ async function generateChat(body, streamOptions = {}) {
     /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(latestUserPrompt);
   const preference = requestedPreference === 'auto' ? (coding ? 'pro' : complex ? 'pro' : 'flash') : requestedPreference;
   const useProModel = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference);
-  const geminiModel = useProModel ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+  const geminiModel = String(preference).startsWith('gemini-')
+    ? preference
+    : useProModel ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
   const groqModel = streamOptions.stream
     ? 'llama-3.1-8b-instant'
     : preference === 'think' ? 'openai/gpt-oss-120b' : 'llama-3.3-70b-versatile';
@@ -626,6 +650,19 @@ async function generateChat(body, streamOptions = {}) {
         continue;
       }
       throw error;
+    }
+  }
+  if (requestedPreference === 'auto' && !vision) {
+    try {
+      const output = await tryPollinationsText(messages, { coding });
+      if (streamOptions.stream) {
+        streamOptions.onProvider?.(output.provider, output.model);
+        if (streamOptions.streamState) streamOptions.streamState.sent = true;
+        streamOptions.onToken?.(output.text);
+      }
+      return output;
+    } catch (error) {
+      console.warn('Pollinations text fallback failed:', error.message);
     }
   }
   if (!availableProviders().length) throw new Error('No text-generation providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.');

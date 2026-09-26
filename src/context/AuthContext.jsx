@@ -1,8 +1,35 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { authService } from '../services/authService';
 import { firestoreService, TIERS } from '../services/firestoreService';
+import { rateLimiter } from '../services/rateLimiter';
 
 const AuthContext = createContext(null);
+
+async function hydratePersistentUsage(uid, profile) {
+  if (!uid || !profile) return profile;
+  const limits = firestoreService.getProfileLimits(profile);
+  const types = ['chat', 'image', 'video'];
+  const states = await Promise.all(types.map(type => rateLimiter.getStatus(uid, type, limits[type])));
+  const usage = { ...(profile.usage || {}) };
+  types.forEach((type, index) => {
+    const state = states[index];
+    usage[`${type}Count`] = state.count;
+    usage[`${type}WindowStart`] = state.windowStart;
+    usage[`${type}UsedPercent`] = state.usedPercent;
+    usage[`${type}ResetAt`] = state.resetAt;
+    usage[`${type}TokenCount`] = state.tokenCount;
+  });
+  const hydrated = {
+    ...profile,
+    textUsed: states[0].count,
+    imageUsed: states[1].count,
+    videoUsed: states[2].count,
+    usage
+  };
+  try { localStorage.setItem(`zulora_store_user_${uid}`, JSON.stringify(hydrated)); }
+  catch { /* The indexedDB quota ledger remains the persistent source. */ }
+  return hydrated;
+}
 
 export const AuthProvider = ({ children }) => {
   const [currentUser, setCurrentUser] = useState(null);
@@ -33,20 +60,23 @@ export const AuthProvider = ({ children }) => {
   const refreshProfile = useCallback(async (uid, userObj) => {
     if (!uid) return null;
     const profile = await firestoreService.getUserProfile(uid, userObj);
-    setUserProfile(profile);
-    return profile;
+    const hydrated = await hydratePersistentUsage(uid, profile);
+    setUserProfile(hydrated);
+    return hydrated;
   }, []);
 
   const recordUsage = useCallback(async (type, serverTracked = false, estimatedTokens = undefined) => {
     if (!currentUser?.uid) return null;
     try {
+      await rateLimiter.record(currentUser.uid, type, firestoreService.getProfileLimits(userProfile || {})[type], estimatedTokens);
       if (serverTracked) {
         firestoreService.clearLocalUsage(currentUser.uid);
         return await refreshProfile(currentUser.uid, currentUser);
       }
       const profile = firestoreService.recordLocalUsage(currentUser.uid, type, estimatedTokens);
-      if (profile) setUserProfile(profile);
-      return profile;
+      const hydrated = await hydratePersistentUsage(currentUser.uid, profile);
+      if (hydrated) setUserProfile(hydrated);
+      return hydrated;
     } catch (error) {
       console.warn('Could not update the usage display:', error.message);
       return null;
@@ -78,7 +108,8 @@ export const AuthProvider = ({ children }) => {
       profiledUid = user.uid;
       try {
         const profile = await firestoreService.getUserProfile(user.uid, user);
-        if (active && latestUid === user.uid) setUserProfile(profile);
+        const hydrated = await hydratePersistentUsage(user.uid, profile);
+        if (active && latestUid === user.uid) setUserProfile(hydrated);
       } catch (error) {
         console.warn('Could not load the signed-in user profile:', error);
       }

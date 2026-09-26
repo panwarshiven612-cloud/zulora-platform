@@ -25,11 +25,18 @@ const TEMPLATES = [
 ];
 
 function parseArtifact(source) {
-  const blocks = [...String(source || '').matchAll(/```\s*([a-z0-9_-]*)\s*\r?\n([\s\S]*?)(?:```|$)/gi)];
+  const blocks = [...String(source || '').matchAll(/```\s*([^\r\n]*)\r?\n([\s\S]*?)(?:```|$)/gi)];
   const files = { html: '', css: '', js: '', svg: '' };
-  blocks.forEach(([, lang, code]) => {
-    const language = lang.toLowerCase();
-    if (language in files && !files[language]) files[language] = code.trim();
+  const generatedFiles = {};
+  blocks.forEach(([, label, code]) => {
+    const parts = label.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const language = parts[0] || '';
+    const key = ({ htm: 'html', javascript: 'js', mjs: 'js', typescript: 'js', jsx: 'js', tsx: 'js', xml: 'svg' })[language] || language;
+    const namedFile = parts.find(part => /^[a-z0-9_./-]+\.[a-z0-9]+$/i.test(part));
+    const defaultNames = { html: 'index.html', css: 'styles.css', js: 'app.js', svg: 'graphic.svg', json: 'package.json', sql: 'schema.sql', python: 'app.py', bash: 'run.sh', yaml: 'config.yml' };
+    const fileName = namedFile || defaultNames[key];
+    if (fileName) generatedFiles[fileName] = code.trim();
+    if (key in files && !files[key]) files[key] = code.trim();
   });
   if (!files.html && !files.svg) {
     const rawHtml = String(source || '').match(/<!doctype html[\s\S]*|<html[\s\S]*/i)?.[0];
@@ -55,7 +62,7 @@ function parseArtifact(source) {
   if (!/<meta[^>]+http-equiv=["']Content-Security-Policy["']/i.test(html)) {
     html = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, `$&${csp}`) : html.replace(/<html[^>]*>/i, `$&<head>${csp}</head>`);
   }
-  return { ...files, html };
+  return { ...files, generatedFiles, html };
 }
 
 function downloadHtml(html, name = 'index.html') {
@@ -75,7 +82,7 @@ function StudioModal({ title, onClose, children, wide = false }) {
 }
 
 export default function AIStudio({ onExitDashboard }) {
-  const { currentUser, tier, isUsageModalOpen, setIsUsageModalOpen, isPricingModalOpen, setIsPricingModalOpen, refreshProfile } = useAuth();
+  const { currentUser, tier, isUsageModalOpen, setIsUsageModalOpen, isPricingModalOpen, setIsPricingModalOpen, refreshProfile, recordUsage } = useAuth();
   const [prompt, setPrompt] = useState('');
   const [attachment, setAttachment] = useState(null);
   const [attachmentText, setAttachmentText] = useState('');
@@ -91,6 +98,7 @@ export default function AIStudio({ onExitDashboard }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [modal, setModal] = useState('');
   const [projects, setProjects] = useState([]);
+  const [projectView, setProjectView] = useState('all');
   const [toast, setToast] = useState('');
   const [preferredModel, setPreferredModel] = useState(() => localStorage.getItem('zulora_studio_model') || 'auto');
   const [appearance, setAppearance] = useState(() => localStorage.getItem('zulora_studio_appearance') || 'dark');
@@ -113,7 +121,7 @@ export default function AIStudio({ onExitDashboard }) {
 
   const loadProjects = useCallback(async () => {
     if (!currentUser?.uid) return;
-    setProjects(await firestoreService.getStudioProjects(currentUser.uid));
+    setProjects(await firestoreService.getCodeProjects(currentUser.uid));
   }, [currentUser?.uid]);
   useEffect(() => {
     const uid = currentUser?.uid;
@@ -121,11 +129,11 @@ export default function AIStudio({ onExitDashboard }) {
     let active = true;
     restoredUidRef.current = uid;
     const restoreWorkspace = async () => {
-      const savedProjects = await firestoreService.getStudioProjects(uid);
+      const savedProjects = await firestoreService.getCodeProjects(uid);
       if (!active) return;
       setProjects(savedProjects);
       const savedActive = firestoreService.getActiveCodeProject(uid);
-      const project = savedActive || savedProjects[0];
+      const project = savedActive || savedProjects.find(item => item.kind !== 'search');
       if (!project) return;
       const parsed = parseArtifact(project.html || project.code || project.svg || '');
       setArtifact({ ...parsed, ...project, html: project.html || parsed.html, title: project.title || 'Saved project' });
@@ -168,6 +176,8 @@ export default function AIStudio({ onExitDashboard }) {
     setStage(0);
     streamRef.current = '';
     setMessages(previous => [...previous, { role: 'user', text: request }, { role: 'assistant', text: '', streaming: true }]);
+    firestoreService.recordCodeSearch(currentUser?.uid, request, preferredModel)
+      .catch(error => console.warn('Code workspace search could not be saved:', error.message));
     firestoreService.recordUserHistory(currentUser?.uid, { type: 'search', prompt: request, preference: preferredModel });
     try {
       const [contextMemory, userVault, aiBrain] = currentUser?.uid ? await Promise.all([
@@ -180,7 +190,7 @@ export default function AIStudio({ onExitDashboard }) {
         : [];
       const attachedText = attachment && !attachment.type.startsWith('image/') && attachmentText
         ? `\n\nAttached file (${attachment.name}):\n\n${attachmentText}` : '';
-      const fullPrompt = `Build a complete, polished, production-ready website from this request. Return a single complete HTML document in one fenced html code block with embedded CSS and JavaScript. Include responsive layout, considered empty/error states, accessible controls, glassmorphism where appropriate, and smooth CSS animations. Do not truncate code or include placeholders. Do not infer or insert personal information, names, addresses, email addresses, or profile facts; use only details explicitly present in the request or attached file.\n\nUser request:\n${request}${attachedText}`;
+      const fullPrompt = `Build a polished, production-ready application from this request. Keep code clean, modular, and organized by file. Return complete code blocks with the file name in the language label, including index.html, styles.css, and app.js; add server.js, routes.js, package.json, or schema.sql when backend behavior is requested. Implement focused functions, validation, safe error handling, accessible responsive UI, and useful loading/empty states. Do not truncate code, use TODOs/placeholders, or add unexplained dependencies. Do not infer personal information; use only details explicitly present in the request or attached file.\n\nUser request:\n${request}${attachedText}`;
       const result = await apiRouter.generateChat(fullPrompt, [], {
         model: preferredModel,
         currentUser,
@@ -228,11 +238,22 @@ export default function AIStudio({ onExitDashboard }) {
         if (last?.role === 'assistant') next[next.length - 1] = { ...last, text: source, streaming: false };
         return next;
       });
-      const savedProject = { id: nextId, title: nextArtifact.title, prompt: request, code: source, ...parsed, model: result.model || preferredModel, timestamp: Date.now() };
-      await firestoreService.saveStudioProject(currentUser.uid, savedProject);
+      const savedProject = {
+        id: nextId,
+        kind: 'project',
+        title: nextArtifact.title,
+        prompt: request,
+        code: source,
+        files: { ...parsed.generatedFiles, 'index.html': parsed.html, 'styles.css': parsed.css, 'app.js': parsed.js, ...(parsed.svg ? { 'graphic.svg': parsed.svg } : {}) },
+        messages: [{ role: 'user', text: request }, { role: 'assistant', text: source }],
+        ...parsed,
+        model: result.model || preferredModel,
+        timestamp: Date.now()
+      };
+      await firestoreService.saveCodeProject(currentUser.uid, savedProject);
       firestoreService.setActiveCodeProject(currentUser.uid, savedProject);
       firestoreService.recordUserHistory(currentUser.uid, { type: 'code', prompt: request, code: source, model: result.model || preferredModel });
-      if (!result?.usage?.tracked) firestoreService.recordLocalUsage(currentUser.uid, 'chat', Math.max(512, Math.ceil((fullPrompt.length + source.length) / 4)));
+      await recordUsage('chat', Boolean(result?.usage?.tracked), Math.max(512, Math.ceil((fullPrompt.length + source.length) / 4)));
       await refreshProfile();
       await loadProjects();
       showToast('Website generated and saved to Projects.');
@@ -263,7 +284,7 @@ export default function AIStudio({ onExitDashboard }) {
       setAttachmentText('');
       setStage(-1);
     }
-  }, [prompt, isGenerating, currentUser, preferredModel, attachment, attachmentText, projectId, loadProjects, showToast, setIsUsageModalOpen, setIsPricingModalOpen, refreshProfile]);
+  }, [prompt, isGenerating, currentUser, preferredModel, attachment, attachmentText, projectId, loadProjects, showToast, setIsUsageModalOpen, setIsPricingModalOpen, refreshProfile, recordUsage]);
 
   useEffect(() => {
     const onKeys = event => {
@@ -284,16 +305,16 @@ export default function AIStudio({ onExitDashboard }) {
     const opened = { ...parsed, ...project, html: project.html || parsed.html, title: project.title || 'Saved project' };
     setArtifact(opened); setPrompt(project.prompt || ''); setProjectId(project.id);
     firestoreService.setActiveCodeProject(currentUser.uid, project);
-    setMessages([{ role: 'user', text: project.prompt || project.title }, { role: 'assistant', text: 'Project loaded from your workspace.' }]);
+    setMessages(project.messages || [{ role: 'user', text: project.prompt || project.title }, { role: 'assistant', text: 'Project loaded from your workspace.' }]);
     setModal(''); setArtifactTab(mode === 'edit' ? 'code' : 'preview'); setIsEditingCode(mode === 'edit'); setCodeTab('html');
   };
 
   const duplicateProject = async project => {
     const copy = { ...project, id: crypto.randomUUID(), title: `${project.title || 'Project'} copy`, updatedAt: Date.now() };
-    await firestoreService.saveStudioProject(currentUser.uid, copy); await loadProjects(); showToast('Project duplicated.');
+    await firestoreService.saveCodeProject(currentUser.uid, copy); await loadProjects(); showToast('Project duplicated.');
   };
   const removeProject = async project => {
-    await firestoreService.deleteStudioProject(currentUser.uid, project.id); await loadProjects(); showToast('Project deleted.');
+    await firestoreService.deleteCodeProject(currentUser.uid, project.id); await loadProjects(); showToast('Project deleted.');
     if (projectId === project.id) { setArtifact(null); setProjectId(null); setMessages([]); }
   };
 
@@ -325,13 +346,15 @@ export default function AIStudio({ onExitDashboard }) {
       title: artifact.title || prompt.slice(0, 72) || 'Untitled project',
       prompt,
       code: artifact.code || artifact.html || '',
+      files: { ...(artifact.generatedFiles || {}), 'index.html': artifact.html || '', 'styles.css': artifact.css || '', 'app.js': artifact.js || '', ...(artifact.svg ? { 'graphic.svg': artifact.svg } : {}) },
+      messages,
       timestamp: Date.now()
     };
-    await firestoreService.saveStudioProject(currentUser.uid, project);
+    await firestoreService.saveCodeProject(currentUser.uid, project);
     firestoreService.setActiveCodeProject(currentUser.uid, project);
     await loadProjects();
     showToast('Project saved.');
-  }, [currentUser?.uid, artifact, projectId, prompt, loadProjects, showToast]);
+  }, [currentUser?.uid, artifact, projectId, prompt, messages, loadProjects, showToast]);
 
   useEffect(() => {
     if (!isEditingCode || isGenerating || !artifact || !projectId || !currentUser?.uid) return undefined;
@@ -339,15 +362,18 @@ export default function AIStudio({ onExitDashboard }) {
       const project = {
         ...artifact, id: projectId, prompt,
         title: artifact.title || prompt.slice(0, 72) || 'Untitled project',
-        code: artifact.code || artifact.html || '', timestamp: Date.now()
+        code: artifact.code || artifact.html || '',
+        files: { ...(artifact.generatedFiles || {}), 'index.html': artifact.html || '', 'styles.css': artifact.css || '', 'app.js': artifact.js || '', ...(artifact.svg ? { 'graphic.svg': artifact.svg } : {}) },
+        messages,
+        timestamp: Date.now()
       };
-      firestoreService.saveStudioProject(currentUser.uid, project)
+      firestoreService.saveCodeProject(currentUser.uid, project)
         .then(() => firestoreService.setActiveCodeProject(currentUser.uid, project))
         .then(loadProjects)
         .catch(error => console.warn('Could not autosave Studio code:', error.message));
     }, 850);
     return () => window.clearTimeout(timer);
-  }, [isEditingCode, isGenerating, artifact, projectId, currentUser?.uid, prompt, loadProjects]);
+  }, [isEditingCode, isGenerating, artifact, projectId, currentUser?.uid, prompt, messages, loadProjects]);
 
   const copyCode = async () => {
     const code = artifactTab === 'code' && codeTab !== 'html' ? activeCode : currentHtml;
@@ -370,6 +396,16 @@ export default function AIStudio({ onExitDashboard }) {
   };
 
   const codeLanguages = { html: 'html', css: 'css', js: 'javascript', svg: 'xml' };
+  const visibleProjects = projects.filter(project =>
+    projectView === 'all' || (projectView === 'searches' ? project.kind === 'search' : project.kind !== 'search')
+  );
+  const visibleFiles = visibleProjects.flatMap(project => {
+    const files = { ...(project.generatedFiles || {}), ...(project.files || {}) };
+    if (Object.keys(files).length) return Object.entries(files).map(([name, contents]) => ({ project, name, contents }));
+    return ['html', 'css', 'js', 'svg'].flatMap(type => project[type]
+      ? [{ project, name: ({ html: 'index.html', css: 'styles.css', js: 'app.js', svg: 'graphic.svg' })[type], contents: project[type] }]
+      : []);
+  }).filter(file => String(file.contents || '').trim());
   const appShell = appearance === 'light' ? 'bg-[#edf2fa] text-slate-900' : 'bg-[#080a13] text-slate-100';
 
   return <div className={`relative flex h-dvh min-h-[600px] flex-col overflow-hidden ${appShell}`}>
@@ -380,7 +416,7 @@ export default function AIStudio({ onExitDashboard }) {
       <button onClick={onExitDashboard} className="mr-1 flex items-center gap-2 text-slate-400 transition hover:text-white" title="Return to dashboard"><ArrowLeft size={17} /><span className="hidden text-xs font-medium sm:inline">Zulora</span></button>
       <div className="flex items-center gap-2.5"><div className="grid h-9 w-9 place-items-center rounded-xl border border-violet-300/20 bg-gradient-to-br from-violet-400/20 to-cyan-300/10 text-cyan-100 shadow-[0_0_22px_rgba(111,106,255,.2)]"><Code2 size={19} /></div><div><div className="text-sm font-bold tracking-wide">AI Studio</div><div className="text-[10px] text-slate-500">Website builder workspace</div></div></div>
       <div className="mx-auto hidden items-center gap-1 rounded-xl border border-white/[.07] bg-white/[.025] p-1 lg:flex">
-        {[['Projects', 'projects', FolderOpen], ['Templates', 'templates', Sparkles], ['Pricing', 'pricing', WandSparkles], ['Settings', 'settings', Settings2]].map(([label, key, Icon]) => <button key={key} onClick={() => key === 'pricing' ? setModal('pricing') : setModal(key)} className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs text-slate-400 transition hover:bg-white/[.06] hover:text-white"><Icon size={14} />{label}</button>)}
+        {[['Code Workspace / Projects', 'projects', FolderOpen], ['Templates', 'templates', Sparkles], ['Pricing', 'pricing', WandSparkles], ['Settings', 'settings', Settings2]].map(([label, key, Icon]) => <button key={key} onClick={() => key === 'pricing' ? setModal('pricing') : setModal(key)} className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs text-slate-400 transition hover:bg-white/[.06] hover:text-white"><Icon size={14} />{label}</button>)}
       </div>
       <button onClick={startNew} className="ml-auto flex items-center gap-2 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:border-violet-300/30 hover:bg-violet-300/10"><Plus size={15} /><span className="hidden sm:inline">New Project</span></button>
       <button onClick={() => setModal('menu')} className="grid h-9 w-9 place-items-center rounded-xl border border-white/10 text-slate-400 hover:bg-white/[.06] hover:text-white lg:hidden" title="Workspace menu"><Menu size={17} /></button>
@@ -425,9 +461,32 @@ export default function AIStudio({ onExitDashboard }) {
     {toast && <div className="fixed bottom-5 left-1/2 z-[90] -translate-x-1/2 rounded-xl border border-white/10 bg-[#171b29] px-4 py-3 text-xs text-slate-100 shadow-2xl">{toast}</div>}
     {modal === 'fullscreen' && <div className="fixed inset-0 z-[80] flex flex-col bg-[#070911]"><div className="flex h-14 items-center justify-between border-b border-white/10 px-4 text-sm"><span className="font-semibold">{artifact?.title || 'Live preview'}</span><button onClick={() => setModal('')} className="rounded-xl p-2 text-slate-400 hover:bg-white/10 hover:text-white"><X size={18} /></button></div><iframe title="Fullscreen website preview" srcDoc={currentHtml} sandbox="allow-scripts" referrerPolicy="no-referrer" className="min-h-0 flex-1 border-0 bg-white" /></div>}
 
-    {modal === 'projects' && <StudioModal title="Your projects" onClose={() => setModal('')} wide><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{projects.map(project => <article key={project.id} className="group overflow-hidden rounded-2xl border border-white/10 bg-white/[.025]"><div className="block h-32 w-full overflow-hidden bg-gradient-to-br from-violet-500/20 via-blue-500/10 to-cyan-500/20"><iframe title="Project thumbnail" srcDoc={project.html || ''} sandbox="" tabIndex={-1} className="pointer-events-none h-[520px] w-[1600px] origin-top-left scale-[.11] border-0 bg-white" /></div><div className="p-3"><div className="flex items-start justify-between gap-2"><p className="truncate text-sm font-semibold">{project.title || 'Untitled project'}</p><button title="Delete" onClick={() => removeProject(project)} className="rounded-lg p-1.5 text-slate-500 hover:bg-rose-400/10 hover:text-rose-200"><Trash2 size={13} /></button></div><p className="mt-1 text-[10px] text-slate-500">Edited {new Date(project.timestamp || project.updatedAt || Date.now()).toLocaleString()}</p><div className="mt-3 flex gap-2"><button onClick={() => openProject(project, 'preview')} className="flex-1 rounded-lg border border-white/10 bg-white/[.04] px-2 py-2 text-[10px] font-semibold text-slate-200 hover:bg-white/10">Open Preview</button><button onClick={() => openProject(project, 'edit')} className="flex-1 rounded-lg border border-cyan-200/15 bg-cyan-200/[.06] px-2 py-2 text-[10px] font-semibold text-cyan-100 hover:bg-cyan-200/10">Edit Code</button></div><button onClick={() => duplicateProject(project)} className="mt-2 w-full rounded-lg px-2 py-1.5 text-[10px] text-slate-500 hover:bg-white/[.05] hover:text-white"><Copy size={12} className="mr-1 inline" />Duplicate</button></div></article>)}{!projects.length && <div className="col-span-full rounded-2xl border border-dashed border-white/10 p-12 text-center text-sm text-slate-500">Your saved projects will appear here.</div>}</div></StudioModal>}
+    {modal === 'projects' && <StudioModal title="Code Workspace / Projects" onClose={() => setModal('')} wide>
+      <div className="mb-4 flex flex-wrap gap-2">
+        {[["all", "All sessions"], ["files", "Generated files"], ["searches", "Search history"]].map(([key, label]) => <button key={key} onClick={() => setProjectView(key)} className={`rounded-xl border px-3 py-2 text-xs font-semibold ${projectView === key ? 'border-cyan-200/30 bg-cyan-200/10 text-cyan-100' : 'border-white/10 text-slate-400 hover:bg-white/[.05]'}`}>{label}</button>)}
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {projectView === 'files' ? visibleFiles.map(({ project, name, contents }) => <article key={`${project.id}-${name}`} className="flex min-w-0 flex-col rounded-2xl border border-white/10 bg-white/[.025] p-4">
+          <div className="mb-3 flex items-start justify-between gap-2"><div className="min-w-0"><p className="truncate font-mono text-xs font-semibold text-cyan-100">{name}</p><p className="mt-1 truncate text-[10px] text-slate-500">{project.title || 'Untitled project'}</p></div><button onClick={() => openProject(project, 'edit')} className="shrink-0 rounded-lg border border-white/10 px-2.5 py-1.5 text-[10px] font-semibold text-slate-200 hover:bg-white/10">Open project</button></div>
+          <details className="min-w-0 rounded-xl bg-black/20"><summary className="cursor-pointer px-3 py-2 text-[10px] text-slate-400">View file contents</summary><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words px-3 pb-3 font-mono text-[10px] leading-5 text-slate-300">{contents}</pre></details>
+        </article>) : visibleProjects.map(project => project.kind === 'search' ? <article key={project.id} className="flex flex-col rounded-2xl border border-white/10 bg-white/[.025] p-4">
+          <div className="flex items-start justify-between gap-2"><div><p className="text-[10px] font-bold uppercase tracking-wider text-cyan-200">Search history</p><p className="mt-2 line-clamp-4 text-sm leading-6 text-slate-200">{project.query || project.prompt}</p></div><button title="Delete" onClick={() => removeProject(project)} className="rounded-lg p-1.5 text-slate-500 hover:bg-rose-400/10 hover:text-rose-200"><Trash2 size={13} /></button></div>
+          <p className="mt-auto pt-4 text-[10px] text-slate-500">{new Date(project.timestamp || project.updatedAt || Date.now()).toLocaleString()}</p>
+          <button onClick={() => { setModal(''); runBuild(project.query || project.prompt); }} className="mt-3 w-full rounded-lg border border-cyan-200/15 bg-cyan-200/[.06] px-3 py-2 text-[10px] font-semibold text-cyan-100 hover:bg-cyan-200/10">Run again</button>
+        </article> : <article key={project.id} className="group overflow-hidden rounded-2xl border border-white/10 bg-white/[.025]">
+          <div className="block h-32 w-full overflow-hidden bg-gradient-to-br from-violet-500/20 via-blue-500/10 to-cyan-500/20"><iframe title="Project thumbnail" srcDoc={project.html || ''} sandbox="" tabIndex={-1} className="pointer-events-none h-[520px] w-[1600px] origin-top-left scale-[.11] border-0 bg-white" /></div>
+          <div className="p-3"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="truncate text-sm font-semibold">{project.title || 'Untitled project'}</p><p className="mt-1 text-[10px] text-cyan-200/70">Generated code session</p></div><button title="Delete" onClick={() => removeProject(project)} className="rounded-lg p-1.5 text-slate-500 hover:bg-rose-400/10 hover:text-rose-200"><Trash2 size={13} /></button></div>
+            <p className="mt-2 truncate text-[10px] text-slate-500">Files: {Object.keys(project.files || {}).length ? Object.entries(project.files).filter(([, contents]) => String(contents || '').trim()).map(([name]) => name).join(', ') : ['html', 'css', 'js', 'svg'].filter(file => project[file]).map(file => `${file === 'js' ? 'app.js' : file === 'css' ? 'styles.css' : file === 'svg' ? 'graphic.svg' : 'index.html'}`).join(', ') || 'source code'}</p>
+            <p className="mt-1 text-[10px] text-slate-500">Saved {new Date(project.timestamp || project.updatedAt || Date.now()).toLocaleString()}</p>
+            <div className="mt-3 flex gap-2"><button onClick={() => openProject(project, 'preview')} className="flex-1 rounded-lg border border-white/10 bg-white/[.04] px-2 py-2 text-[10px] font-semibold text-slate-200 hover:bg-white/10">Open Preview</button><button onClick={() => openProject(project, 'edit')} className="flex-1 rounded-lg border border-cyan-200/15 bg-cyan-200/[.06] px-2 py-2 text-[10px] font-semibold text-cyan-100 hover:bg-cyan-200/10">Edit Code</button></div>
+            <button onClick={() => duplicateProject(project)} className="mt-2 w-full rounded-lg px-2 py-1.5 text-[10px] text-slate-500 hover:bg-white/[.05] hover:text-white"><Copy size={12} className="mr-1 inline" />Duplicate</button>
+          </div>
+        </article>)}
+        {!(projectView === 'files' ? visibleFiles.length : visibleProjects.length) && <div className="col-span-full rounded-2xl border border-dashed border-white/10 p-12 text-center text-sm text-slate-500">Nothing is saved in this view yet.</div>}
+      </div>
+    </StudioModal>}
 
-    {modal === 'menu' && <StudioModal title="Workspace" onClose={() => setModal('')}><div className="grid gap-2 sm:grid-cols-2">{[['Projects', 'projects', FolderOpen], ['Templates', 'templates', Sparkles], ['Pricing', 'pricing', WandSparkles], ['Settings', 'settings', Settings2]].map(([label, key, Icon]) => <button key={key} onClick={() => setModal(key)} className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[.025] p-4 text-left text-sm text-slate-300 transition hover:border-cyan-200/20 hover:bg-white/[.06] hover:text-white"><Icon size={16} />{label}</button>)}</div></StudioModal>}
+    {modal === 'menu' && <StudioModal title="Workspace" onClose={() => setModal('')}><div className="grid gap-2 sm:grid-cols-2">{[['Code Workspace / Projects', 'projects', FolderOpen], ['Templates', 'templates', Sparkles], ['Pricing', 'pricing', WandSparkles], ['Settings', 'settings', Settings2]].map(([label, key, Icon]) => <button key={key} onClick={() => setModal(key)} className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[.025] p-4 text-left text-sm text-slate-300 transition hover:border-cyan-200/20 hover:bg-white/[.06] hover:text-white"><Icon size={16} />{label}</button>)}</div></StudioModal>}
 
     {modal === 'templates' && <StudioModal title="Choose a starting point" onClose={() => setModal('')} wide><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{TEMPLATES.map(template => <article key={template.name} className="group rounded-2xl border border-white/10 bg-white/[.025] p-4 transition hover:-translate-y-1 hover:border-cyan-200/20 hover:bg-white/[.05]"><div className={`mb-4 grid h-28 place-items-center rounded-xl bg-gradient-to-br ${template.color} text-4xl text-white/80`}><span className="transition duration-300 group-hover:scale-110">{template.icon}</span></div><div className="flex items-center justify-between"><div><h3 className="text-sm font-semibold">{template.name}</h3><p className="mt-1 text-[11px] text-slate-500">Responsive starter experience</p></div><button onClick={() => { setModal(''); setPrompt(template.prompt); runBuild(template.prompt); }} className="rounded-xl bg-white/[.08] px-3 py-2 text-[10px] font-bold text-white opacity-80 transition hover:bg-cyan-300/15 hover:text-cyan-100 group-hover:opacity-100">Use template</button></div></article>)}</div></StudioModal>}
 
