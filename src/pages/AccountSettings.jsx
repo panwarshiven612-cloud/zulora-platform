@@ -9,17 +9,18 @@ import { doc, deleteDoc, collection, getDocs, query, where, limit, startAfter } 
 import { db } from '../services/firebase';
 
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
+const DELETE_BATCH_SIZE = 15;
 
 const deleteCollectionInBatches = async collectionRef => {
   let cursor = null;
   while (true) {
     const pageQuery = cursor
-      ? query(collectionRef, limit(20), startAfter(cursor))
-      : query(collectionRef, limit(20));
+      ? query(collectionRef, limit(DELETE_BATCH_SIZE), startAfter(cursor))
+      : query(collectionRef, limit(DELETE_BATCH_SIZE));
     const page = await getDocs(pageQuery);
     if (page.empty) break;
     await Promise.all(page.docs.map(item => deleteDoc(item.ref)));
-    if (page.size < 20) break;
+    if (page.size < DELETE_BATCH_SIZE) break;
     cursor = page.docs[page.docs.length - 1];
   }
 };

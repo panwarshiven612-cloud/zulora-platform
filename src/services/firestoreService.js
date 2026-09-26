@@ -57,12 +57,13 @@ const TOKEN_LIMITS = { free: 10_000, pro: 50_000, ultra: 100_000 };
 
 // LocalStorage fallback prefix
 const STORAGE_PREFIX = 'zulora_store_';
-const MAX_HISTORY_ITEMS = 20;
+const MAX_HISTORY_ITEMS = 15;
 const PROFILE_CACHE_TTL_MS = 60 * 1000;
 const firestoreWriteTimers = new Map();
 const AI_BRAIN_STORAGE_KEY = 'zulora_user_memory';
 const VAULT_STORAGE_PREFIX = 'zulora_user_vault_';
 const USER_HISTORY_STORAGE_KEY = 'zulora_user_history';
+const USER_HISTORY_SESSION_PREFIX = 'zulora_search_index_';
 const normalizeAiBrain = brain => ({
   talkStyle: String(brain?.talkStyle || ''),
   customInstructions: String(brain?.customInstructions || ''),
@@ -100,6 +101,24 @@ function writeUserHistory(uid, entries) {
   })();
   parsed[uid] = entries.slice(0, MAX_HISTORY_ITEMS);
   localStorage.setItem(USER_HISTORY_STORAGE_KEY, JSON.stringify(parsed));
+}
+
+function readSessionUserHistory(uid) {
+  try {
+    const entries = JSON.parse(sessionStorage.getItem(`${USER_HISTORY_SESSION_PREFIX}${uid}`) || 'null');
+    return Array.isArray(entries) ? entries : null;
+  } catch { return null; }
+}
+
+function writeSessionUserHistory(uid, entries) {
+  try {
+    sessionStorage.setItem(`${USER_HISTORY_SESSION_PREFIX}${uid}`, JSON.stringify(entries.slice(0, MAX_HISTORY_ITEMS)));
+  } catch { /* session storage may be disabled or full */ }
+}
+
+function invalidateSessionUserHistory(uid) {
+  try { sessionStorage.removeItem(`${USER_HISTORY_SESSION_PREFIX}${uid}`); }
+  catch { /* session storage may be disabled */ }
 }
 
 function readCachedAiBrain(uid) {
@@ -420,6 +439,7 @@ export const firestoreService = {
     try {
       const updated = [record, ...readUserHistory(uid)].slice(0, MAX_HISTORY_ITEMS);
       writeUserHistory(uid, updated);
+      invalidateSessionUserHistory(uid);
     } catch (error) {
       console.warn('Could not save user activity to LocalStorage:', error.message);
     }
@@ -429,26 +449,36 @@ export const firestoreService = {
 
   async getUserHistory(uid, maxItems = MAX_HISTORY_ITEMS) {
     if (!uid) return [];
-    const local = readUserHistory(uid);
     const cappedLimit = Math.max(1, Math.min(MAX_HISTORY_ITEMS, Number(maxItems) || MAX_HISTORY_ITEMS));
+    const sessionCache = readSessionUserHistory(uid);
+    if (sessionCache) return sessionCache.slice(0, cappedLimit);
+    const local = readUserHistory(uid);
     let historyCacheExists = false;
     try {
       const parsed = JSON.parse(localStorage.getItem(USER_HISTORY_STORAGE_KEY) || '{}');
       historyCacheExists = Array.isArray(parsed) || Object.prototype.hasOwnProperty.call(parsed, uid);
     } catch { /* fetch history when the cache is malformed */ }
-    if (local.length || historyCacheExists) return local.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)).slice(0, cappedLimit);
+    if (local.length || historyCacheExists) {
+      const orderedLocal = local.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+      const history = orderedLocal.slice(0, cappedLimit);
+      writeSessionUserHistory(uid, orderedLocal);
+      return history;
+    }
     try {
       const activityRef = collection(db, 'users', uid, 'search_vault');
-      const snapshot = await getDocs(query(activityRef, orderBy('createdAt', 'desc'), limit(cappedLimit)));
+      const snapshot = await getDocs(query(activityRef, orderBy('createdAt', 'desc'), limit(MAX_HISTORY_ITEMS)));
       const remote = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
       const merged = new Map();
       [...remote, ...local].forEach(item => merged.set(item.clientId || item.id, item));
-      const history = [...merged.values()].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)).slice(0, cappedLimit);
+      const history = [...merged.values()].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)).slice(0, MAX_HISTORY_ITEMS);
       try { writeUserHistory(uid, history); } catch { /* keep Firestore results available for this view */ }
-      return history;
+      writeSessionUserHistory(uid, history);
+      return history.slice(0, cappedLimit);
     } catch (error) {
       console.warn('Firestore history fallback to LocalStorage:', error.message);
-      return local.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)).slice(0, cappedLimit);
+      const history = local.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)).slice(0, cappedLimit);
+      writeSessionUserHistory(uid, history);
+      return history;
     }
   },
 

@@ -9,7 +9,7 @@ import {
   browserLocalPersistence,
   onAuthStateChanged
 } from 'firebase/auth';
-import { getFirestore, enableIndexedDbPersistence } from 'firebase/firestore';
+import { getFirestore, enableMultiTabIndexedDbPersistence } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
@@ -25,8 +25,8 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const storage = getStorage(app);
-export const firestorePersistenceReady = enableIndexedDbPersistence(db).then(() => true).catch(error => {
-  // Persistence can already be owned by another tab or unavailable in some browsers.
+export const firestorePersistenceReady = enableMultiTabIndexedDbPersistence(db).then(() => true).catch(error => {
+  // Persistence may already be enabled or unavailable in some browser contexts.
   if (error?.code !== 'failed-precondition' && error?.code !== 'unimplemented') {
     console.warn('Firestore offline persistence is unavailable:', error.message);
   }
