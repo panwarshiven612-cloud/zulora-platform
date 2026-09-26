@@ -2,19 +2,17 @@ const readKeys = (...names) => [...new Set(names.map(name => String(process.env[
 const readFirstKey = (...names) => readKeys(...names)[0] || '';
 
 // Keep server-only names first. VITE_* fallbacks preserve older deployments, but Vite exposes them in browser builds.
-const numberedGeminiKeys = Array.from({ length: 7 }, (_, index) => [
+const numberedGeminiKeySlots = Array.from({ length: 7 }, (_, index) => readFirstKey(
   `GEMINI_API_KEY_${index + 1}`,
   `GEMINI_KEY_${index + 1}`,
   `VITE_GEMINI_KEY_${index + 1}`,
   `VITE_GEMINI_API_KEY_${index + 1}`
-]).flat();
+));
+const legacyGeminiKeys = readKeys('GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'VITE_GEMINI_API_KEY', 'VITE_GOOGLE_API_KEY', 'VITE_GOOGLE_GENERATIVE_AI_API_KEY');
+export const GEMINI_KEYS = Object.freeze([...new Set([...numberedGeminiKeySlots.filter(Boolean), ...legacyGeminiKeys])]);
 
 const providerKeyNames = {
-  gemini: [
-    'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY',
-    'VITE_GEMINI_API_KEY', 'VITE_GOOGLE_API_KEY', 'VITE_GOOGLE_GENERATIVE_AI_API_KEY',
-    ...numberedGeminiKeys
-  ],
+  gemini: [],
   groq: ['GROQ_KEY', 'VITE_GROQ_API_KEY', 'VITE_GROQ_KEY'],
   openrouter: [
     'OPENROUTER_API_KEY', 'OPEN_ROUTER_API_KEY', 'OPENROUTER_API_KEY_1', 'OPENROUTER_API_KEY_2',
@@ -26,7 +24,7 @@ const providerKeyNames = {
 };
 const providerKeysFor = provider => provider === 'groq'
   ? [...new Set([String(process.env.GROQ_API_KEY || '').trim(), ...readKeys(...providerKeyNames.groq)].filter(Boolean))]
-  : readKeys(...(providerKeyNames[provider] || []));
+  : provider === 'gemini' ? GEMINI_KEYS : readKeys(...(providerKeyNames[provider] || []));
 
 const providers = Object.fromEntries(Object.keys(providerKeyNames).map(provider => [provider, providerKeysFor(provider)]));
 
@@ -56,6 +54,10 @@ export const apiKeyPool = {
     const length = provider === 'groq' ? providerKeysFor('groq').length : providers[provider]?.length || 0;
     cursors[provider] = (index + 1) % (length || 1);
     failures[provider]?.delete(index);
+  },
+  advance(provider, index) {
+    const length = provider === 'groq' ? providerKeysFor('groq').length : providers[provider]?.length || 0;
+    cursors[provider] = (index + 1) % (length || 1);
   },
   failed(provider, index, retryAfterMs = 0) {
     const state = failures[provider].get(index);

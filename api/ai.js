@@ -5,7 +5,8 @@ import { buildSystemPrompt } from '../src/services/systemPrompt.js';
 export const maxDuration = 60;
 export const config = { maxDuration };
 
-const CHAT_ORDER = ['groq', 'gemini', 'cerebras', 'openrouter', 'mistral'];
+const CHAT_ORDER = ['gemini', 'groq', 'cerebras', 'mistral', 'openrouter'];
+const GEMINI_FLASH_VARIANTS = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-8b'];
 const TOKEN_LIMITS = { free: 10_000, pro: 50_000, ultra: 100_000 };
 const TOKEN_WINDOW_MS = 24 * 60 * 60 * 1000;
 const PROMPT_BURST_WINDOW_MS = 2 * 60 * 1000;
@@ -428,14 +429,14 @@ async function readProviderEventStream(response, readToken, onToken, streamState
 async function tryOpenAiProvider(provider, messages, options = {}) {
   const configs = {
     groq: { url: 'https://api.groq.com/openai/v1/chat/completions', model: options.model || 'llama-3.3-70b-versatile', label: 'Groq LPU' },
-    openrouter: { url: 'https://openrouter.ai/api/v1/chat/completions', model: options.model || (options.vision ? 'google/gemini-3.8-flash' : 'meta-llama/llama-3.3-70b-instruct'), label: 'OpenRouter' },
-    cerebras: { url: 'https://api.cerebras.ai/v1/chat/completions', model: 'gpt-oss-120b', label: 'Cerebras' },
-    mistral: { url: 'https://api.mistral.ai/v1/chat/completions', model: 'mistral-small-latest', label: 'Mistral AI' }
+    openrouter: { url: 'https://openrouter.ai/api/v1/chat/completions', model: options.model || 'openrouter/free', label: 'OpenRouter' },
+    cerebras: { url: 'https://api.cerebras.ai/v1/chat/completions', model: options.model || 'llama3.1-70b', label: 'Cerebras' },
+    mistral: { url: 'https://api.mistral.ai/v1/chat/completions', model: options.model || 'mistral-large-latest', label: 'Mistral AI' }
   };
   const config = configs[provider];
   const parts = attachmentParts(options.attachments);
   const keys = apiKeyPool.candidates(provider);
-  for (const { key, index } of (options.stream ? keys.slice(0, 1) : keys)) {
+  for (const { key, index } of keys) {
     try {
       const contentMessages = messages.map((message, messageIndex) => {
         if (provider === 'openrouter' && parts.length && messageIndex === messages.length - 1) {
@@ -483,7 +484,10 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
     } catch (error) {
       console.warn(`${config.label} text request failed:`, error.message);
       apiKeyPool.failed(provider, index);
-      if (options.stream && options.streamState?.sent) throw error;
+      if (options.stream && options.streamState?.sent) {
+        options.onReset?.();
+        options.streamState.sent = false;
+      }
     }
   }
   return null;
@@ -499,7 +503,7 @@ async function tryGemini(messages, options = {}) {
   }));
   if (!contents.length) contents.push({ role: 'user', parts: [{ text: 'Hello' }] });
   const keys = apiKeyPool.candidates('gemini');
-  for (const { key, index } of (options.stream ? keys.slice(0, 1) : keys)) {
+  for (const { key, index } of keys) {
     try {
       const model = options.model || 'gemini-2.5-flash';
       const endpoint = options.stream ? 'streamGenerateContent?alt=sse' : 'generateContent';
@@ -533,12 +537,36 @@ async function tryGemini(messages, options = {}) {
         }
       }
       console.warn(`Google Gemini text request failed with HTTP ${response.status}.`);
-      apiKeyPool.failed('gemini', index, parseRetryAfter(response));
+      if ([404, 503].includes(response.status)) options.onModelUnavailable?.(model, response.status);
+      if ([401, 403, 429].includes(response.status)) apiKeyPool.failed('gemini', index, parseRetryAfter(response));
+      else apiKeyPool.advance('gemini', index);
     } catch (error) {
       console.warn('Google Gemini text request failed:', error.message);
       apiKeyPool.failed('gemini', index);
-      if (options.stream && options.streamState?.sent) throw error;
+      if (options.stream && options.streamState?.sent) {
+        options.onReset?.();
+        options.streamState.sent = false;
+      }
     }
+  }
+  return null;
+}
+
+async function tryGeminiWithModelFallback(messages, options = {}) {
+  const preferredModel = options.model || 'gemini-2.5-flash';
+  let modelUnavailable = false;
+  const result = await tryGemini(messages, {
+    ...options,
+    model: preferredModel,
+    onModelUnavailable: () => { modelUnavailable = true; }
+  });
+  if (result || !modelUnavailable) return result;
+
+  const alternatives = [...new Set([...GEMINI_FLASH_VARIANTS, 'gemini-2.5-flash-lite'])]
+    .filter(model => model !== preferredModel);
+  for (const model of alternatives) {
+    const fallback = await tryGemini(messages, { ...options, model });
+    if (fallback) return fallback;
   }
   return null;
 }
@@ -576,20 +604,9 @@ function normalizeModelPreference(value) {
   return 'auto';
 }
 
-function chooseChatOrder(preference, vision, search, autoSelected = false) {
-  if (vision) return ['gemini'];
-  if (String(preference).startsWith('gemini-')) return ['gemini'];
-  if (autoSelected || preference === 'groq') return ['groq', 'gemini', 'cerebras', 'openrouter', 'mistral'];
-  if (search) return ['gemini', 'groq', 'openrouter', ...CHAT_ORDER.filter(provider => provider !== 'gemini' && provider !== 'groq' && provider !== 'openrouter')];
-  if (preference === 'llama') return autoSelected ? ['groq', 'openrouter', 'gemini', 'cerebras', 'mistral'] : ['groq', 'openrouter'];
-  if (preference === 'think') return ['openrouter', 'groq', 'gemini'];
-  if (['pro', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference)) {
-    return ['gemini', 'groq', 'openrouter', 'cerebras', 'mistral'];
-  }
-  if (['flash', 'auto'].includes(preference)) return ['gemini', 'groq', 'cerebras', 'openrouter', 'mistral'];
-  const mapped = ['groq', 'openrouter', 'cerebras', 'gemini', 'mistral'].includes(preference) ? preference : null;
-  if (search) return ['gemini', 'openrouter', ...CHAT_ORDER.filter(provider => provider !== 'gemini' && provider !== 'openrouter')];
-  return mapped ? [mapped, ...CHAT_ORDER.filter(provider => provider !== mapped)] : CHAT_ORDER;
+function chooseChatOrder(preference, autoSelected = false) {
+  if (preference === 'groq' && !autoSelected) return ['groq', ...CHAT_ORDER.filter(provider => provider !== 'groq')];
+  return CHAT_ORDER;
 }
 
 async function generateChat(body, streamOptions = {}) {
@@ -608,35 +625,17 @@ async function generateChat(body, streamOptions = {}) {
   const geminiModel = String(preference).startsWith('gemini-')
     ? preference
     : useProModel ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
-  const groqModel = streamOptions.stream
-    ? 'llama-3.1-8b-instant'
-    : preference === 'think' ? 'openai/gpt-oss-120b' : 'llama-3.3-70b-versatile';
-  const order = vision
-      ? ['gemini']
-      : body.enableWebSearch
-      ? chooseChatOrder(preference, vision, true, requestedPreference === 'auto')
-      : requestedPreference === 'auto' || requestedPreference === 'groq'
-      ? chooseChatOrder(preference, vision, false, requestedPreference === 'auto')
-      : preference === 'think'
-      ? ['openrouter', 'gemini-pro', 'gemini', 'groq', 'cerebras', 'mistral']
-      : useProModel
-        ? ['openrouter', 'gemini-pro', 'gemini', 'groq', 'cerebras', 'mistral']
-        : chooseChatOrder(preference, vision, Boolean(body.enableWebSearch), requestedPreference === 'auto');
+  const groqModel = 'llama-3.3-70b-versatile';
+  const order = chooseChatOrder(preference, requestedPreference === 'auto');
   for (const provider of order) {
     try {
-      const result = provider === 'gemini' || provider === 'gemini-pro'
-        ? await tryGemini(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: provider === 'gemini-pro' ? 'gemini-2.5-pro' : vision || useProModel ? 'gemini-2.5-flash' : geminiModel, coding, maxTokens: coding || useProModel ? 8192 : 4096, ...streamOptions })
+      const result = provider === 'gemini'
+        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: geminiModel, coding, maxTokens: 8192, ...streamOptions })
         : await tryOpenAiProvider(provider, messages, {
           attachments: body.attachments,
           vision,
           coding,
-          model: provider === 'groq'
-            ? groqModel
-            : provider === 'openrouter' && useProModel
-              ? 'deepseek/deepseek-r1'
-              : provider === 'openrouter' && preference === 'llama'
-                ? 'meta-llama/llama-3.3-70b-instruct'
-                : undefined,
+          model: provider === 'groq' ? groqModel : undefined,
           reasoning: preference === 'think' && provider === 'groq',
           maxTokens: coding || useProModel ? 8192 : 4096,
           ...streamOptions
@@ -652,7 +651,7 @@ async function generateChat(body, streamOptions = {}) {
       throw error;
     }
   }
-  if (requestedPreference === 'auto' && !vision) {
+  if (!vision) {
     try {
       const output = await tryPollinationsText(messages, { coding });
       if (streamOptions.stream) {

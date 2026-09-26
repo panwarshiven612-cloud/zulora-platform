@@ -68,15 +68,23 @@ const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
   ['json', json], ['css', css], ['sql', sql], ['yaml', yaml], ['markdown', markdown]
 ].forEach(([name, language]) => SyntaxHighlighter.registerLanguage(name, language));
 
-const MODEL_OPTIONS = ['auto', 'groq', 'flash', 'llama', 'think'].map(id => MODEL_TIERS[id]).map(t => ({
-  id: t.id,
-  label: t.label,
-  shortLabel: t.shortLabel,
-  icon: t.id === 'flash' || t.id === 'groq' ? Zap : t.id === 'think' ? FlaskConical : t.id === 'llama' ? Code2 : Sparkles,
-  color: t.color,
-  badge: t.badge,
-  tier: t.tier,
-}));
+const MODEL_OPTIONS = [
+  ...['auto', 'groq', 'flash', 'llama', 'think'].map(id => MODEL_TIERS[id]).map(t => ({
+    id: t.id,
+    label: t.label,
+    shortLabel: t.shortLabel,
+    icon: t.id === 'flash' || t.id === 'groq' ? Zap : t.id === 'think' ? FlaskConical : t.id === 'llama' ? Code2 : Sparkles,
+    color: t.color,
+    badge: t.badge,
+    tier: t.tier,
+  })),
+  ...[
+    ['gemini-2.5-flash', 'Gemini 2.5 Flash'],
+    ['gemini-2.5-flash-lite', 'Gemini 2.5 Flash Lite'],
+    ['gemini-1.5-flash', 'Gemini 1.5 Flash'],
+    ['gemini-1.5-flash-8b', 'Gemini 1.5 Flash 8B'],
+  ].map(([id, label]) => ({ id, label, shortLabel: label.replace('Gemini ', ''), icon: Zap, color: 'text-sky-500', badge: '⚡', tier: 'free' }))
+];
 
 const SUGGESTION_CARDS = [
   {

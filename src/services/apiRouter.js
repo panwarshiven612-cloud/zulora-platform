@@ -25,9 +25,11 @@ export const GROQ_MODELS = Object.freeze({
   fastStream: 'llama-3.1-8b-instant',
   fallback: 'gemini-2.5-flash',
 });
+const GEMINI_FLASH_VARIANTS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-1.5-flash', 'gemini-1.5-flash-8b'];
 
 // ─── DYNAMIC GEMINI KEY POOL ─────────────────────────────────────────────────
-const GEMINI_KEYS = [getEnv('VITE_GEMINI_API_KEY'), ...Array.from({ length: 7 }, (_, index) => getEnv(`VITE_GEMINI_KEY_${index + 1}`) || getEnv(`VITE_GEMINI_API_KEY_${index + 1}`))];
+const GEMINI_KEYS = Array.from({ length: 7 }, (_, index) => getEnv(`VITE_GEMINI_KEY_${index + 1}`) || getEnv(`VITE_GEMINI_API_KEY_${index + 1}`));
+const LEGACY_GEMINI_KEYS = [getEnv('VITE_GEMINI_API_KEY')];
 
 export const getGeminiKeyPool = () => {
   const pool = [];
@@ -40,7 +42,7 @@ export const getGeminiKeyPool = () => {
     }
   };
 
-  GEMINI_KEYS.forEach(add);
+  [...GEMINI_KEYS, ...LEGACY_GEMINI_KEYS].forEach(add);
 
   return pool;
 };
@@ -75,9 +77,9 @@ export const MODEL_TIERS = {
     color: 'text-sky-500',
     geminiModel: 'gemini-2.5-flash',
     groqModel: GROQ_MODELS.primary,
-    cerebrasModel: 'llama3.1-8b',
-    openrouterModel: 'meta-llama/llama-3.3-70b-instruct',
-    mistralModel: 'mistral-small-latest',
+    cerebrasModel: 'llama3.1-70b',
+    openrouterModel: 'openrouter/free',
+    mistralModel: 'mistral-large-latest',
     maxTokens: 8192,
     tier: 'free',
   },
@@ -171,6 +173,60 @@ const fetchWithTimeout = async (url, options = {}, timeoutMs = 15000) => {
     throw err;
   }
 };
+
+async function readClientEventStream(response, readText, options = {}) {
+  if (!response.body) throw new Error('The provider did not return a readable stream.');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let output = '';
+  const consumeFrame = frame => {
+    const data = frame.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trim()).join('\n');
+    if (!data || data === '[DONE]') return;
+    let event;
+    try { event = JSON.parse(data); }
+    catch { throw new Error('The provider returned an invalid stream frame.'); }
+    if (event.error) throw new Error(event.error.message || 'The provider stream failed.');
+    const text = String(readText(event) || '');
+    if (!text) return;
+    output += text;
+    if (options.streamState) options.streamState.sent = true;
+    options.onToken?.(text);
+  };
+  const readChunk = async () => {
+    let timer;
+    try {
+      return await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => { timer = window.setTimeout(() => reject(new Error('The provider stream stalled.')), 12_000); })
+      ]);
+    } catch (error) {
+      try { await reader.cancel(error); } catch { /* The provider may already have closed the stream. */ }
+      throw error;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  };
+  try {
+    while (true) {
+      const { value, done } = await readChunk();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = frames.pop() || '';
+      frames.forEach(consumeFrame);
+      if (done) break;
+    }
+    if (buffer.trim()) consumeFrame(buffer);
+  } finally {
+    reader.releaseLock();
+  }
+  return output;
+}
+
+async function readOpenAiText(response, options = {}) {
+  if (options.onToken) return readClientEventStream(response, event => event.choices?.[0]?.delta?.content, options);
+  return (await response.json()).choices?.[0]?.message?.content || '';
+}
 
 const blobToDataUrl = blob => new Promise((resolve, reject) => {
   const reader = new FileReader();
@@ -307,6 +363,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
           model,
           messages,
           max_tokens: options.coding ? 8192 : tierConfig.maxTokens,
+          ...(options.onToken ? { stream: true } : {}),
           temperature: 0.7
         })
       },
@@ -314,8 +371,8 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
     );
 
     if (res.ok) {
-      const data = await res.json();
-      const text = data.choices?.[0]?.message?.content;
+      options.onProvider?.({ provider: 'Google Gemini', model });
+      const text = await readOpenAiText(res, options);
       if (text && text.trim().length > 0) {
         return {
           text,
@@ -325,12 +382,15 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
       }
     }
   } catch (openaiErr) {
-    // Silently proceed to native generateContent
+    if (options.streamState?.sent) {
+      options.onReset?.();
+      options.streamState.sent = false;
+    }
   }
 
   // 2. Try Native Google generateContent endpoint
   const nativeRes = await fetchWithTimeout(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:${options.onToken ? 'streamGenerateContent?alt=sse' : 'generateContent'}?key=${key}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -357,8 +417,10 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
     throw new Error(`Gemini HTTP ${nativeRes.status}: ${errData.error?.message || nativeRes.statusText}`);
   }
 
-  const nativeData = await nativeRes.json();
-  const text = nativeData.candidates?.[0]?.content?.parts?.[0]?.text;
+  options.onProvider?.({ provider: 'Google Gemini', model });
+  const text = options.onToken
+    ? await readClientEventStream(nativeRes, event => event.candidates?.[0]?.content?.parts?.map(part => part.text || '').join(''), options)
+    : (await nativeRes.json()).candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text || text.trim().length === 0) throw new Error('Gemini empty candidate response');
 
   return {
@@ -367,6 +429,35 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
     provider: 'Google Gemini'
   };
 };
+
+async function tryGeminiKeyWaterfall(prompt, contextMessages, preferredModel, options, errors) {
+  const keys = getGeminiKeyPool();
+  if (!keys.length) return null;
+  const models = [preferredModel];
+  for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
+    const model = models[modelIndex];
+    let modelUnavailable = false;
+    for (let offset = 0; offset < keys.length; offset += 1) {
+      const keyIndex = (activeGeminiIdx + offset) % keys.length;
+      try {
+        const result = await tryGeminiKey(keys[keyIndex], prompt, contextMessages, model, options);
+        activeGeminiIdx = (keyIndex + 1) % keys.length;
+        return result;
+      } catch (error) {
+        errors.push(`${model} (Gemini key ${keyIndex + 1}/${keys.length}): ${error.message}`);
+        if (/Gemini HTTP (404|503)|model.{0,30}(not found|unavailable)|model.{0,30}404/i.test(error.message || '')) modelUnavailable = true;
+        if (options.streamState?.sent) {
+          options.onReset?.();
+          options.streamState.sent = false;
+        }
+        activeGeminiIdx = (keyIndex + 1) % keys.length;
+      }
+    }
+    if (!modelUnavailable) break;
+    if (modelIndex === 0) models.push(...GEMINI_FLASH_VARIANTS.filter(candidate => candidate !== preferredModel));
+  }
+  return null;
+}
 
 /**
  * Groq Adapter
@@ -395,7 +486,8 @@ const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
         messages,
         ...(tier === 'think'
           ? { max_completion_tokens: tierConfig.maxTokens, reasoning_effort: 'high', reasoning_format: 'hidden', temperature: 0.6 }
-          : { max_tokens: options.coding ? 8192 : tierConfig.maxTokens, temperature: 0.7 })
+          : { max_tokens: options.coding ? 8192 : tierConfig.maxTokens, temperature: 0.7 }),
+        ...(options.onToken ? { stream: true } : {})
       })
     },
     12000
@@ -406,8 +498,8 @@ const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
     throw new Error(`Groq HTTP ${res.status}: ${err.error?.message || res.statusText}`);
   }
 
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content;
+  options.onProvider?.({ provider: 'Groq LPU', model });
+  const text = await readOpenAiText(res, options);
   if (!text) throw new Error('Groq returned empty text');
 
   return {
@@ -443,15 +535,16 @@ const tryCerebras = async (prompt, contextMessages, tier = 'pro', options = {}) 
         model,
         messages,
         max_tokens: options.coding ? 8192 : tierConfig.maxTokens,
-        temperature: 0.7
+        temperature: 0.7,
+        ...(options.onToken ? { stream: true } : {})
       })
     },
     12000
   );
 
   if (!res.ok) throw new Error(`Cerebras HTTP ${res.status}`);
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content;
+  options.onProvider?.({ provider: 'Cerebras', model });
+  const text = await readOpenAiText(res, options);
   if (!text) throw new Error('Cerebras empty response');
 
   return {
@@ -489,15 +582,16 @@ const tryOpenRouter = async (prompt, contextMessages, tier = 'pro', keyIdx = 0, 
       body: JSON.stringify({
         model,
         messages,
-        max_tokens: options.coding ? 8192 : tierConfig.maxTokens
+        max_tokens: options.coding ? 8192 : tierConfig.maxTokens,
+        ...(options.onToken ? { stream: true } : {})
       })
     },
     14000
   );
 
   if (!res.ok) throw new Error(`OpenRouter HTTP ${res.status}`);
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content;
+  options.onProvider?.({ provider: 'OpenRouter', model });
+  const text = await readOpenAiText(res, options);
   if (!text) throw new Error('OpenRouter empty response');
 
   return {
@@ -532,15 +626,16 @@ const tryMistral = async (prompt, contextMessages, tier = 'pro', options = {}) =
       body: JSON.stringify({
         model,
         messages,
-        max_tokens: options.coding ? 8192 : tierConfig.maxTokens
+        max_tokens: options.coding ? 8192 : tierConfig.maxTokens,
+        ...(options.onToken ? { stream: true } : {})
       })
     },
     12000
   );
 
   if (!res.ok) throw new Error(`Mistral HTTP ${res.status}`);
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content;
+  options.onProvider?.({ provider: 'Mistral AI', model });
+  const text = await readOpenAiText(res, options);
   if (!text) throw new Error('Mistral empty response');
 
   return {
@@ -622,10 +717,10 @@ export const apiRouter = {
     const tier = vision
       ? directGeminiModel ? requestedTier : (requestedTier === 'think' || requestedTier === 'pro' ? requestedTier : 'flash')
       : requestedTier === 'auto' ? (coding ? 'think' : isComplexPrompt(prompt) ? 'pro' : 'flash') : requestedTier;
-    options = { ...options, coding };
+    options = { ...options, coding, streamState: options.streamState || { sent: false } };
     const errors = [];
-    const geminiPool = getGeminiKeyPool();
     const messages = [...buildHistory(contextMessages), { role: 'user', content: prompt }];
+    const geminiModel = directGeminiModel ? requestedTier : (MODEL_TIERS[tier]?.geminiModel || MODEL_TIERS.flash.geminiModel);
 
     await ensureGenerationAllowance('chat', options.currentUser);
 
@@ -653,151 +748,60 @@ export const apiRouter = {
       if (serverResult?.text) return await syncUsage(serverResult, 'chat', options.currentUser);
     } catch (error) {
       if (isQuotaAuthorityError(error)) throw error;
-      if (options.onToken && emittedStreamTokens) throw error;
+      if (options.onToken && emittedStreamTokens) {
+        options.onReset?.();
+        emittedStreamTokens = false;
+      }
       if (options.onToken && error instanceof GenerationApiError && (error.status === 401 || error.status === 403)) throw error;
       console.warn('[Chat] Server generation route unavailable; trying browser providers:', error.message);
     }
 
-    const groqFirst = !vision && (requestedTier === 'auto' || requestedTier === 'groq');
-    if (groqFirst) {
-      try {
-        return await syncUsage(await withProviderRetry(() => tryGroq(prompt, contextMessages, 'groq', options), 2), 'chat', options.currentUser);
-      } catch (err) {
-        errors.push(`Groq LPU: ${err.message}`);
-      }
-      for (let attempt = 0; attempt < geminiPool.length; attempt++) {
-        const key = geminiPool[(activeGeminiIdx + attempt) % geminiPool.length];
-        try {
-          const result = await tryGeminiKey(key, prompt, contextMessages, 'flash', options);
-          activeGeminiIdx = (activeGeminiIdx + attempt + 1) % geminiPool.length;
-          return await syncUsage(result, 'chat', options.currentUser);
-        } catch (err) {
-          errors.push(`Gemini 2.5 Flash fallback[${attempt + 1}/${geminiPool.length}]: ${err.message}`);
-        }
-      }
-    }
-
-    if (!vision && directGeminiModel) {
-      for (let attempt = 0; attempt < geminiPool.length; attempt++) {
-        const key = geminiPool[(activeGeminiIdx + attempt) % geminiPool.length];
-        try {
-          const result = await tryGeminiKey(key, prompt, contextMessages, requestedTier, options);
-          activeGeminiIdx = (activeGeminiIdx + attempt + 1) % geminiPool.length;
-          return await syncUsage(result, 'chat', options.currentUser);
-        } catch (err) {
-          errors.push(`${requestedTier}[${attempt + 1}/${geminiPool.length}]: ${err.message}`);
-        }
-      }
-      throw new Error(`The selected Gemini model (${requestedTier}) is unavailable. Select Auto to use provider fallback.`);
-    }
-
-    // Explicit Llama selections stay within Groq and OpenRouter. Auto may continue to the wider fallback pool.
-    if (tier === 'llama') {
-      try {
-        return await syncUsage(await withProviderRetry(() => tryGroq(prompt, contextMessages, tier, options), 2), 'chat', options.currentUser);
-      } catch (err) {
-        errors.push(`Groq Llama 3.3 70B: ${err.message}`);
-      }
-      for (let i = 0; i < OPENROUTER_KEYS.length; i++) {
-        try {
-          return await syncUsage(await withProviderRetry(() => tryOpenRouter(prompt, contextMessages, tier, i, options), 2), 'chat', options.currentUser);
-        } catch (err) {
-          errors.push(`OpenRouter Llama 3.3 70B[${i}]: ${err.message}`);
-        }
-      }
-      if (requestedTier !== 'auto') throw new Error('Groq and OpenRouter Llama 3.3 70B are temporarily unavailable.');
-    }
-
-    if (tier === 'think') {
-      for (let i = 0; i < OPENROUTER_KEYS.length; i++) {
-        try {
-          return await syncUsage(await withProviderRetry(() => tryOpenRouter(prompt, contextMessages, tier, i, options), 2), 'chat', options.currentUser);
-        } catch (err) {
-          errors.push(`OpenRouter DeepSeek R1[${i}]: ${err.message}`);
-        }
-      }
-      for (let attempt = 0; attempt < geminiPool.length; attempt++) {
-        const key = geminiPool[(activeGeminiIdx + attempt) % geminiPool.length];
-        try {
-          const result = await tryGeminiKey(key, prompt, contextMessages, tier, options);
-          activeGeminiIdx = (activeGeminiIdx + attempt + 1) % geminiPool.length;
-          return await syncUsage(result, 'chat', options.currentUser);
-        } catch (err) {
-          errors.push(`Gemini 2.5 Pro[${attempt + 1}/${geminiPool.length}]: ${err.message}`);
-        }
-      }
-      for (let attempt = 0; attempt < geminiPool.length; attempt++) {
-        const key = geminiPool[(activeGeminiIdx + attempt) % geminiPool.length];
-        try {
-          const result = await tryGeminiKey(key, prompt, contextMessages, 'flash', options);
-          activeGeminiIdx = (activeGeminiIdx + attempt + 1) % geminiPool.length;
-          return await syncUsage(result, 'chat', options.currentUser);
-        } catch (err) {
-          errors.push(`Gemini 2.5 Flash[${attempt + 1}/${geminiPool.length}]: ${err.message}`);
-        }
+    const providerOrder = requestedTier === 'groq' || requestedTier === 'llama'
+      ? ['groq', 'gemini', 'cerebras', 'mistral', 'openrouter']
+      : ['gemini', 'groq', 'cerebras', 'mistral', 'openrouter'];
+    for (const provider of providerOrder) {
+      if (provider === 'gemini') {
+        const result = await tryGeminiKeyWaterfall(prompt, contextMessages, geminiModel, options, errors);
+        if (result) return await syncUsage(result, 'chat', options.currentUser);
+        continue;
       }
       try {
-        return await syncUsage(await withProviderRetry(() => tryGroq(prompt, contextMessages, tier, options), 2), 'chat', options.currentUser);
-      } catch (err) {
-        errors.push(`Groq reasoning: ${err.message}`);
-      }
-      throw new Error('DeepSeek R1, Groq reasoning, and Gemini 2.5 Pro are temporarily unavailable.');
-    }
-
-    if (!groqFirst) {
-      for (let attempt = 0; attempt < geminiPool.length; attempt++) {
-        const key = geminiPool[(activeGeminiIdx + attempt) % geminiPool.length];
-        try {
-          const result = await tryGeminiKey(key, prompt, contextMessages, tier, options);
-          activeGeminiIdx = (activeGeminiIdx + attempt + 1) % geminiPool.length;
-          return await syncUsage(result, 'chat', options.currentUser);
-        } catch (err) {
-          errors.push(`Gemini[${attempt + 1}/${geminiPool.length}]: ${err.message}`);
-        }
-      }
-    }
-
-    if (vision) {
-      throw new Error('Gemini image analysis is temporarily unavailable. Please retry shortly.');
-    }
-
-    // ── 2. GROQ FAILOVER ──
-    if (!groqFirst) {
-      try {
-        return await syncUsage(await withProviderRetry(() => tryGroq(prompt, contextMessages, tier, options), 2), 'chat', options.currentUser);
-      } catch (err) {
-        errors.push(`Groq: ${err.message}`);
+        const result = provider === 'groq'
+          ? await withProviderRetry(() => tryGroq(prompt, contextMessages, 'auto', options), 2)
+          : provider === 'cerebras'
+            ? await withProviderRetry(() => tryCerebras(prompt, contextMessages, 'auto', options), 2)
+            : provider === 'mistral'
+              ? await withProviderRetry(() => tryMistral(prompt, contextMessages, 'auto', options), 2)
+              : await (async () => {
+                let lastError;
+                for (let keyIndex = 0; keyIndex < OPENROUTER_KEYS.length; keyIndex += 1) {
+                  try { return await withProviderRetry(() => tryOpenRouter(prompt, contextMessages, 'auto', keyIndex, options), 2); }
+                  catch (error) {
+                    lastError = error;
+                    errors.push(`OpenRouter key ${keyIndex + 1}/${OPENROUTER_KEYS.length}: ${error.message}`);
+                    if (options.streamState.sent) { options.onReset?.(); options.streamState.sent = false; }
+                  }
+                }
+                throw lastError || new Error('No OpenRouter keys are configured.');
+              })();
+        return await syncUsage(result, 'chat', options.currentUser);
+      } catch (error) {
+        errors.push(`${provider}: ${error.message}`);
+        if (options.streamState.sent) { options.onReset?.(); options.streamState.sent = false; }
       }
     }
 
-    // ── 3. CEREBRAS FAILOVER ──
+    // Last public fallback after every configured API-key provider has been attempted.
     try {
-      return await syncUsage(await withProviderRetry(() => tryCerebras(prompt, contextMessages, tier, options), 2), 'chat', options.currentUser);
-    } catch (err) {
-      errors.push(`Cerebras: ${err.message}`);
-    }
-
-    // ── 4. OPENROUTER KEYS (1 & 2) ──
-    for (let i = 0; i < OPENROUTER_KEYS.length; i++) {
-      try {
-        return await syncUsage(await withProviderRetry(() => tryOpenRouter(prompt, contextMessages, tier, i, options), 2), 'chat', options.currentUser);
-      } catch (err) {
-        errors.push(`OpenRouter[${i}]: ${err.message}`);
+      const result = await tryPollinationsText(prompt, options, contextMessages);
+      if (options.onToken) {
+        options.onProvider?.({ provider: result.provider, model: result.model });
+        options.onToken(result.text);
+        options.streamState.sent = true;
       }
-    }
-
-    // ── 5. MISTRAL FAILOVER ──
-    try {
-      return await syncUsage(await withProviderRetry(() => tryMistral(prompt, contextMessages, tier, options), 2), 'chat', options.currentUser);
-    } catch (err) {
-      errors.push(`Mistral: ${err.message}`);
-    }
-
-    // ── 6. POLLINATIONS TEXT FAILOVER ──
-    try {
-      return await syncUsage(await tryPollinationsText(prompt, options, contextMessages), 'chat', options.currentUser);
-    } catch (err) {
-      errors.push(`Pollinations: ${err.message}`);
+      return await syncUsage(result, 'chat', options.currentUser);
+    } catch (error) {
+      errors.push(`Pollinations: ${error.message}`);
     }
 
     console.error('[Zulora Waterfall Exhausted]', errors);
