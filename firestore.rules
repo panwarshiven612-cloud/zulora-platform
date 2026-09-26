@@ -32,6 +32,10 @@ service cloud.firestore {
       match /assets/{assetId} {
         allow read, write: if isOwner(uid);
       }
+
+      match /vault/{vaultId} {
+        allow read, write: if isOwner(uid);
+      }
     }
   }
 }

@@ -13,7 +13,7 @@
  *
  * Founded & Created by Shiven Panwar — Zulora AI
  */
-import { requestGeneration, trackSuccessfulUsage, checkGenerationAllowance, GenerationApiError } from './generationApi';
+import { requestGeneration, requestGenerationStream, trackSuccessfulUsage, checkGenerationAllowance, GenerationApiError } from './generationApi';
 import { generateVideo as generateVideoWithProviders } from './videoService';
 import { buildSystemPrompt } from './systemPrompt';
 
@@ -50,7 +50,6 @@ const OPENROUTER_KEYS = [
 ].filter(Boolean);
 const MISTRAL_KEY = getEnv('VITE_MISTRAL_KEY');
 const POLLINATIONS_KEY = getEnv('VITE_POLLINATIONS_KEY');
-const HUGGINGFACE_KEY = getEnv('VITE_HUGGINGFACE_KEY');
 const FAL_KEY = getEnv('VITE_FAL_KEY');
 const CLOUDFLARE_ACCT = getEnv('VITE_CLOUDFLARE_ACCOUNT_ID');
 const CLOUDFLARE_TOKEN = getEnv('VITE_CLOUDFLARE_API_TOKEN');
@@ -154,7 +153,7 @@ const fetchWithTimeout = async (url, options = {}, timeoutMs = 15000) => {
 const buildHistory = (contextMessages = []) =>
   contextMessages.map((m) => ({ role: m.role, content: m.content }));
 
-const isCodingPrompt = prompt => /(?:\bcode\b|\bhtml\b|\bcss\b|\bjs\b|\bjavascript\b|\breact\b|\bfunction\b|\bbuild\s+(?:a\s+)?ui\b|\b(?:1000|\d{4,})\s*(?:\+\s*)?lines?\b|\bfull\s+(?:landing\s+page|website|web\s+app|application)\b|\binteractive\s+app\b|\bcomplete\s+(?:landing\s+page|website|web\s+app|application)\b)/i.test(String(prompt || ''));
+const isCodingPrompt = prompt => /(?:\bcode\b|\bhtml\b|\bcss\b|\bjs\b|\bjavascript\b|\breact\b|\bfunction\b|\bbuild\s+(?:a\s+)?ui\b|\bwebsite\b|\bwebpage\b|\bweb\s+app\b|\blanding\s+page\b|\b(?:1000|\d{4,})\s*(?:\+\s*)?lines?\b|\bfull\s+(?:landing\s+page|website|web\s+app|application)\b|\binteractive\s+app\b|\bcomplete\s+(?:landing\s+page|website|web\s+app|application)\b)/i.test(String(prompt || ''));
 const isComplexPrompt = prompt => /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(String(prompt || ''));
 const normalizeModelPreference = value => {
   const selected = String(value || 'auto').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
@@ -204,7 +203,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
   const model = tierConfig.geminiModel;
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain) },
+    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt },
   ];
@@ -226,7 +225,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
         body: JSON.stringify({
           model,
           messages,
-          max_tokens: tierConfig.maxTokens,
+          max_tokens: options.coding ? 8192 : tierConfig.maxTokens,
           temperature: 0.7
         })
       },
@@ -262,7 +261,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
           })),
           { role: 'user', parts: [{ text: prompt }, ...imageParts] }
         ],
-        system_instruction: { parts: [{ text: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain) }] },
+        system_instruction: { parts: [{ text: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault) }] },
         generationConfig: {
           maxOutputTokens: options.coding ? 8192 : tierConfig.maxTokens,
           temperature: 0.7
@@ -297,7 +296,7 @@ const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
   const model = tierConfig.groqModel;
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain) },
+    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt }
   ];
@@ -315,7 +314,7 @@ const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
         messages,
         ...(tier === 'think'
           ? { max_completion_tokens: tierConfig.maxTokens, reasoning_effort: 'high', reasoning_format: 'hidden', temperature: 0.6 }
-          : { max_tokens: tierConfig.maxTokens, temperature: 0.7 })
+          : { max_tokens: options.coding ? 8192 : tierConfig.maxTokens, temperature: 0.7 })
       })
     },
     12000
@@ -346,7 +345,7 @@ const tryCerebras = async (prompt, contextMessages, tier = 'pro', options = {}) 
   const model = tierConfig.cerebrasModel;
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain) },
+    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt }
   ];
@@ -362,7 +361,7 @@ const tryCerebras = async (prompt, contextMessages, tier = 'pro', options = {}) 
       body: JSON.stringify({
         model,
         messages,
-        max_tokens: tierConfig.maxTokens,
+        max_tokens: options.coding ? 8192 : tierConfig.maxTokens,
         temperature: 0.7
       })
     },
@@ -391,7 +390,7 @@ const tryOpenRouter = async (prompt, contextMessages, tier = 'pro', keyIdx = 0, 
   const model = tierConfig.openrouterModel;
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain) },
+    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt }
   ];
@@ -409,7 +408,7 @@ const tryOpenRouter = async (prompt, contextMessages, tier = 'pro', keyIdx = 0, 
       body: JSON.stringify({
         model,
         messages,
-        max_tokens: tierConfig.maxTokens
+        max_tokens: options.coding ? 8192 : tierConfig.maxTokens
       })
     },
     14000
@@ -436,7 +435,7 @@ const tryMistral = async (prompt, contextMessages, tier = 'pro', options = {}) =
   const model = tierConfig.mistralModel;
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain) },
+    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt }
   ];
@@ -452,7 +451,7 @@ const tryMistral = async (prompt, contextMessages, tier = 'pro', options = {}) =
       body: JSON.stringify({
         model,
         messages,
-        max_tokens: tierConfig.maxTokens
+        max_tokens: options.coding ? 8192 : tierConfig.maxTokens
       })
     },
     12000
@@ -475,7 +474,7 @@ const tryMistral = async (prompt, contextMessages, tier = 'pro', options = {}) =
  */
 const tryPollinationsText = async (prompt, options = {}, contextMessages = []) => {
   const messages = [
-    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain) },
+    { role: 'system', content: buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault) },
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt }
   ];
@@ -548,19 +547,29 @@ export const apiRouter = {
 
     await ensureGenerationAllowance('chat', options.currentUser);
 
+    let emittedStreamTokens = false;
     try {
-      const serverResult = await requestGeneration('chat', {
+      const chatPayload = {
         messages,
         contextMemory: options.contextMemory,
         aiBrain: options.aiBrain || null,
+        userVault: options.userVault || null,
         modelPreference: requestedTier === 'auto' ? 'auto' : tier,
         enableWebSearch: Boolean(options.webSearch),
         attachments: options.attachments || [],
         coding
-      }, options.currentUser);
+      };
+      const serverResult = options.onToken
+        ? await requestGenerationStream(chatPayload, options.currentUser, token => {
+          if (token) emittedStreamTokens = true;
+          options.onToken(token);
+        })
+        : await requestGeneration('chat', chatPayload, options.currentUser);
       if (serverResult?.text) return await syncUsage(serverResult, 'chat', options.currentUser);
     } catch (error) {
       if (isQuotaAuthorityError(error)) throw error;
+      if (options.onToken && emittedStreamTokens) throw error;
+      if (options.onToken && error instanceof GenerationApiError && (error.status === 401 || error.status === 403)) throw error;
       console.warn('[Chat] Server generation route unavailable; trying browser providers:', error.message);
     }
 
@@ -687,6 +696,8 @@ export const apiRouter = {
       aspectRatio = '1:1',
       currentUser
     } = options;
+    const imageEngine = options.imageEngine || 'flux-quick';
+    const isHuggingFaceEngine = ['hf-flux-dev', 'hf-sdxl'].includes(imageEngine);
 
     await ensureGenerationAllowance('image', currentUser);
 
@@ -694,6 +705,7 @@ export const apiRouter = {
       const serverResult = await requestGeneration('image', {
         prompt,
         aspectRatio,
+        imageEngine,
         width,
         height,
         sourceImage: options.sourceImage || ''
@@ -701,7 +713,11 @@ export const apiRouter = {
       if (serverResult?.url) return await syncUsage(serverResult, 'image', currentUser);
     } catch (error) {
       if (isQuotaAuthorityError(error)) throw error;
+      if (isHuggingFaceEngine) throw error;
       console.warn('[Image] Server generation route unavailable; trying browser providers:', error.message);
+    }
+    if (isHuggingFaceEngine) {
+      throw new Error('Hugging Face image models require the authenticated server route and a configured server-side HUGGINGFACE_API_KEY.');
     }
 
     let targetWidth = width;
@@ -710,6 +726,10 @@ export const apiRouter = {
     else if (aspectRatio === '9:16') { targetWidth = 720; targetHeight = 1280; }
     else if (aspectRatio === '4:3') { targetWidth = 1024; targetHeight = 768; }
     else if (aspectRatio === '3:4') { targetWidth = 768; targetHeight = 1024; }
+    if (imageEngine === 'pollinations-hd') {
+      targetWidth = Math.round(targetWidth * 1.5);
+      targetHeight = Math.round(targetHeight * 1.5);
+    }
 
     const seed = Math.floor(Math.random() * 9999999);
     // Keep each generation call isolated to the current Image Studio prompt.
@@ -727,7 +747,7 @@ export const apiRouter = {
         url: fluxUrl,
         imageUrl: fluxUrl,
         provider: 'Pollinations FLUX',
-        model: 'FLUX.1-Schnell',
+        model: imageEngine === 'pollinations-hd' ? 'Pollinations HD FLUX' : 'FLUX.1-Schnell',
         prompt: prompt.trim(),
         enhancedPrompt: styledPrompt,
         seed
@@ -773,46 +793,6 @@ export const apiRouter = {
         }
       } catch (falErr) {
         console.warn('[Image] Fal AI failed:', falErr.message);
-      }
-    }
-
-    // ── Engine 3: HuggingFace FLUX.1-schnell ──
-    if (HUGGINGFACE_KEY) {
-      try {
-        const hfRes = await fetchWithTimeout(
-          'https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell',
-          {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${HUGGINGFACE_KEY}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ inputs: styledPrompt })
-          },
-          30000
-        );
-        if (hfRes.ok) {
-          const blob = await hfRes.blob();
-          if (blob.type.startsWith('image/') && blob.size > 2000) {
-            const dataUrl = await new Promise((resolve, reject) => {
-              const r = new FileReader();
-              r.onload = () => resolve(r.result);
-              r.onerror = reject;
-              r.readAsDataURL(blob);
-            });
-            return await syncUsage({
-              url: dataUrl,
-              imageUrl: dataUrl,
-              provider: 'HuggingFace',
-              model: 'FLUX.1-Schnell',
-              prompt: prompt.trim(),
-              enhancedPrompt: styledPrompt,
-              seed
-            }, 'image', currentUser);
-          }
-        }
-      } catch (hfErr) {
-        console.warn('[Image] HuggingFace failed:', hfErr.message);
       }
     }
 

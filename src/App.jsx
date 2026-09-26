@@ -12,6 +12,7 @@ const ChatInterface = lazy(() => import('./components/ChatInterface'));
 const ImageGenerator = lazy(() => import('./components/ImageGenerator'));
 const VideoGenerator = lazy(() => import('./components/VideoGenerator'));
 const AiBrain = lazy(() => import('./components/AiBrain'));
+const UserVault = lazy(() => import('./components/UserVault'));
 
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 
@@ -55,6 +56,11 @@ export const App = () => {
     setPathname(path);
   }, []);
 
+  const selectTab = useCallback(tab => {
+    setActiveTab(tab);
+    if (currentUser) navigate(tab === 'vault' ? '/vault' : '/dashboard');
+  }, [currentUser, navigate]);
+
   useEffect(() => {
     const handlePopState = () => setPathname(window.location.pathname);
     window.addEventListener('popstate', handlePopState);
@@ -86,15 +92,18 @@ export const App = () => {
   // ── Post-login redirect logic ──────────────────────────────────────────────
   useEffect(() => {
     if (loading) return;
-    // If authenticated and not on dashboard → push to /dashboard
-    if (currentUser && pathname !== '/dashboard') {
+    if (currentUser && !['/dashboard', '/vault'].includes(pathname)) {
       navigate('/dashboard');
     }
-    // If not authenticated and on protected route → push to /signin
-    if (!currentUser && (pathname === '/dashboard' || pathname === '/settings')) {
+    if (!currentUser && ['/dashboard', '/vault', '/settings'].includes(pathname)) {
       navigate('/signin');
     }
   }, [currentUser, loading, navigate, pathname]);
+
+  useEffect(() => {
+    if (pathname === '/vault') setActiveTab('vault');
+    else if (pathname === '/dashboard' && activeTab === 'vault') setActiveTab('chat');
+  }, [pathname, activeTab]);
 
   const goToDashboard = useCallback(() => navigate('/dashboard'), [navigate]);
 
@@ -115,11 +124,13 @@ export const App = () => {
     if (currentUser?.uid) localStorage.removeItem(`zulora_active_chat_${currentUser.uid}`);
     setActiveSession(null);
     setActiveTab('chat');
+    if (pathname === '/vault') navigate('/dashboard');
   };
   const handleSelectChat = (session) => {
     if (currentUser?.uid && session?.id) localStorage.setItem(`zulora_active_chat_${currentUser.uid}`, session.id);
     setActiveSession(session);
     setActiveTab('chat');
+    if (pathname === '/vault') navigate('/dashboard');
   };
   const handleUpdateSession = (updatedSession) => {
     if (currentUser?.uid && updatedSession?.id) localStorage.setItem(`zulora_active_chat_${currentUser.uid}`, updatedSession.id);
@@ -137,7 +148,7 @@ export const App = () => {
         {/* Navbar */}
         <Navbar
           activeTab={activeTab}
-          setActiveTab={setActiveTab}
+          setActiveTab={selectTab}
           onOpenMobileSidebar={() => setIsMobileSidebarOpen(true)}
           onOpenSettings={() => setIsSettingsOpen(true)}
         />
@@ -151,7 +162,7 @@ export const App = () => {
             onUpdateSession={handleSidebarSessionUpdate}
             isMobileOpen={isMobileSidebarOpen}
             onCloseMobile={() => setIsMobileSidebarOpen(false)}
-            setActiveTab={setActiveTab}
+            setActiveTab={selectTab}
           />
 
           <main className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden relative">
@@ -165,6 +176,7 @@ export const App = () => {
             {activeTab === 'image' && <ImageGenerator />}
             {activeTab === 'video' && <VideoGenerator />}
             {activeTab === 'brain' && <AiBrain />}
+            {activeTab === 'vault' && <UserVault />}
           </main>
         </div>
 

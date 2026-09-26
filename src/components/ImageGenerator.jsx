@@ -38,13 +38,21 @@ const ASPECT_RATIOS = [
   { id: '3:4', label: '3:4 Portrait', icon: '▯' }
 ];
 
+const IMAGE_MODELS = [
+  { id: 'flux-quick', label: 'FLUX.1 Quick' },
+  { id: 'pollinations-hd', label: 'Pollinations HD' },
+  { id: 'hf-flux-dev', label: 'Hugging Face · FLUX.1-dev', pro: true },
+  { id: 'hf-sdxl', label: 'Hugging Face · Stable Diffusion XL', pro: true }
+];
+
 export const ImageGenerator = () => {
-  const { currentUser, limits, usage, checkUsage, recordUsage, setIsUsageModalOpen } = useAuth();
+  const { currentUser, limits, usage, checkUsage, recordUsage, isPro, setIsUsageModalOpen, setIsPricingModalOpen } = useAuth();
 
   const [prompt, setPrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
   const [selectedStyle, setSelectedStyle] = useState('Photorealistic');
   const [aspectRatio, setAspectRatio] = useState('1:1');
+  const [imageEngine, setImageEngine] = useState('flux-quick');
   const [loading, setLoading] = useState(false);
   const [gallery, setGallery] = useState([]);
   const [lightboxImage, setLightboxImage] = useState(null);
@@ -88,6 +96,7 @@ export const ImageGenerator = () => {
         negativePrompt: negativePrompt.trim(),
         style: selectedStyle,
         aspectRatio,
+        imageEngine,
         sourceImage: sourceImage?.dataUrl || '',
         currentUser
       });
@@ -111,7 +120,10 @@ export const ImageGenerator = () => {
       setGallery(prev => [saved, ...prev]);
     } catch (err) {
       console.error('Image generation error:', err);
-      if (err.status === 403) setIsUsageModalOpen(true);
+      if (err.status === 403) {
+        if (err.payload?.upgradeRequired) setIsPricingModalOpen(true);
+        else setIsUsageModalOpen(true);
+      }
       alert(err.message || 'Encountered an issue generating image.');
     } finally {
       setLoading(false);
@@ -214,6 +226,29 @@ export const ImageGenerator = () => {
               className="w-full p-4 rounded-2xl bg-white/80 dark:bg-slate-900/80 border border-slate-300 dark:border-slate-700 text-xs sm:text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 resize-none transition-all shadow-inner"
             />
           </div>
+        </div>
+
+        {/* Image Model Selection */}
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+          <label htmlFor="image-model" className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">Image engine</label>
+          <select
+            id="image-model"
+            value={imageEngine}
+            onChange={event => {
+              const nextEngine = event.target.value;
+              if (IMAGE_MODELS.find(model => model.id === nextEngine)?.pro && !isPro) {
+                setIsPricingModalOpen(true);
+                return;
+              }
+              setImageEngine(nextEngine);
+            }}
+            className="w-full sm:max-w-sm px-3 py-2 rounded-xl bg-white/80 dark:bg-slate-900/80 border border-slate-300 dark:border-slate-700 text-sm text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500/30"
+          >
+            {IMAGE_MODELS.map(model => <option key={model.id} value={model.id}>{model.label}{model.pro && !isPro ? ' · Pro' : ''}</option>)}
+          </select>
+          {IMAGE_MODELS.find(model => model.id === imageEngine)?.pro && (
+            <span className="text-[11px] text-slate-500 dark:text-slate-400">Generated securely with a server-side Hugging Face key.</span>
+          )}
         </div>
 
         {/* Style Presets Carousel */}

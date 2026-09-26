@@ -250,6 +250,41 @@ function plainMessages(messages, systemPrompt) {
   ];
 }
 
+async function readProviderEventStream(response, readToken, onToken, streamState) {
+  if (!response.body) throw new Error('The model returned no response stream.');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let output = '';
+  const consume = frame => {
+    const data = frame.split(/\r?\n/).filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trim()).join('\n');
+    if (!data || data === '[DONE]') return;
+    const event = JSON.parse(data);
+    const token = readToken(event);
+    if (typeof token === 'string' && token) {
+      output += token;
+      streamState.sent = true;
+      onToken(token);
+    }
+    if (event.error?.message) throw new Error(event.error.message);
+  };
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = frames.pop() || '';
+      frames.forEach(consume);
+      if (done) break;
+    }
+    if (buffer.trim()) consume(buffer);
+  } finally {
+    reader.releaseLock();
+  }
+  return output;
+}
+
 async function tryOpenAiProvider(provider, messages, options = {}) {
   const configs = {
     groq: { url: 'https://api.groq.com/openai/v1/chat/completions', model: options.model || 'llama-3.3-70b-versatile', label: 'Groq' },
@@ -276,6 +311,7 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
         model: config.model,
         messages: contentMessages,
         temperature: options.reasoning ? 0.6 : 0.7,
+        ...(options.stream ? { stream: true } : {}),
         ...(options.reasoning && provider === 'groq'
           ? { max_completion_tokens: options.maxTokens || 8192, reasoning_effort: 'high', reasoning_format: 'hidden' }
           : { max_tokens: options.maxTokens || (options.coding ? 8192 : 4096) })
@@ -285,9 +321,10 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
         body: JSON.stringify(requestBody)
       }, 15_000);
       if (response.ok) {
-        const data = await response.json();
-        const text = data.choices?.[0]?.message?.content;
-        if (typeof text === 'string' && text.trim()) {
+        const text = options.stream
+          ? await readProviderEventStream(response, event => event.choices?.[0]?.delta?.content, options.onToken, options.streamState)
+          : (await response.json()).choices?.[0]?.message?.content;
+        if (typeof text === 'string' && (text.trim() || (options.stream && options.streamState?.sent))) {
           apiKeyPool.succeeded(provider, index);
           return { text: text.trim(), provider: `${config.label}${provider === 'openrouter' ? ` (Key #${index + 1})` : ''}`, model: config.model };
         }
@@ -297,6 +334,7 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
     } catch (error) {
       console.warn(`${config.label} text request failed:`, error.message);
       apiKeyPool.failed(provider, index);
+      if (options.stream && options.streamState?.sent) throw error;
     }
   }
   return null;
@@ -314,7 +352,8 @@ async function tryGemini(messages, options = {}) {
   for (const { key, index } of apiKeyPool.candidates('gemini')) {
     try {
       const model = options.model || 'gemini-2.5-flash';
-      const response = await fetchProviderWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      const endpoint = options.stream ? 'streamGenerateContent?alt=sse' : 'generateContent';
+      const response = await fetchProviderWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${model}:${endpoint}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
         body: JSON.stringify({
           contents,
@@ -324,12 +363,19 @@ async function tryGemini(messages, options = {}) {
         })
       }, 16_000);
       if (response.ok) {
-        const data = await response.json();
+        let data;
+        let text;
+        if (options.stream) {
+          text = await readProviderEventStream(response, event => event.candidates?.[0]?.content?.parts?.map(part => part.text || '').join(''), options.onToken, options.streamState);
+          data = {};
+        } else {
+          data = await response.json();
+          text = data.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('').trim();
+        }
         const candidate = data.candidates?.[0];
-        const text = candidate?.content?.parts?.map(part => part.text || '').join('').trim();
-        if (text) {
+        if (text || (options.stream && options.streamState?.sent)) {
           apiKeyPool.succeeded('gemini', index);
-          const grounding = candidate.groundingMetadata || {};
+          const grounding = candidate?.groundingMetadata || {};
           const chunks = grounding.groundingChunks || [];
           const sources = chunks.map(chunk => chunk.web && ({ title: chunk.web.title || chunk.web.uri, url: chunk.web.uri })).filter(Boolean);
           return { text, provider: `Google Gemini (Key #${index + 1})`, model, sources };
@@ -340,6 +386,7 @@ async function tryGemini(messages, options = {}) {
     } catch (error) {
       console.warn('Google Gemini text request failed:', error.message);
       apiKeyPool.failed('gemini', index);
+      if (options.stream && options.streamState?.sent) throw error;
     }
   }
   return null;
@@ -369,15 +416,15 @@ function chooseChatOrder(preference, vision, search, autoSelected = false) {
   return mapped ? [mapped, ...CHAT_ORDER.filter(provider => provider !== mapped)] : CHAT_ORDER;
 }
 
-async function generateChat(body) {
-  const systemPrompt = buildSystemPrompt(body.contextMemory, new Date(), body.aiBrain);
+async function generateChat(body, streamOptions = {}) {
+  const systemPrompt = buildSystemPrompt(body.contextMemory, new Date(), body.aiBrain, body.userVault);
   const messages = plainMessages(body.messages, systemPrompt);
   const attachments = attachmentParts(body.attachments);
   if (body.attachments?.length && !attachments.length) throw new Error('The attached image format is unsupported. Use PNG, JPEG, WebP, or GIF.');
   const vision = attachments.length > 0;
   const requestedPreference = normalizeModelPreference(body.modelPreference || body.model);
   const latestUserPrompt = [...messages].reverse().find(message => message.role === 'user')?.content || '';
-  const coding = Boolean(body.coding) || /(?:\bcode\b|\bhtml\b|\bcss\b|\bjs\b|\bjavascript\b|\breact\b|\bfunction\b|\bbuild\s+(?:a\s+)?ui\b|\b(?:1000|\d{4,})\s*(?:\+\s*)?lines?\b|\bfull\s+(?:landing\s+page|website|web\s+app|application)\b|\binteractive\s+app\b|\bcomplete\s+(?:landing\s+page|website|web\s+app|application)\b)/i.test(latestUserPrompt);
+  const coding = Boolean(body.coding) || /(?:\bcode\b|\bhtml\b|\bcss\b|\bjs\b|\bjavascript\b|\breact\b|\bfunction\b|\bbuild\s+(?:a\s+)?ui\b|\bwebsite\b|\bwebpage\b|\bweb\s+app\b|\blanding\s+page\b|\b(?:1000|\d{4,})\s*(?:\+\s*)?lines?\b|\bfull\s+(?:landing\s+page|website|web\s+app|application)\b|\binteractive\s+app\b|\bcomplete\s+(?:landing\s+page|website|web\s+app|application)\b)/i.test(latestUserPrompt);
   const complex = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(requestedPreference) ||
     /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(latestUserPrompt);
   const preference = requestedPreference === 'auto' ? (coding ? 'llama' : complex ? 'pro' : 'flash') : requestedPreference;
@@ -387,7 +434,7 @@ async function generateChat(body) {
   const order = chooseChatOrder(preference, vision, Boolean(body.enableWebSearch), requestedPreference === 'auto');
   for (const provider of order) {
     let result = provider === 'gemini'
-      ? await tryGemini(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: vision && !useProModel ? 'gemini-2.5-flash' : geminiModel, coding })
+      ? await tryGemini(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: vision && !useProModel ? 'gemini-2.5-flash' : geminiModel, coding, ...streamOptions })
       : await tryOpenAiProvider(provider, messages, {
         attachments: body.attachments,
         vision,
@@ -400,7 +447,8 @@ async function generateChat(body) {
               ? 'meta-llama/llama-3.3-70b-instruct'
               : undefined,
         reasoning: preference === 'think' && provider === 'groq',
-        maxTokens: coding || useProModel ? 8192 : 4096
+        maxTokens: coding || useProModel ? 8192 : 4096,
+        ...streamOptions
       });
     if (result) return result;
   }
@@ -467,7 +515,7 @@ async function geminiImageEdit(prompt, sourceImage, aspectRatio) {
   return null;
 }
 
-async function pollinationsImage(prompt, sourceImage, aspectRatio, seed) {
+async function pollinationsImage(prompt, sourceImage, aspectRatio, seed, quality = 'quick') {
   const key = providerKeys.pollinations;
   if (!key) return null;
   if (sourceImage) {
@@ -484,7 +532,7 @@ async function pollinationsImage(prompt, sourceImage, aspectRatio, seed) {
     return responseImage(response, key);
   }
   const [ratioW, ratioH] = String(aspectRatio || '1:1').split(':').map(Number);
-  const longest = 1024;
+  const longest = quality === 'hd' ? 1536 : 1024;
   const width = ratioW >= ratioH ? longest : Math.round(longest * ratioW / ratioH);
   const height = ratioH >= ratioW ? longest : Math.round(longest * ratioH / ratioW);
   const url = `https://gen.pollinations.ai/image/${encodeURIComponent(prompt)}?model=flux&width=${width}&height=${height}&seed=${encodeURIComponent(seed || 0)}`;
@@ -540,9 +588,9 @@ async function cloudflareImage(prompt, aspectRatio) {
   return `data:image/png;base64,${image}`;
 }
 
-async function huggingfaceImage(prompt) {
+async function huggingfaceImage(prompt, modelId = 'black-forest-labs/FLUX.1-schnell') {
   if (!providerKeys.huggingface) return null;
-  const response = await fetchWithTimeout('https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell', {
+  const response = await fetchWithTimeout(`https://router.huggingface.co/hf-inference/models/${modelId.split('/').map(encodeURIComponent).join('/')}`, {
     method: 'POST', headers: { Authorization: `Bearer ${providerKeys.huggingface}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ inputs: prompt })
   }, 25_000);
   if (!response.ok) throw new Error('Hugging Face image generation failed.');
@@ -577,10 +625,30 @@ async function replicateImage(prompt, aspectRatio) {
   return url;
 }
 
-async function generateImage(body) {
+async function generateImage(body, profileTier = null) {
   const prompt = String(body.prompt || '').trim();
   const sourceImage = String(body.sourceImage || '');
+  const imageEngine = String(body.imageEngine || 'flux-quick');
   if (!prompt) throw new Error('Write a prompt before generating an image.');
+  if (['hf-flux-dev', 'hf-sdxl'].includes(imageEngine)) {
+    const normalizedTier = String(profileTier || '').toLowerCase().replace(/[ _-]/g, '');
+    if (!normalizedTier.includes('pro') && !normalizedTier.includes('ultra')) {
+      throw new Error('Hugging Face image models require a verified Pro or Ultra subscription.');
+    }
+    if (sourceImage) throw new Error('The selected Hugging Face model supports text-to-image generation, not reference-image editing.');
+    const modelId = imageEngine === 'hf-flux-dev'
+      ? 'black-forest-labs/FLUX.1-dev'
+      : 'stabilityai/stable-diffusion-xl-base-1.0';
+    const url = await huggingfaceImage(prompt, modelId);
+    if (!url) throw new Error('Hugging Face Inference API is unavailable. Configure HUGGINGFACE_API_KEY on the server.');
+    return { url, provider: 'Hugging Face Inference API', model: modelId, enhancedPrompt: prompt, aspectRatio: body.aspectRatio || '1:1' };
+  }
+  if (imageEngine === 'pollinations-hd') {
+    if (sourceImage) throw new Error('Pollinations HD currently supports text-to-image generation only.');
+    const url = await pollinationsImage(prompt, '', body.aspectRatio, body.seed, 'hd');
+    if (!url) throw new Error('Pollinations HD is unavailable. Configure POLLINATIONS_API_KEY on the server.');
+    return { url, provider: 'Pollinations HD', model: 'flux-hd', enhancedPrompt: prompt, aspectRatio: body.aspectRatio || '1:1' };
+  }
   const hasImageProvider = sourceImage
     ? availableProviders().includes('gemini') || Boolean(providerKeys.pollinations)
     : Boolean(providerKeys.pollinations || providerKeys.huggingface || providerKeys.fal || (providerKeys.cloudflareAccountId && providerKeys.cloudflareToken) || providerKeys.replicate);
@@ -721,10 +789,11 @@ export default async function handler(req, res) {
   if (!body || typeof body !== 'object') return safeError(res, 400, 'Invalid request.');
   const usageOnly = body.action === 'usage';
   const allowanceOnly = body.action === 'allowance';
+  const streamChat = body.action === 'chat-stream';
   const quotaOnly = usageOnly || allowanceOnly;
   const type = quotaOnly
     ? (['chat', 'image', 'video'].includes(body.usageType) ? body.usageType : null)
-    : body.action === 'chat' ? 'chat' : body.action === 'image' ? 'image' : body.action === 'video' ? 'video' : null;
+    : (body.action === 'chat' || streamChat) ? 'chat' : body.action === 'image' ? 'image' : body.action === 'video' ? 'video' : null;
   if (!type) return safeError(res, 400, 'Unsupported generation action.');
   const token = bearer(req);
   if (!token) return safeError(res, 401, 'Sign in to use Zulora AI.');
@@ -786,7 +855,54 @@ export default async function handler(req, res) {
       }
     }
 
-    const output = type === 'chat' ? await generateChat(body) : type === 'image' ? await generateImage(body) : await generateVideo(body);
+    const imageEngine = String(body.imageEngine || 'flux-quick');
+    const huggingFaceEngine = ['hf-flux-dev', 'hf-sdxl'].includes(imageEngine);
+    if (type === 'image' && huggingFaceEngine) {
+      const normalizedTier = String(profileTier || '').toLowerCase().replace(/[ _-]/g, '');
+      if (!normalizedTier.includes('pro') && !normalizedTier.includes('ultra')) {
+        return safeError(res, profileTier ? 403 : 503, profileTier
+          ? 'Hugging Face image models require a Pro or Ultra subscription.'
+          : 'Your Pro subscription could not be verified for Hugging Face image generation.',
+        { upgradeRequired: Boolean(profileTier) });
+      }
+    }
+
+    if (streamChat) {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders?.();
+      const sendEvent = (name, data) => {
+        res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+        res.flush?.();
+      };
+      const streamState = { sent: false };
+      try {
+        const output = await generateChat(body, {
+          stream: true,
+          streamState,
+          onToken: tokenValue => sendEvent('token', { token: tokenValue })
+        });
+        let usage = { type, tracked: false };
+        if (usageTrackingAvailable) {
+          try {
+            const updated = await incrementUsage(uid, type);
+            if (updated.allowed) usage = { type, tracked: true, used: updated.current, limit: updated.limit };
+          } catch (error) {
+            console.warn('Firestore usage write fell back to the client store:', error?.message || 'Could not save usage.');
+          }
+        }
+        sendEvent('done', { ...output, usage });
+      } catch (error) {
+        const message = error?.message || 'Generation failed. Please retry.';
+        sendEvent('error', { error: message, status: error?.status || 502, upgradeRequired: Boolean(error?.payload?.upgradeRequired) });
+      }
+      return res.end();
+    }
+
+    const output = type === 'chat' ? await generateChat(body) : type === 'image' ? await generateImage(body, profileTier) : await generateVideo(body);
     let usage = { type, tracked: false };
     if (usageTrackingAvailable) {
       try {

@@ -334,7 +334,10 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, isSpeaking, copie
           {isUser ? (
             <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
           ) : (
-            <MarkdownContent content={message.content} />
+            <>
+              <MarkdownContent content={message.content} />
+              {message.streaming && <span aria-hidden="true" className="inline-block h-4 ml-0.5 align-middle border-r-2 border-sky-500 animate-pulse" />}
+            </>
           )}
         </div>
         {!isUser && message.sources?.length > 0 && (
@@ -447,6 +450,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
   const [messages, setMessages] = useState([]);
   const [inputPrompt, setInputPrompt] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showThinking, setShowThinking] = useState(false);
   const [modelPreference, setModelPreference] = useState('auto');
   const [enableWebSearch, setEnableWebSearch] = useState(false);
   const [attachments, setAttachments] = useState([]);
@@ -465,6 +469,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
   const textareaRef = useRef(null);
   const speechRef = useRef(null);
   const sendingRef = useRef(false);
+  const thinkingTimerRef = useRef(null);
+
+  useEffect(() => () => clearTimeout(thinkingTimerRef.current), []);
 
   // Sync messages when activeSession changes
   useEffect(() => {
@@ -558,11 +565,30 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     setIsSpeakingIndex(index);
   }, [isSpeakingIndex]);
 
+  const addAttachments = useCallback(files => {
+    setAttachments(previous => [...previous, ...Array.from(files || []).filter(Boolean).slice(0, Math.max(0, 5 - previous.length))]);
+  }, []);
+
   const handleFileAttach = (e) => {
-    const files = Array.from(e.target.files || []);
-    setAttachments(prev => [...prev, ...files.slice(0, 5 - prev.length)]);
+    addAttachments(e.target.files || []);
     e.target.value = '';
   };
+
+  const handlePaste = useCallback(event => {
+    const imageFiles = Array.from(event.clipboardData?.items || [])
+      .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+      .map(item => item.getAsFile())
+      .filter(Boolean)
+      .map((file, index) => new File([file], `clipboard-image-${Date.now()}-${index}.${file.type.split('/')[1]?.replace('jpeg', 'jpg') || 'png'}`, { type: file.type }));
+    if (!imageFiles.length) return;
+    event.preventDefault();
+    addAttachments(imageFiles);
+  }, [addAttachments]);
+
+  const handleDrop = useCallback(event => {
+    event.preventDefault();
+    addAttachments(event.dataTransfer?.files || []);
+  }, [addAttachments]);
 
   const removeAttachment = (idx) => {
     setAttachments(prev => prev.filter((_, i) => i !== idx));
@@ -650,9 +676,14 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     setInputPrompt('');
     setAttachments([]);
     setLoading(true);
+    setShowThinking(true);
+    clearTimeout(thinkingTimerRef.current);
+    thinkingTimerRef.current = setTimeout(() => setShowThinking(false), 7000);
     setIsAtBottom(true);
     setQueryTime(null);
     const startTime = Date.now();
+    const assistantId = (Date.now() + 1).toString();
+    let streamedText = '';
 
     try {
       // Save the user turn before inference so navigation or reloads do not lose it.
@@ -667,6 +698,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
       const aiBrain = currentUser?.uid
         ? await firestoreService.getAiBrain(currentUser.uid)
         : null;
+      const userVault = currentUser?.uid
+        ? await firestoreService.getVault(currentUser.uid)
+        : null;
       const result = await apiRouter.generateChat(
         fullPrompt,
         contextMessages,
@@ -677,7 +711,22 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
           currentUser,
           contextMemory,
           aiBrain,
+          userVault,
           attachments: imagePayloads,
+          onToken: token => {
+            if (!token) return;
+            streamedText += token;
+            clearTimeout(thinkingTimerRef.current);
+            setShowThinking(false);
+            setMessages([...newMessages, {
+              id: assistantId,
+              role: 'assistant',
+              content: streamedText,
+              timestamp: Date.now(),
+              model: 'Generating…',
+              streaming: true
+            }]);
+          },
         }
       );
 
@@ -685,9 +734,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
       setQueryTime(elapsed);
 
       const aiMsg = {
-        id: (Date.now() + 1).toString(),
+        id: assistantId,
         role: 'assistant',
-        content: result.text || 'I encountered an issue generating a response. Please try again.',
+        content: result.text || streamedText || 'I encountered an issue generating a response. Please try again.',
         timestamp: Date.now(),
         model: result.model || 'Zulora AI',
         provider: result.provider,
@@ -727,6 +776,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
         timestamp: Date.now(),
         model: 'Error',
       };
+      if (streamedText) {
+        errorMsg.content = `${streamedText}\n\n_Response interrupted: ${err.message || 'the connection ended before completion.'}_`;
+      }
       const failedMessages = [...newMessages, errorMsg];
       setMessages(failedMessages);
       if (currentUser?.uid) {
@@ -735,6 +787,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
         onUpdateSession?.(failedSession);
       }
     } finally {
+      clearTimeout(thinkingTimerRef.current);
+      setShowThinking(false);
       setLoading(false);
       sendingRef.current = false;
     }
@@ -773,7 +827,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
                 copiedIndex={copiedIndex}
               />
             ))}
-            {loading && <TypingIndicator />}
+            {loading && showThinking && <TypingIndicator />}
           </>
         )}
         <div ref={messagesEndRef} />
@@ -808,7 +862,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
         )}
 
         {/* Input Box */}
-        <div className="glass-pearl dark:glass-dark rounded-2xl border border-slate-200/70 dark:border-slate-700/60 overflow-visible transition-all duration-200 focus-within:border-sky-400/50 dark:focus-within:border-sky-500/40 focus-within:shadow-[0_0_0_3px_rgba(14,165,233,0.1)]">
+        <div
+          onDrop={handleDrop}
+          onDragOver={event => { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; }}
+          className="glass-pearl dark:glass-dark rounded-2xl border border-slate-200/70 dark:border-slate-700/60 overflow-visible transition-all duration-200 focus-within:border-sky-400/50 dark:focus-within:border-sky-500/40 focus-within:shadow-[0_0_0_3px_rgba(14,165,233,0.1)]"
+        >
 
           {/* Text Area */}
           <textarea
@@ -816,6 +874,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
             value={inputPrompt}
             onChange={e => setInputPrompt(e.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder="Ask Zulora AI anything... (Shift+Enter for new line)"
             rows={1}
             disabled={loading}

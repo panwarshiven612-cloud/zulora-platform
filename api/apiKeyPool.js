@@ -30,7 +30,7 @@ const failures = Object.fromEntries(Object.keys(providers).map(name => [name, ne
 
 export const providerKeys = Object.freeze({
   pollinations: readFirstKey('POLLINATIONS_API_KEY', 'POLLINATIONS_KEY', 'VITE_POLLINATIONS_API_KEY', 'VITE_POLLINATIONS_KEY'),
-  huggingface: process.env.HF_API_KEY || process.env.HUGGINGFACE_API_KEY || process.env.VITE_HUGGINGFACE_KEY || '',
+  huggingface: process.env.HF_API_KEY || process.env.HUGGINGFACE_API_KEY || '',
   fal: readFirstKey('FAL_API_KEY', 'FAL_KEY', 'VITE_FAL_API_KEY', 'VITE_FAL_KEY'),
   cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID || '',
   cloudflareToken: process.env.CLOUDFLARE_API_TOKEN || process.env.CLOUDFLARE_TOKEN || '',

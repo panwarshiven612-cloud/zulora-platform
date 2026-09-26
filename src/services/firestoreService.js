@@ -53,12 +53,26 @@ const DAY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 // LocalStorage fallback prefix
 const STORAGE_PREFIX = 'zulora_store_';
 const AI_BRAIN_STORAGE_KEY = 'zulora_user_memory';
+const VAULT_STORAGE_PREFIX = 'zulora_user_vault_';
 const normalizeAiBrain = brain => ({
   talkStyle: String(brain?.talkStyle || ''),
   customInstructions: String(brain?.customInstructions || ''),
   domainContext: String(brain?.domainContext || ''),
   updatedAt: Number(brain?.updatedAt) || 0
 });
+const normalizeVault = vault => ({
+  preferences: String(vault?.preferences || ''),
+  customInstructions: String(vault?.customInstructions || ''),
+  keyFacts: String(vault?.keyFacts || ''),
+  updatedAt: Number(vault?.updatedAt) || 0
+});
+
+function readCachedVault(uid) {
+  try {
+    const cached = JSON.parse(localStorage.getItem(`${VAULT_STORAGE_PREFIX}${uid}`) || 'null');
+    return cached ? normalizeVault(cached) : null;
+  } catch { return null; }
+}
 
 function readCachedAiBrain(uid) {
   try {
@@ -102,6 +116,36 @@ const normalizeChatSession = session => {
 };
 
 export const firestoreService = {
+  async getVault(uid) {
+    if (!uid) return normalizeVault({});
+    const cached = readCachedVault(uid);
+    try {
+      const snapshot = await getDoc(doc(db, 'users', uid, 'vault', 'personal'));
+      if (snapshot.exists()) {
+        const remote = normalizeVault(snapshot.data());
+        const latest = cached?.updatedAt > remote.updatedAt ? cached : remote;
+        localStorage.setItem(`${VAULT_STORAGE_PREFIX}${uid}`, JSON.stringify(latest));
+        return latest;
+      }
+    } catch (error) {
+      console.warn('Firestore getVault fallback to LocalStorage:', error.message);
+    }
+    return cached || normalizeVault({});
+  },
+
+  async saveVault(uid, value) {
+    if (!uid) throw new Error('Sign in to save your Zulora AI Vault.');
+    const vault = normalizeVault({ ...value, updatedAt: Date.now() });
+    localStorage.setItem(`${VAULT_STORAGE_PREFIX}${uid}`, JSON.stringify(vault));
+    try {
+      await setDoc(doc(db, 'users', uid, 'vault', 'personal'), vault, { merge: true });
+      return { vault, synced: true };
+    } catch (error) {
+      console.warn('Firestore saveVault fallback to LocalStorage:', error.message);
+      return { vault, synced: false };
+    }
+  },
+
   getCachedAiBrain(uid) {
     return uid ? readCachedAiBrain(uid) : null;
   },

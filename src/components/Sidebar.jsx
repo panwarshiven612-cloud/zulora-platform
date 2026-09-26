@@ -16,7 +16,8 @@ import {
   ChevronRight,
   ExternalLink,
   MessageCircle,
-  Brain
+  Brain,
+  Database
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { firestoreService, TIERS } from '../services/firestoreService';
@@ -265,6 +266,16 @@ export const Sidebar = ({
           <Brain className="h-4 w-4 text-sky-500" />
           <span>AI Training &amp; Personal Brain</span>
         </button>
+        <button
+          onClick={() => {
+            setActiveTab('vault');
+            if (onCloseMobile) onCloseMobile();
+          }}
+          className="mt-1 flex w-full items-center gap-2 rounded-xl border border-indigo-200/70 bg-indigo-50/70 p-2.5 text-left text-xs font-semibold text-slate-700 transition-colors hover:border-indigo-300 hover:bg-indigo-100/80 dark:border-indigo-900/60 dark:bg-indigo-950/30 dark:text-slate-300 dark:hover:bg-indigo-950/60"
+        >
+          <Database className="h-4 w-4 text-indigo-500" />
+          <span>Zulora AI Vault</span>
+        </button>
       </div>
 
       {/* History List */}
@@ -446,6 +457,13 @@ export const Sidebar = ({
               title="Video Studio"
             >
               <Film className="w-5 h-5" />
+            </button>
+            <button
+              onClick={() => setActiveTab('vault')}
+              className="p-2.5 rounded-xl text-slate-600 dark:text-slate-400 hover:text-indigo-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+              title="Zulora AI Vault"
+            >
+              <Database className="w-5 h-5" />
             </button>
             <button
               onClick={() => setIsUsageModalOpen(true)}
