@@ -20,6 +20,11 @@ import { buildSystemPrompt } from './systemPrompt';
 // ─── SAFE ENVIRONMENT EXTRACTOR ──────────────────────────────────────────────
 const clientEnv = import.meta.env || {};
 const getEnv = (key) => String(clientEnv[key] || '').trim();
+export const GROQ_MODELS = Object.freeze({
+  primary: 'llama-3.3-70b-versatile',
+  fastStream: 'llama-3.1-8b-instant',
+  fallback: 'gemini-2.5-flash',
+});
 
 // ─── DYNAMIC GEMINI KEY POOL ─────────────────────────────────────────────────
 const GEMINI_KEYS = [getEnv('VITE_GEMINI_API_KEY'), ...Array.from({ length: 7 }, (_, index) => getEnv(`VITE_GEMINI_KEY_${index + 1}`) || getEnv(`VITE_GEMINI_API_KEY_${index + 1}`))];
@@ -67,7 +72,7 @@ export const MODEL_TIERS = {
     badge: '✦',
     color: 'text-sky-500',
     geminiModel: 'gemini-2.5-flash',
-    groqModel: 'llama-3.3-70b-versatile',
+    groqModel: GROQ_MODELS.primary,
     cerebrasModel: 'llama3.1-8b',
     openrouterModel: 'meta-llama/llama-3.3-70b-instruct',
     mistralModel: 'mistral-small-latest',
@@ -82,7 +87,7 @@ export const MODEL_TIERS = {
     badge: '⚡',
     color: 'text-sky-500',
     geminiModel: 'gemini-2.5-flash',
-    groqModel: 'llama-3.1-8b-instant',
+    groqModel: GROQ_MODELS.fastStream,
     cerebrasModel: 'llama3.1-8b',
     openrouterModel: 'meta-llama/llama-3.1-8b-instruct:free',
     mistralModel: 'mistral-7b-instruct',
@@ -104,6 +109,21 @@ export const MODEL_TIERS = {
     maxTokens: 8192,
     tier: 'free',
   },
+  groq: {
+    id: 'groq',
+    label: 'Groq LPU (Llama 3.3 70B)',
+    shortLabel: 'Groq LPU',
+    description: 'Fast Groq LPU responses with Gemini Flash fallback',
+    badge: '⚡',
+    color: 'text-orange-500',
+    geminiModel: GROQ_MODELS.fallback,
+    groqModel: GROQ_MODELS.primary,
+    cerebrasModel: 'llama3.1-8b',
+    openrouterModel: 'meta-llama/llama-3.3-70b-instruct',
+    mistralModel: 'mistral-small-latest',
+    maxTokens: 8192,
+    tier: 'free',
+  },
   pro: {
     id: 'pro',
     label: 'Zulora Pro 3.14',
@@ -112,7 +132,7 @@ export const MODEL_TIERS = {
     badge: '🚀',
     color: 'text-violet-500',
     geminiModel: 'gemini-2.5-pro',
-    groqModel: 'llama-3.3-70b-versatile',
+    groqModel: GROQ_MODELS.primary,
     cerebrasModel: 'llama-3.3-70b',
     openrouterModel: 'meta-llama/llama-3.3-70b-instruct',
     mistralModel: 'mistral-medium',
@@ -159,6 +179,7 @@ const normalizeModelPreference = value => {
   const selected = String(value || 'auto').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
   if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra') || ['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'think';
   if (selected === 'llama' || (selected.includes('llama') && selected.includes('70b'))) return 'llama';
+  if (selected === 'groq' || selected.includes('groq')) return 'groq';
   if (selected === 'pro' || selected === 'pro 314' || selected === 'zulora pro 3.14') return 'pro';
   if (selected === 'flash' || selected.includes('gemini 2.5 flash')) return 'flash';
   return 'auto';
@@ -340,8 +361,8 @@ const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
 
   return {
     text,
-    model: `Groq (${model.split('-')[0]})`,
-    provider: 'Groq'
+    model,
+    provider: 'Groq LPU'
   };
 };
 
@@ -575,7 +596,7 @@ export const apiRouter = {
         }, () => {
           emittedStreamTokens = false;
           options.onReset?.();
-        })
+        }, route => options.onProvider?.(route))
         : await requestGeneration('chat', chatPayload, options.currentUser);
       if (serverResult?.text) return await syncUsage(serverResult, 'chat', options.currentUser);
     } catch (error) {
@@ -583,6 +604,25 @@ export const apiRouter = {
       if (options.onToken && emittedStreamTokens) throw error;
       if (options.onToken && error instanceof GenerationApiError && (error.status === 401 || error.status === 403)) throw error;
       console.warn('[Chat] Server generation route unavailable; trying browser providers:', error.message);
+    }
+
+    const groqFirst = !vision && (requestedTier === 'auto' || requestedTier === 'groq');
+    if (groqFirst) {
+      try {
+        return await syncUsage(await withProviderRetry(() => tryGroq(prompt, contextMessages, 'groq', options), 2), 'chat', options.currentUser);
+      } catch (err) {
+        errors.push(`Groq LPU: ${err.message}`);
+      }
+      for (let attempt = 0; attempt < geminiPool.length; attempt++) {
+        const key = geminiPool[(activeGeminiIdx + attempt) % geminiPool.length];
+        try {
+          const result = await tryGeminiKey(key, prompt, contextMessages, 'flash', options);
+          activeGeminiIdx = (activeGeminiIdx + attempt + 1) % geminiPool.length;
+          return await syncUsage(result, 'chat', options.currentUser);
+        } catch (err) {
+          errors.push(`Gemini 2.5 Flash fallback[${attempt + 1}/${geminiPool.length}]: ${err.message}`);
+        }
+      }
     }
 
     // Explicit Llama selections stay within Groq and OpenRouter. Auto may continue to the wider fallback pool.
@@ -638,14 +678,16 @@ export const apiRouter = {
       throw new Error('DeepSeek R1, Groq reasoning, and Gemini 2.5 Pro are temporarily unavailable.');
     }
 
-    for (let attempt = 0; attempt < geminiPool.length; attempt++) {
-      const key = geminiPool[(activeGeminiIdx + attempt) % geminiPool.length];
-      try {
-        const result = await tryGeminiKey(key, prompt, contextMessages, tier, options);
-        activeGeminiIdx = (activeGeminiIdx + attempt + 1) % geminiPool.length;
-        return await syncUsage(result, 'chat', options.currentUser);
-      } catch (err) {
-        errors.push(`Gemini[${attempt + 1}/${geminiPool.length}]: ${err.message}`);
+    if (!groqFirst) {
+      for (let attempt = 0; attempt < geminiPool.length; attempt++) {
+        const key = geminiPool[(activeGeminiIdx + attempt) % geminiPool.length];
+        try {
+          const result = await tryGeminiKey(key, prompt, contextMessages, tier, options);
+          activeGeminiIdx = (activeGeminiIdx + attempt + 1) % geminiPool.length;
+          return await syncUsage(result, 'chat', options.currentUser);
+        } catch (err) {
+          errors.push(`Gemini[${attempt + 1}/${geminiPool.length}]: ${err.message}`);
+        }
       }
     }
 
@@ -654,10 +696,12 @@ export const apiRouter = {
     }
 
     // ── 2. GROQ FAILOVER ──
-    try {
-      return await syncUsage(await withProviderRetry(() => tryGroq(prompt, contextMessages, tier, options), 2), 'chat', options.currentUser);
-    } catch (err) {
-      errors.push(`Groq: ${err.message}`);
+    if (!groqFirst) {
+      try {
+        return await syncUsage(await withProviderRetry(() => tryGroq(prompt, contextMessages, tier, options), 2), 'chat', options.currentUser);
+      } catch (err) {
+        errors.push(`Groq: ${err.message}`);
+      }
     }
 
     // ── 3. CEREBRAS FAILOVER ──

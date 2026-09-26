@@ -41,6 +41,10 @@ export async function requestGeneration(action, payload, currentUser, endpoint =
   if (!response.ok) {
     throw new GenerationApiError(data.error || `Generation request failed (HTTP ${response.status}).`, response.status, data);
   }
+  if (data && typeof data === 'object') {
+    data.provider ||= response.headers.get('x-ai-provider') || undefined;
+    data.model ||= response.headers.get('x-ai-model') || undefined;
+  }
   return data;
 }
 
@@ -57,7 +61,7 @@ export async function requestLimits(currentUser) {
 }
 
 /** Requests chat output as authenticated server-sent events and forwards each token to the UI. */
-export async function requestGenerationStream(payload, currentUser, onToken, onReset) {
+export async function requestGenerationStream(payload, currentUser, onToken, onReset, onProvider) {
   if (!currentUser?.getIdToken) return null;
   let token;
   try { token = await currentUser.getIdToken(); }
@@ -86,6 +90,10 @@ export async function requestGenerationStream(payload, currentUser, onToken, onR
     return null;
   }
 
+  const headerProvider = response.headers.get('x-ai-provider');
+  const headerModel = response.headers.get('x-ai-model');
+  if (headerProvider || headerModel) onProvider?.({ provider: headerProvider || '', model: headerModel || '' });
+
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -107,6 +115,7 @@ export async function requestGenerationStream(payload, currentUser, onToken, onR
       receivedTokens = false;
       onReset?.();
     }
+    if (event === 'provider') onProvider?.(value);
     if (event === 'done') finalResult = value;
     if (event === 'error') throw new GenerationApiError(value.error || 'The streamed response failed.', value.status || 502, value);
   };

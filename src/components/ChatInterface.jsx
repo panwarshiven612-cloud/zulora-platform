@@ -68,11 +68,11 @@ const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
   ['json', json], ['css', css], ['sql', sql], ['yaml', yaml], ['markdown', markdown]
 ].forEach(([name, language]) => SyntaxHighlighter.registerLanguage(name, language));
 
-const MODEL_OPTIONS = ['auto', 'flash', 'llama', 'think'].map(id => MODEL_TIERS[id]).map(t => ({
+const MODEL_OPTIONS = ['auto', 'groq', 'flash', 'llama', 'think'].map(id => MODEL_TIERS[id]).map(t => ({
   id: t.id,
   label: t.label,
   shortLabel: t.shortLabel,
-  icon: t.id === 'flash' ? Zap : t.id === 'think' ? FlaskConical : t.id === 'llama' ? Code2 : Sparkles,
+  icon: t.id === 'flash' || t.id === 'groq' ? Zap : t.id === 'think' ? FlaskConical : t.id === 'llama' ? Code2 : Sparkles,
   color: t.color,
   badge: t.badge,
   tier: t.tier,
@@ -320,8 +320,10 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
             {isUser ? 'You' : 'Zulora AI'}
           </span>
           {message.model && !isUser && (
-            <span className="text-[10px] px-1.5 py-0.5 bg-sky-100 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 rounded-full font-medium border border-sky-200/50 dark:border-sky-800/40">
-              {message.model}
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${String(message.provider || '').toLowerCase().includes('groq')
+              ? 'bg-orange-100 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300 border-orange-200/60 dark:border-orange-800/40'
+              : 'bg-sky-100 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 border-sky-200/50 dark:border-sky-800/40'}`}>
+              {String(message.provider || '').toLowerCase().includes('groq') ? 'Powered by Groq LPU' : message.model}
             </span>
           )}
           {timestamp && (
@@ -712,6 +714,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
     const startTime = Date.now();
     const assistantId = (Date.now() + 1).toString();
     let streamedText = '';
+    let streamedProvider = null;
 
     try {
       // Save the user turn before inference so navigation or reloads do not lose it.
@@ -755,12 +758,27 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
               role: 'assistant',
               content: streamedText,
               timestamp: Date.now(),
-              model: 'Generating…',
+              model: streamedProvider?.model || 'Generating…',
+              provider: streamedProvider?.provider,
+              streaming: true
+            }]);
+          },
+          onProvider: route => {
+            streamedProvider = route;
+            if (!streamedText) return;
+            setMessages([...newMessages, {
+              id: assistantId,
+              role: 'assistant',
+              content: streamedText,
+              timestamp: Date.now(),
+              model: route.model || 'Generating…',
+              provider: route.provider,
               streaming: true
             }]);
           },
           onReset: () => {
             streamedText = '';
+            streamedProvider = null;
             clearTimeout(thinkingTimerRef.current);
             setShowThinking(true);
             thinkingTimerRef.current = setTimeout(() => setShowThinking(false), 7000);

@@ -5,7 +5,7 @@ import { buildSystemPrompt } from '../src/services/systemPrompt.js';
 export const maxDuration = 60;
 export const config = { maxDuration };
 
-const CHAT_ORDER = ['gemini', 'groq', 'cerebras', 'openrouter', 'mistral'];
+const CHAT_ORDER = ['groq', 'gemini', 'cerebras', 'openrouter', 'mistral'];
 const TOKEN_LIMITS = { free: 10_000, pro: 50_000, ultra: 100_000 };
 const TOKEN_WINDOW_MS = 24 * 60 * 60 * 1000;
 const PROMPT_BURST_WINDOW_MS = 2 * 60 * 1000;
@@ -427,7 +427,7 @@ async function readProviderEventStream(response, readToken, onToken, streamState
 
 async function tryOpenAiProvider(provider, messages, options = {}) {
   const configs = {
-    groq: { url: 'https://api.groq.com/openai/v1/chat/completions', model: options.model || 'llama-3.3-70b-versatile', label: 'Groq' },
+    groq: { url: 'https://api.groq.com/openai/v1/chat/completions', model: options.model || 'llama-3.3-70b-versatile', label: 'Groq LPU' },
     openrouter: { url: 'https://openrouter.ai/api/v1/chat/completions', model: options.model || (options.vision ? 'google/gemini-3.8-flash' : 'meta-llama/llama-3.3-70b-instruct'), label: 'OpenRouter' },
     cerebras: { url: 'https://api.cerebras.ai/v1/chat/completions', model: 'gpt-oss-120b', label: 'Cerebras' },
     mistral: { url: 'https://api.mistral.ai/v1/chat/completions', model: 'mistral-small-latest', label: 'Mistral AI' }
@@ -457,11 +457,19 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
           ? { max_completion_tokens: options.maxTokens || 8192, reasoning_effort: 'high', reasoning_format: 'hidden' }
           : { max_tokens: options.maxTokens || (options.coding ? 8192 : 4096) })
       };
+      if (provider === 'groq') {
+        if (config.model === 'llama-3.3-70b-versatile') {
+          console.log("⚡ Calling Groq LPU API with model: llama-3.3-70b-versatile");
+        } else {
+          console.log(`⚡ Calling Groq LPU API with model: ${config.model}`);
+        }
+      }
       const response = await fetchProviderWithRetry(config.url, {
         method: 'POST', headers,
         body: JSON.stringify(requestBody)
       }, options.stream ? 12_000 : 15_000, options.stream ? 1 : 3);
       if (response.ok) {
+        options.onProvider?.(config.label, config.model);
         const text = options.stream
           ? await readProviderEventStream(response, event => event.choices?.[0]?.delta?.content, options.onToken, options.streamState)
           : (await response.json()).choices?.[0]?.message?.content;
@@ -505,6 +513,7 @@ async function tryGemini(messages, options = {}) {
         })
       }, options.stream ? 12_000 : 16_000, options.stream ? 1 : 3);
       if (response.ok) {
+        options.onProvider?.('Google Gemini', model);
         let data;
         let text;
         if (options.stream) {
@@ -538,6 +547,7 @@ function normalizeModelPreference(value) {
   const selected = String(value || 'auto').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
   if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra')) return 'think';
   if (selected === 'llama' || (selected.includes('llama') && selected.includes('70b'))) return 'llama';
+  if (selected === 'groq' || selected.includes('groq')) return 'groq';
   if (selected === 'pro 3.14' || selected === 'zulora pro 3.14' || selected === 'pro' || selected === 'pro 314') return 'pro';
   if (selected === 'flash' || selected.includes('gemini 2.5 flash')) return 'flash';
   if (selected === 'auto' || !selected) return 'auto';
@@ -546,9 +556,11 @@ function normalizeModelPreference(value) {
 }
 
 function chooseChatOrder(preference, vision, search, autoSelected = false) {
+  if (vision) return ['gemini'];
+  if (autoSelected || preference === 'groq') return ['groq', 'gemini', 'cerebras', 'openrouter', 'mistral'];
+  if (search) return ['gemini', 'groq', 'openrouter', ...CHAT_ORDER.filter(provider => provider !== 'gemini' && provider !== 'groq' && provider !== 'openrouter')];
   if (preference === 'llama') return autoSelected ? ['groq', 'openrouter', 'gemini', 'cerebras', 'mistral'] : ['groq', 'openrouter'];
   if (preference === 'think') return ['openrouter', 'groq', 'gemini'];
-  if (vision) return ['gemini'];
   if (['pro', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference)) {
     return ['gemini', 'groq', 'openrouter', 'cerebras', 'mistral'];
   }
@@ -572,9 +584,15 @@ async function generateChat(body, streamOptions = {}) {
   const preference = requestedPreference === 'auto' ? (coding ? 'pro' : complex ? 'pro' : 'flash') : requestedPreference;
   const useProModel = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference);
   const geminiModel = useProModel ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
-  const groqModel = preference === 'think' ? 'openai/gpt-oss-120b' : preference === 'flash' ? 'llama-3.1-8b-instant' : 'llama-3.3-70b-versatile';
+  const groqModel = streamOptions.stream
+    ? 'llama-3.1-8b-instant'
+    : preference === 'think' ? 'openai/gpt-oss-120b' : 'llama-3.3-70b-versatile';
   const order = vision
       ? ['gemini']
+      : body.enableWebSearch
+      ? chooseChatOrder(preference, vision, true, requestedPreference === 'auto')
+      : requestedPreference === 'auto' || requestedPreference === 'groq'
+      ? chooseChatOrder(preference, vision, false, requestedPreference === 'auto')
       : preference === 'think'
       ? ['openrouter', 'gemini-pro', 'gemini', 'groq', 'cerebras', 'mistral']
       : useProModel
@@ -1152,8 +1170,10 @@ export default async function handler(req, res) {
       res.setHeader('Cache-Control', 'no-cache, no-transform');
       res.setHeader('Connection', 'keep-alive');
       res.setHeader('X-Accel-Buffering', 'no');
-      res.flushHeaders?.();
+      const activeProvider = { provider: '', model: '' };
+      let announcedProvider = '';
       const sendEvent = (name, data) => {
+        if (!res.headersSent) res.flushHeaders?.();
         res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
         res.flush?.();
       };
@@ -1162,7 +1182,22 @@ export default async function handler(req, res) {
         const output = await generateChat(body, {
           stream: true,
           streamState,
-          onToken: tokenValue => sendEvent('token', { token: tokenValue }),
+          onProvider: (provider, model) => {
+            activeProvider.provider = provider;
+            activeProvider.model = model;
+          },
+          onToken: tokenValue => {
+            if (!res.headersSent) {
+              res.setHeader('X-AI-Provider', activeProvider.provider || 'Unknown');
+              res.setHeader('X-AI-Model', activeProvider.model || '');
+            }
+            const providerKey = `${activeProvider.provider}:${activeProvider.model}`;
+            if (providerKey !== announcedProvider) {
+              announcedProvider = providerKey;
+              sendEvent('provider', activeProvider);
+            }
+            sendEvent('token', { token: tokenValue });
+          },
           onReset: () => sendEvent('reset', {})
         });
         let usage = { type, tracked: false };
@@ -1183,6 +1218,10 @@ export default async function handler(req, res) {
     }
 
     const output = type === 'chat' ? await generateChat(body) : type === 'image' ? await generateImage(body) : await generateVideo(body);
+    if (type === 'chat') {
+      res.setHeader('X-AI-Provider', output.provider || 'Unknown');
+      res.setHeader('X-AI-Model', output.model || '');
+    }
     let usage = { type, tracked: false };
     if (usageTrackingAvailable) {
       try {

@@ -9,21 +9,26 @@ const numberedGeminiKeys = Array.from({ length: 7 }, (_, index) => [
   `VITE_GEMINI_API_KEY_${index + 1}`
 ]).flat();
 
-const providers = {
-  gemini: readKeys(
+const providerKeyNames = {
+  gemini: [
     'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY',
     'VITE_GEMINI_API_KEY', 'VITE_GOOGLE_API_KEY', 'VITE_GOOGLE_GENERATIVE_AI_API_KEY',
     ...numberedGeminiKeys
-  ),
-  groq: readKeys('GROQ_API_KEY', 'GROQ_KEY', 'VITE_GROQ_API_KEY', 'VITE_GROQ_KEY'),
-  openrouter: readKeys(
+  ],
+  groq: ['GROQ_KEY', 'VITE_GROQ_API_KEY', 'VITE_GROQ_KEY'],
+  openrouter: [
     'OPENROUTER_API_KEY', 'OPEN_ROUTER_API_KEY', 'OPENROUTER_API_KEY_1', 'OPENROUTER_API_KEY_2',
     'VITE_OPENROUTER_API_KEY', 'VITE_OPENROUTER_KEY', 'VITE_OPENROUTER_API_KEY_1',
     'VITE_OPENROUTER_API_KEY_2', 'VITE_OPENROUTER_KEY_1', 'VITE_OPENROUTER_KEY_2'
-  ),
-  cerebras: readKeys('CEREBRAS_API_KEY', 'VITE_CEREBRAS_API_KEY', 'VITE_CEREBRAS_KEY'),
-  mistral: readKeys('MISTRAL_API_KEY', 'VITE_MISTRAL_API_KEY', 'VITE_MISTRAL_KEY')
+  ],
+  cerebras: ['CEREBRAS_API_KEY', 'VITE_CEREBRAS_API_KEY', 'VITE_CEREBRAS_KEY'],
+  mistral: ['MISTRAL_API_KEY', 'VITE_MISTRAL_API_KEY', 'VITE_MISTRAL_KEY']
 };
+const providerKeysFor = provider => provider === 'groq'
+  ? [...new Set([String(process.env.GROQ_API_KEY || '').trim(), ...readKeys(...providerKeyNames.groq)].filter(Boolean))]
+  : readKeys(...(providerKeyNames[provider] || []));
+
+const providers = Object.fromEntries(Object.keys(providerKeyNames).map(provider => [provider, providerKeysFor(provider)]));
 
 const cursors = Object.fromEntries(Object.keys(providers).map(name => [name, 0]));
 const failures = Object.fromEntries(Object.keys(providers).map(name => [name, new Map()]));
@@ -39,7 +44,8 @@ export const providerKeys = Object.freeze({
 
 export const apiKeyPool = {
   candidates(provider) {
-    const keys = providers[provider] || [];
+    // Read Groq's server key per request so runtime environment updates are respected.
+    const keys = provider === 'groq' ? providerKeysFor('groq') : providers[provider] || [];
     const now = Date.now();
     const start = cursors[provider] || 0;
     return keys.map((key, index) => ({ key, index }))
@@ -47,7 +53,8 @@ export const apiKeyPool = {
       .sort((a, b) => ((a.index - start + keys.length) % keys.length) - ((b.index - start + keys.length) % keys.length));
   },
   succeeded(provider, index) {
-    cursors[provider] = (index + 1) % (providers[provider]?.length || 1);
+    const length = provider === 'groq' ? providerKeysFor('groq').length : providers[provider]?.length || 0;
+    cursors[provider] = (index + 1) % (length || 1);
     failures[provider]?.delete(index);
   },
   failed(provider, index, retryAfterMs = 0) {
@@ -55,8 +62,11 @@ export const apiKeyPool = {
     const count = (state?.count || 0) + 1;
     const backoff = Math.min(15 * 60_000, 1_000 * (2 ** Math.min(count - 1, 10)));
     failures[provider].set(index, { count, until: Date.now() + Math.max(backoff, retryAfterMs) });
-    cursors[provider] = (index + 1) % (providers[provider]?.length || 1);
+    const length = provider === 'groq' ? providerKeysFor('groq').length : providers[provider]?.length || 0;
+    cursors[provider] = (index + 1) % (length || 1);
   }
 };
 
-export const availableProviders = () => Object.keys(providers).filter(provider => providers[provider].some(Boolean));
+export const availableProviders = () => Object.keys(providers).filter(provider =>
+  (provider === 'groq' ? providerKeysFor('groq') : providers[provider]).some(Boolean)
+);
