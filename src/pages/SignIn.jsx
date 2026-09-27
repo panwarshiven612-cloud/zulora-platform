@@ -91,7 +91,7 @@ const PrivacyModal = ({ onClose }) => (
 
 /* ─── MAIN SIGN-IN PAGE ─── */
 export const SignIn = ({ onAuthenticated }) => {
-  const { currentUser, signInWithGoogle } = useAuth();
+  const { loading, isAuthenticated, signInWithGoogle } = useAuth();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [consent, setConsent] = useState(false);
@@ -99,8 +99,8 @@ export const SignIn = ({ onAuthenticated }) => {
   const [consentError, setConsentError] = useState(false);
 
   useEffect(() => {
-    if (currentUser) onAuthenticated?.();
-  }, [currentUser, onAuthenticated]);
+    if (!loading && isAuthenticated) onAuthenticated?.();
+  }, [isAuthenticated, loading, onAuthenticated]);
 
   // Persist consent in localStorage so we don't re-ask on auth redirect return
   useEffect(() => {

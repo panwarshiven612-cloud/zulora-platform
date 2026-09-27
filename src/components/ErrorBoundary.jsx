@@ -13,11 +13,13 @@ export default class ErrorBoundary extends React.Component {
 
   handleReset = () => {
     try {
-      window.localStorage.clear();
+      window.sessionStorage.clear();
     } catch (error) {
-      console.warn('Could not clear local app state during recovery:', error);
+      console.warn('Could not clear temporary session state during recovery:', error);
     }
-    window.location.href = '/';
+    // Re-enter through the protected workspace so Firebase persistence can restore the session.
+    // The app router will send signed-out visitors back to the public landing page.
+    window.location.href = '/dashboard';
   };
 
   render() {

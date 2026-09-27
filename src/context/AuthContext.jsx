@@ -6,6 +6,8 @@ import { rateLimiter } from '../services/rateLimiter';
 const noop = () => {};
 const SAFE_AUTH_CONTEXT = {
   currentUser: null,
+  user: null,
+  isAuthenticated: false,
   userProfile: null,
   loading: true,
   tier: TIERS.FREE,
@@ -178,49 +180,63 @@ export const AuthProvider = ({ children }) => {
     let profiledUid = null;
     let authStateEventSeen = false;
     let redirectUser = null;
+    let authStateUser = null;
 
     let resolveInitialAuth;
     const initialAuth = new Promise(resolve => { resolveInitialAuth = resolve; });
 
+    const profileLoads = new Map();
     const loadProfile = user => {
+      if (!user?.uid) return Promise.resolve(null);
       const fallback = createFallbackProfile(user.uid, user);
       setUserProfile(previous => previous?.uid === user.uid ? previous : fallback);
-      if (profiledUid === user.uid) return;
+      if (profileLoads.has(user.uid)) return profileLoads.get(user.uid);
+      if (profiledUid === user.uid) return Promise.resolve(fallback);
       profiledUid = user.uid;
-      withTimeout((async () => {
+      const profileLoad = withTimeout((async () => {
         const profile = await firestoreService.getUserProfile(user.uid, user);
         return hydratePersistentUsage(user.uid, completeProfile(profile, fallback));
       })(), PROFILE_TIMEOUT_MS, 'User profile loading').then(profile => {
-        if (active && latestUid === user.uid) setUserProfile(completeProfile(profile, fallback));
+        const safeProfile = completeProfile(profile, fallback);
+        if (active && latestUid === user.uid) setUserProfile(safeProfile);
+        return safeProfile;
       }).catch(error => {
         console.warn('Could not load the signed-in user profile; using safe defaults:', error);
+        if (active && latestUid === user.uid) setUserProfile(fallback);
+        return fallback;
       });
+      profileLoads.set(user.uid, profileLoad);
+      return profileLoad;
     };
 
-    const applyUser = user => {
-      if (!active) return;
+    const applyUser = async user => {
+      if (!active) return null;
       latestUid = user?.uid || null;
       setCurrentUser(user || null);
       if (!user) {
         profiledUid = null;
         setUserProfile(null);
-        return;
+        return null;
       }
-      loadProfile(user);
+      return loadProfile(user);
     };
 
-    const unsubscribe = authService.onAuthStateChange(user => {
+    let bootstrapFinished = false;
+    const unsubscribe = authService.onAuthStateChange(async user => {
       try {
         if (!user && !authStateEventSeen && redirectUser) {
           authStateEventSeen = true;
           return;
         }
         authStateEventSeen = true;
-        applyUser(user);
+        authStateUser = user || null;
+        if (bootstrapFinished) setLoading(true);
+        await applyUser(user);
       } catch (error) {
         console.error('Could not apply the Firebase auth state:', error);
       } finally {
         resolveInitialAuth(user || null);
+        if (active && bootstrapFinished && latestUid === (user?.uid || null)) setLoading(false);
       }
     }, error => {
       try {
@@ -230,6 +246,7 @@ export const AuthProvider = ({ children }) => {
           profiledUid = null;
           setCurrentUser(null);
           setUserProfile(null);
+          if (bootstrapFinished) setLoading(false);
         }
       } finally {
         resolveInitialAuth(null);
@@ -237,10 +254,10 @@ export const AuthProvider = ({ children }) => {
     });
 
     const redirectResult = withTimeout(authService.checkRedirectResult(), AUTH_BOOTSTRAP_TIMEOUT_MS, 'Google sign-in redirect')
-      .then(user => {
+      .then(async user => {
         if (user && active) {
           redirectUser = user;
-          if (latestUid !== user.uid) applyUser(user);
+          if (latestUid !== user.uid || !profileLoads.has(user.uid)) await applyUser(user);
         }
       })
       .catch(error => {
@@ -253,10 +270,15 @@ export const AuthProvider = ({ children }) => {
           withTimeout(initialAuth, AUTH_BOOTSTRAP_TIMEOUT_MS, 'Firebase auth initialization'),
           redirectResult
         ]);
+        const resolvedUser = redirectUser || authStateUser;
+        if (active && resolvedUser?.uid) await loadProfile(resolvedUser);
       } catch (error) {
         console.warn('Firebase auth initialization did not finish normally:', error);
       } finally {
-        if (active) setLoading(false);
+        if (active) {
+          bootstrapFinished = true;
+          setLoading(false);
+        }
       }
     };
     finishBootstrap();
@@ -273,7 +295,7 @@ export const AuthProvider = ({ children }) => {
       const result = await authService.signInWithGoogle();
       if (result.success && result.user) {
         setCurrentUser(result.user);
-        refreshProfile(result.user.uid, result.user);
+        await refreshProfile(result.user.uid, result.user);
       }
       return result;
     } catch (error) {
@@ -322,6 +344,8 @@ export const AuthProvider = ({ children }) => {
 
   const value = {
     currentUser,
+    user: currentUser,
+    isAuthenticated: Boolean(currentUser?.uid),
     userProfile,
     loading,
     tier: currentTier,

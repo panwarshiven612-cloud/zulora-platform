@@ -156,13 +156,12 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
               className="flex items-center gap-1.5 h-8 rounded-xl pl-1 pr-2 hover:bg-slate-100 dark:hover:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700/50 transition-all"
               aria-expanded={profileMenuOpen}
             >
-              {currentUser?.photoURL ? (
-                <img src={currentUser?.photoURL} alt="" className="w-6 h-6 rounded-lg object-cover flex-shrink-0" />
-              ) : (
-                <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-sky-500 to-indigo-500 flex items-center justify-center">
-                  <span className="text-[10px] font-bold text-white">{currentUser?.displayName?.[0] || '?'}</span>
-                </div>
-              )}
+              <img
+                src={currentUser?.photoURL || '/default-avatar.svg'}
+                onError={event => { event.currentTarget.onerror = null; event.currentTarget.src = '/default-avatar.svg'; }}
+                alt={`${currentUser?.displayName || 'User'} avatar`}
+                className="w-6 h-6 rounded-lg object-cover flex-shrink-0"
+              />
               <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform duration-200 hidden sm:block ${profileMenuOpen ? 'rotate-180' : ''}`} />
             </button>
 
@@ -172,16 +171,15 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
                 {/* User Info */}
                 <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800/60">
                   <div className="flex items-center gap-2.5">
-                    {currentUser?.photoURL ? (
-                      <img src={currentUser?.photoURL} alt="" className="w-9 h-9 rounded-xl object-cover" />
-                    ) : (
-                      <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-500 to-indigo-500 flex items-center justify-center">
-                        <span className="font-bold text-white text-sm">{currentUser?.displayName?.[0] || '?'}</span>
-                      </div>
-                    )}
+                    <img
+                      src={currentUser?.photoURL || '/default-avatar.svg'}
+                      onError={event => { event.currentTarget.onerror = null; event.currentTarget.src = '/default-avatar.svg'; }}
+                      alt={`${currentUser?.displayName || 'User'} avatar`}
+                      className="w-9 h-9 rounded-xl object-cover"
+                    />
                     <div className="min-w-0">
                       <p className="font-semibold text-slate-900 dark:text-white text-sm truncate">{currentUser?.displayName || 'User'}</p>
-                      <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">{currentUser?.email}</p>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">{currentUser?.email || ''}</p>
                     </div>
                   </div>
                   <div className={`mt-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-r ${tierGradient} text-white text-[10px] font-bold`}>

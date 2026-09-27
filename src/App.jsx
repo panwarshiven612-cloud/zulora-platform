@@ -55,6 +55,7 @@ const LoadingSpinner = () => (
 export const App = () => {
   const {
     currentUser,
+    isAuthenticated,
     loading,
     isUsageModalOpen,
     setIsUsageModalOpen,
@@ -121,13 +122,13 @@ export const App = () => {
   // ── Post-login redirect logic ──────────────────────────────────────────────
   useEffect(() => {
     if (loading) return;
-    if (currentUser && ['/signin', '/login'].includes(pathname)) {
+    if (isAuthenticated && ['/', '/signin', '/login', '/chat'].includes(pathname)) {
       navigate('/dashboard');
     }
-    if (!currentUser && ['/dashboard', '/vault', '/studio', '/settings'].includes(pathname)) {
+    if (!isAuthenticated && ['/dashboard', '/chat', '/vault', '/studio', '/settings'].includes(pathname)) {
       navigate('/');
     }
-  }, [currentUser, loading, navigate, pathname]);
+  }, [isAuthenticated, loading, navigate, pathname]);
 
   useEffect(() => {
     if (pathname === '/vault') setActiveTab('vault');
@@ -142,7 +143,7 @@ export const App = () => {
   if (loading) return <LoadingSpinner />;
 
   // ── Unauthenticated routes ─────────────────────────────────────────────────
-  if (!currentUser) {
+  if (!isAuthenticated) {
     if (['/signin', '/login'].includes(pathname)) {
       return <SignIn onAuthenticated={goToDashboard} />;
     }

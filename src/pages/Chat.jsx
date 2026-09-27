@@ -13,14 +13,14 @@ export const Chat = ({
   onNewChat,
   onOpenMobileSidebar
 }) => {
-  const { currentUser, loading } = useAuth();
+  const { user, isAuthenticated, loading } = useAuth();
   const [isVoiceOpen, setIsVoiceOpen] = useState(false);
 
   useEffect(() => {
-    if (loading || currentUser) return;
+    if (loading || isAuthenticated) return;
     try { window.location.replace('/'); }
     catch { window.location.href = '/'; }
-  }, [loading, currentUser]);
+  }, [loading, isAuthenticated]);
 
   if (loading) {
     return (
@@ -33,7 +33,7 @@ export const Chat = ({
     );
   }
 
-  if (!currentUser) {
+  if (!isAuthenticated || !user) {
     return <div role="status" className="min-h-screen grid place-items-center bg-[#f8fafc] text-sm text-slate-600 dark:bg-[#070b14] dark:text-slate-300">Returning to Zulora AI…</div>;
   }
 
@@ -96,9 +96,9 @@ export const Chat = ({
       <VoiceAssistantModal
         isOpen={isVoiceOpen}
         onClose={() => setIsVoiceOpen(false)}
-        currentUser={currentUser}
+        currentUser={user}
         onNewTurn={turn => {
-          if (activeSession?.id && currentUser?.uid) {
+          if (activeSession?.id && user?.uid) {
             const updated = {
               ...activeSession,
               messages: [
@@ -109,7 +109,7 @@ export const Chat = ({
               updatedAt: Date.now()
             };
             onUpdateSession?.(updated);
-            firestoreService.saveChatSession(currentUser.uid, activeSession.id, updated).catch(console.warn);
+            firestoreService.saveChatSession(user?.uid, activeSession.id, updated).catch(console.warn);
           }
         }}
       />
