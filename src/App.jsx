@@ -121,10 +121,11 @@ export const App = () => {
 
   // ── Post-login redirect logic ──────────────────────────────────────────────
   useEffect(() => {
-    if (loading) return;
     if (isAuthenticated && ['/', '/signin', '/login', '/chat'].includes(pathname)) {
       navigate('/dashboard');
+      return;
     }
+    if (loading) return;
     if (!isAuthenticated && ['/dashboard', '/chat', '/vault', '/studio', '/settings'].includes(pathname)) {
       navigate('/');
     }
@@ -140,7 +141,7 @@ export const App = () => {
   const goToDashboard = useCallback(() => navigate('/dashboard'), [navigate]);
 
   // ── Loading state ──────────────────────────────────────────────────────────
-  if (loading) return <LoadingSpinner />;
+  if (loading && !isAuthenticated) return <LoadingSpinner />;
 
   // ── Unauthenticated routes ─────────────────────────────────────────────────
   if (!isAuthenticated) {
