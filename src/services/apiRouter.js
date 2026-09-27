@@ -6,7 +6,7 @@
  * - Reads browser-safe VITE_* variables from import.meta.env
  * - Tries the configured providers sequentially and ignores empty responses
  * - Silent automatic failover across all 7 Gemini keys (429/401/403/500 caught and retried)
- * - Cascades through Groq -> Cerebras -> OpenRouter (2 keys) -> Mistral -> Pollinations
+ * - Cascades through seven rotating Gemini keys -> Cerebras -> Groq -> Mistral -> OpenRouter -> Pollinations
  * - Bulletproof Image Studio (Pollinations FLUX -> Fal AI -> HuggingFace -> Cloudflare -> High-Res fallback)
  * - Video Studio delegates to the Pollinations-first server video router, with Fal AI / Replicate fallbacks
  * - Returns both `url` and `imageUrl`/`videoUrl` so all studio consumers work seamlessly
@@ -16,6 +16,7 @@
 import { requestGeneration, requestGenerationStream, trackSuccessfulUsage, checkGenerationAllowance, GenerationApiError } from './generationApi';
 import { generateVideo as generateVideoWithProviders } from './videoService';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from './systemPrompt';
+import { AI_STUDIO_SYSTEM_PROMPT } from './aiStudioPrompt';
 
 // ─── SAFE ENVIRONMENT EXTRACTOR ──────────────────────────────────────────────
 const clientEnv = import.meta.env || {};
@@ -69,7 +70,11 @@ const CLOUDFLARE_TOKEN = getEnv('VITE_CLOUDFLARE_API_TOKEN');
 let activeGeminiIdx = 0;
 const geminiKeyPerformance = new Map();
 
-const providerSystemPrompt = options => `${buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault)}${options.flagship ? FLAGSHIP_SYSTEM_PROMPT : ''}`;
+const providerSystemPrompt = options => [
+  buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault),
+  options.flagship ? FLAGSHIP_SYSTEM_PROMPT : '',
+  options.studioMode ? AI_STUDIO_SYSTEM_PROMPT : ''
+].filter(Boolean).join('\n\n');
 
 // ─── MODEL TIERS ─────────────────────────────────────────────────────────────
 export const MODEL_TIERS = {
@@ -278,7 +283,7 @@ function buildImagePrompt(prompt, style, negativePrompt) {
   const subject = String(prompt || '').trim();
   const instructions = [
     `User's requested image: ${subject}`,
-    'Subject fidelity is essential: make the requested subject and every named object the clear focus. Preserve the user's requested attributes and scene; do not replace them with a different subject or omit requested details.',
+    "Subject fidelity is essential: make the requested subject and every named object the clear focus. Preserve the user's requested attributes and scene; do not replace them with a different subject or omit requested details.",
     style ? `Visual style: ${String(style).trim()}. Apply this style without changing the requested subject.` : '',
     negativePrompt ? `Avoid including: ${String(negativePrompt).trim()}.` : ''
   ];
@@ -324,7 +329,10 @@ const normalizeModelPreference = value => {
 };
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-const retryableProviderError = error => /HTTP (408|425|429|5\d\d)|network|fetch|timeout|aborted/i.test(error?.message || '');
+const retryableProviderError = error => {
+  const message = error?.message || '';
+  return !/HTTP \d{3}/i.test(message) && /network|fetch|timeout|aborted/i.test(message);
+};
 const withProviderRetry = async (operation, attempts = 2) => {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -413,7 +421,14 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
         };
       }
     }
+    if (!res.ok && ([401, 403, 408, 425, 429].includes(res.status) || res.status >= 500)) {
+      const err = await res.json().catch(() => ({}));
+      const providerError = new Error(`Gemini HTTP ${res.status}: ${err.error?.message || res.statusText}`);
+      providerError.status = res.status;
+      throw providerError;
+    }
   } catch (openaiErr) {
+    if (openaiErr?.status) throw openaiErr;
     if (options.streamState?.sent) {
       options.onReset?.();
       options.streamState.sent = false;
@@ -780,6 +795,7 @@ export const apiRouter = {
         contextMemory: options.contextMemory,
         aiBrain: options.aiBrain || null,
         userVault: options.userVault || null,
+        studioMode: Boolean(options.studioMode),
         modelPreference: requestedTier,
         enableWebSearch: Boolean(options.webSearch),
         attachments: options.attachments || [],
@@ -808,7 +824,7 @@ export const apiRouter = {
 
     const providerOrder = requestedTier === 'groq' || requestedTier === 'llama'
       ? ['groq', 'gemini', 'cerebras', 'mistral', 'openrouter']
-      : ['gemini', 'groq', 'cerebras', 'mistral', 'openrouter'];
+      : ['gemini', 'cerebras', 'groq', 'mistral', 'openrouter'];
     for (const provider of providerOrder) {
       if (provider === 'gemini') {
         const result = await tryGeminiKeyWaterfall(prompt, contextMessages, geminiModel, options, errors);

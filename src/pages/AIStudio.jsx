@@ -11,6 +11,7 @@ import { useAuth } from '../context/AuthContext';
 import UsageLimitsModal from '../components/UsageLimitsModal';
 import PricingModal from '../components/PricingModal';
 import apiRouter from '../services/apiRouter';
+import { buildAIStudioUserPrompt } from '../services/aiStudioPrompt';
 import { firestoreService } from '../services/firestoreService';
 import { imageFileToDataUrl } from '../services/imageUtils';
 import { preparePreviewDocument } from '../services/previewDocument';
@@ -194,13 +195,18 @@ export default function AIStudio({ onExitDashboard }) {
         : [];
       const attachedText = attachment && !attachment.type.startsWith('image/') && attachmentText
         ? `\n\nAttached file (${attachment.name}):\n\n${attachmentText}` : '';
-      const fullPrompt = `Build a polished, production-ready website matching the user's request. Return exactly one complete, self-contained index.html document with all CSS inside a <style> tag and all JavaScript inside a <script> tag. Do not split the website into separate files or require a build step. Use the Tailwind CDN when useful, plus vanilla JavaScript; Font Awesome or Lucide, Animate.css, and GSAP are available in the sandboxed preview. Return the whole document without Markdown fences. The entire document must render by itself in a browser preview and be ready to download.\n\nVISUAL DIRECTION\n- Use a refined Pearl & Azure palette over a sophisticated dark-mode foundation: deep ink and midnight navy surfaces, pearl-white typography and highlights, and luminous azure/cyan accents.\n- Build clear visual hierarchy with generous spacing, polished typography, translucent glass panels, soft borders, layered shadows, and tasteful gradients.\n- Add subtle interactive hover, focus, and pressed-state animations. Make navigation and every visible control functional, with useful form validation and complete interaction behavior.\n- Create a smoothly animated background using lightweight CSS gradients, shapes, or canvas. Keep it low-contrast behind content and provide a prefers-reduced-motion fallback.\n- Add a restrained letter-by-letter or GSAP reveal for the main heading. Honor prefers-reduced-motion and keep all content readable before animation.\n- When the request is in Urdu or Arabic, set the document language, add dir="rtl" on the root element, and preserve left-to-right rendering for code, URLs, and Latin numbers. Always include UTF-8 metadata.\n- Make every section fully responsive from narrow phones to wide desktop screens. Use semantic HTML, accessible labels, visible keyboard focus, and readable contrast.\n- Prefer self-contained CSS, inline SVG, and canvas drawing over network assets so the preview works offline.\n\nIMPLEMENTATION QUALITY\nUse clean, modular JavaScript functions inside the document, validate user input, handle empty/loading/error states where relevant, and avoid console errors. Fill out the requested experience with realistic generic sample content only where the user did not provide details. Do not invent personal information. Output the complete code through the closing </html> tag with no omitted sections, TODOs, ellipses, or placeholders. Use the full 8192-token output budget when supported.\n\nUser request:\n${request}${attachedText}`;
-      const result = await apiRouter.generateChat(fullPrompt, [], {
+      const currentProjectSource = artifact?.code || artifact?.html || '';
+      const projectContext = currentProjectSource
+        ? [{ role: 'assistant', content: `Current active website source code:\n${currentProjectSource}` }]
+        : [];
+      const fullPrompt = buildAIStudioUserPrompt(request, attachedText);
+      const result = await apiRouter.generateChat(fullPrompt, projectContext, {
         model: preferredModel,
         currentUser,
         contextMemory,
         userVault,
         aiBrain,
+        studioMode: true,
         attachments: inputAttachment,
         onReset: () => {
           streamRef.current = '';

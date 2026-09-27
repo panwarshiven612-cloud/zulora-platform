@@ -1,11 +1,12 @@
 import { createPublicKey, createSign, verify as verifySignature } from 'node:crypto';
 import { apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from '../src/services/systemPrompt.js';
+import { AI_STUDIO_SYSTEM_PROMPT } from '../src/services/aiStudioPrompt.js';
 
 export const maxDuration = 60;
 export const config = { maxDuration };
 
-const CHAT_ORDER = ['gemini', 'groq', 'cerebras', 'mistral', 'openrouter'];
+const CHAT_ORDER = ['gemini', 'cerebras', 'groq', 'mistral', 'openrouter'];
 const GEMINI_FAST_MODEL = process.env.GEMINI_FAST_MODEL || 'gemini-3.5-flash-lite';
 const GEMINI_HIGH_CAPACITY_MODEL = process.env.GEMINI_HIGH_CAPACITY_MODEL || 'gemini-3.8-flash';
 const GEMINI_FLASH_VARIANTS = [...new Set([GEMINI_HIGH_CAPACITY_MODEL, 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'])];
@@ -479,7 +480,7 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
       const response = await fetchProviderWithRetry(config.url, {
         method: 'POST', headers,
         body: JSON.stringify(requestBody)
-      }, options.stream ? 12_000 : 15_000, options.stream ? 1 : 3);
+      }, options.stream ? 12_000 : 15_000, 1);
       if (response.ok) {
         options.onProvider?.(config.label, config.model);
         let tokenUsage;
@@ -533,7 +534,7 @@ async function tryGemini(messages, options = {}) {
           ...(options.enableWebSearch ? { tools: [{ google_search: {} }] } : {}),
           generationConfig: { temperature: 0.7, maxOutputTokens: options.coding || options.flagship ? 8192 : (options.model === 'gemini-2.5-pro' ? 8192 : 4096) }
         })
-      }, options.stream ? 12_000 : 16_000, options.stream ? 1 : 3);
+      }, options.stream ? 12_000 : 16_000, 1);
       if (response.ok) {
         options.onProvider?.('Google Gemini', model);
         let data;
@@ -556,7 +557,7 @@ async function tryGemini(messages, options = {}) {
         }
       }
       console.warn(`Google Gemini text request failed with HTTP ${response.status}.`);
-      if ([404, 503].includes(response.status)) options.onModelUnavailable?.(model, response.status);
+      if (response.status === 404) options.onModelUnavailable?.(model, response.status);
       if ([401, 403, 429].includes(response.status)) apiKeyPool.failed('gemini', index, parseRetryAfter(response));
       else apiKeyPool.advance('gemini', index);
     } catch (error) {
@@ -631,7 +632,11 @@ function chooseChatOrder(preference, autoSelected = false) {
 async function generateChat(body, streamOptions = {}) {
   const requestedPreference = normalizeModelPreference(body.modelPreference || body.model);
   const flagship = requestedPreference === 'think';
-  const systemPrompt = `${buildSystemPrompt(body.contextMemory, new Date(), body.aiBrain, body.userVault)}${flagship ? FLAGSHIP_SYSTEM_PROMPT : ''}`;
+  const systemPrompt = [
+    buildSystemPrompt(body.contextMemory, new Date(), body.aiBrain, body.userVault),
+    flagship ? FLAGSHIP_SYSTEM_PROMPT : '',
+    body.studioMode ? AI_STUDIO_SYSTEM_PROMPT : ''
+  ].filter(Boolean).join('\n\n');
   const messages = plainMessages(body.messages, systemPrompt);
   const attachments = attachmentParts(body.attachments);
   if (body.attachments?.length && !attachments.length) throw new Error('The attached image format is unsupported. Use PNG, JPEG, WebP, or GIF.');
