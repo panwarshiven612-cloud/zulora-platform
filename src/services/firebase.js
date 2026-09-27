@@ -42,6 +42,8 @@ export const authPersistenceReady = setPersistence(auth, browserLocalPersistence
   return null;
 });
 
+let redirectResultPromise;
+
 export const authStateReady = authPersistenceReady.then(() => new Promise(resolve => {
   let unsubscribe = () => {};
   let settled = false;
@@ -81,15 +83,20 @@ export const performGoogleSignIn = async () => {
 
 export const handleGoogleSignIn = performGoogleSignIn;
 
-export const checkRedirectResult = async () => {
-  try {
-    await authPersistenceReady;
-    const result = await getRedirectResult(auth);
-    return result?.user || null;
-  } catch (error) {
-    console.error('Error handling Google redirect sign-in:', error);
-    return null;
+export const checkRedirectResult = () => {
+  if (!redirectResultPromise) {
+    redirectResultPromise = (async () => {
+      try {
+        await authPersistenceReady;
+        const result = await getRedirectResult(auth);
+        return result?.user || null;
+      } catch (error) {
+        console.error('Error handling Google redirect sign-in:', error);
+        return null;
+      }
+    })();
   }
+  return redirectResultPromise;
 };
 
 export const checkAuthRedirect = checkRedirectResult;

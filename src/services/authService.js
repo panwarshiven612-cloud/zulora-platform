@@ -34,11 +34,19 @@ export const authService = {
   /**
    * Subscribe to auth changes
    */
-  onAuthStateChange(callback) {
+  onAuthStateChange(callback, onError = () => {}) {
     let unsubscribe = () => {};
     let cancelled = false;
     authPersistenceReady.then(() => {
-      if (!cancelled) unsubscribe = onAuthStateChanged(auth, callback);
+      if (cancelled) return;
+      try {
+        unsubscribe = onAuthStateChanged(auth, callback, onError);
+        if (cancelled) unsubscribe();
+      } catch (error) {
+        onError(error);
+      }
+    }).catch(error => {
+      if (!cancelled) onError(error);
     });
     return () => {
       cancelled = true;

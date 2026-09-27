@@ -19,11 +19,12 @@ const VoiceAssistantModal = lazy(() => import('./components/VoiceAssistantModal'
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 
 const LoadingSpinner = () => (
-  <div className="min-h-screen flex flex-col items-center justify-center bg-[#f8fafc] dark:bg-[#070b14]">
+  <div role="status" aria-live="polite" aria-label="Checking your secure sign-in" className="min-h-screen flex flex-col items-center justify-center bg-[#f8fafc] dark:bg-[#070b14]">
     <div className="p-6 rounded-3xl glass-pearl dark:glass-dark border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col items-center space-y-4">
       <div className="relative">
         <img src={LOGO_URL} alt="Zulora" className="w-16 h-16 rounded-2xl object-cover ring-2 ring-sky-500 shadow-lg animate-pulse" />
         <div className="absolute -inset-1 rounded-2xl bg-sky-500/30 blur animate-ping" />
+        <div className="absolute -inset-1 rounded-2xl border-2 border-sky-300/70 border-t-transparent animate-spin" />
       </div>
       <div className="text-center space-y-1">
         <h2 className="text-lg font-black tracking-tight text-slate-900 dark:text-white">
@@ -95,11 +96,11 @@ export const App = () => {
   // ── Post-login redirect logic ──────────────────────────────────────────────
   useEffect(() => {
     if (loading) return;
-    if (currentUser && !['/dashboard', '/vault', '/studio'].includes(pathname)) {
+    if (currentUser && ['/signin', '/login'].includes(pathname)) {
       navigate('/dashboard');
     }
     if (!currentUser && ['/dashboard', '/vault', '/studio', '/settings'].includes(pathname)) {
-      navigate('/signin');
+      navigate('/login');
     }
   }, [currentUser, loading, navigate, pathname]);
 
@@ -117,7 +118,7 @@ export const App = () => {
 
   // ── Unauthenticated routes ─────────────────────────────────────────────────
   if (!currentUser) {
-    if (pathname === '/signin') {
+    if (['/signin', '/login', '/dashboard', '/vault', '/studio', '/settings'].includes(pathname)) {
       return <SignIn onAuthenticated={goToDashboard} />;
     }
     // All unauthenticated users → Landing Page (also has sign-in)

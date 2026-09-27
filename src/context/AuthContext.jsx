@@ -4,6 +4,45 @@ import { firestoreService, TIERS } from '../services/firestoreService';
 import { rateLimiter } from '../services/rateLimiter';
 
 const AuthContext = createContext(null);
+const PROFILE_TIMEOUT_MS = 8_000;
+const AUTH_BOOTSTRAP_TIMEOUT_MS = 12_000;
+const FALLBACK_AVATAR = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#38bdf8"/><stop offset="1" stop-color="#6366f1"/></linearGradient></defs><rect width="64" height="64" rx="18" fill="url(#g)"/><circle cx="32" cy="25" r="11" fill="#eaf7ff"/><path d="M12 58c2-13 9-20 20-20s18 7 20 20" fill="#eaf7ff"/></svg>')}`;
+
+function createFallbackProfile(uid, user = {}) {
+  const emailName = String(user?.email || '').split('@')[0];
+  return {
+    uid,
+    displayName: user?.displayName || emailName || 'Zulora Member',
+    email: user?.email || '',
+    photoURL: user?.photoURL || FALLBACK_AVATAR,
+    isPro: false,
+    tier: TIERS.FREE,
+    planTier: 'Free',
+    usage: { chatCount: 0, imageCount: 0, videoCount: 0, tokenUsed: 0 }
+  };
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((_, reject) => {
+      timer = window.setTimeout(() => reject(new Error(`${label} timed out.`)), timeoutMs);
+    })
+  ]).finally(() => window.clearTimeout(timer));
+}
+
+function completeProfile(profile, fallback) {
+  return {
+    ...fallback,
+    ...(profile || {}),
+    uid: fallback.uid,
+    displayName: profile?.displayName || fallback.displayName,
+    email: profile?.email || fallback.email,
+    photoURL: profile?.photoURL || fallback.photoURL,
+    usage: { ...fallback.usage, ...(profile?.usage || {}) }
+  };
+}
 
 async function hydratePersistentUsage(uid, profile) {
   if (!uid || !profile) return profile;
@@ -48,7 +87,8 @@ export const AuthProvider = ({ children }) => {
   const [userProfile, setUserProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [theme, setTheme] = useState(() => {
-    return localStorage.getItem('zulora_theme') || 'dark';
+    try { return localStorage.getItem('zulora_theme') || 'dark'; }
+    catch { return 'dark'; }
   });
   const [isUsageModalOpen, setIsUsageModalOpen] = useState(false);
   const [isPricingModalOpen, setIsPricingModalOpen] = useState(false);
@@ -61,7 +101,8 @@ export const AuthProvider = ({ children }) => {
     } else {
       root.classList.remove('dark');
     }
-    localStorage.setItem('zulora_theme', theme);
+    try { localStorage.setItem('zulora_theme', theme); }
+    catch { /* The selected theme still applies for this session. */ }
   }, [theme]);
 
   const toggleTheme = () => {
@@ -71,10 +112,20 @@ export const AuthProvider = ({ children }) => {
   // Reload user profile from Firestore / storage
   const refreshProfile = useCallback(async (uid, userObj) => {
     if (!uid) return null;
-    const profile = await firestoreService.getUserProfile(uid, userObj);
-    const hydrated = await hydratePersistentUsage(uid, profile);
-    setUserProfile(hydrated);
-    return hydrated;
+    const fallback = createFallbackProfile(uid, userObj);
+    try {
+      const hydrated = await withTimeout((async () => {
+        const profile = await firestoreService.getUserProfile(uid, userObj);
+        return hydratePersistentUsage(uid, completeProfile(profile, fallback));
+      })(), PROFILE_TIMEOUT_MS, 'User profile loading');
+      const safeProfile = completeProfile(hydrated, fallback);
+      setUserProfile(safeProfile);
+      return safeProfile;
+    } catch (error) {
+      console.warn('Using a local fallback profile:', error);
+      setUserProfile(fallback);
+      return fallback;
+    }
   }, []);
 
   const recordUsage = useCallback(async (type, serverTracked = false, estimatedTokens = undefined, skipActionLimit = false) => {
@@ -99,19 +150,33 @@ export const AuthProvider = ({ children }) => {
     }
   }, [currentUser, userProfile, refreshProfile]);
 
-  // Resolve the first auth event and any OAuth redirect before exposing protected tools.
+  // Resolve auth and a possible OAuth redirect before exposing protected tools.
   useEffect(() => {
     let active = true;
-    let initialAuthResolved = false;
-    let redirectResolved = false;
     let latestUid = null;
     let profiledUid = null;
+    let authStateEventSeen = false;
+    let redirectUser = null;
 
-    const finishLoading = () => {
-      if (active && initialAuthResolved && redirectResolved) setLoading(false);
+    let resolveInitialAuth;
+    const initialAuth = new Promise(resolve => { resolveInitialAuth = resolve; });
+
+    const loadProfile = user => {
+      const fallback = createFallbackProfile(user.uid, user);
+      setUserProfile(previous => previous?.uid === user.uid ? previous : fallback);
+      if (profiledUid === user.uid) return;
+      profiledUid = user.uid;
+      withTimeout((async () => {
+        const profile = await firestoreService.getUserProfile(user.uid, user);
+        return hydratePersistentUsage(user.uid, completeProfile(profile, fallback));
+      })(), PROFILE_TIMEOUT_MS, 'User profile loading').then(profile => {
+        if (active && latestUid === user.uid) setUserProfile(completeProfile(profile, fallback));
+      }).catch(error => {
+        console.warn('Could not load the signed-in user profile; using safe defaults:', error);
+      });
     };
 
-    const applyUser = async user => {
+    const applyUser = user => {
       if (!active) return;
       latestUid = user?.uid || null;
       setCurrentUser(user || null);
@@ -120,32 +185,60 @@ export const AuthProvider = ({ children }) => {
         setUserProfile(null);
         return;
       }
-      if (profiledUid === user.uid) return;
-      profiledUid = user.uid;
-      try {
-        const profile = await firestoreService.getUserProfile(user.uid, user);
-        const hydrated = await hydratePersistentUsage(user.uid, profile);
-        if (active && latestUid === user.uid) setUserProfile(hydrated);
-      } catch (error) {
-        console.warn('Could not load the signed-in user profile:', error);
-      }
+      loadProfile(user);
     };
 
-    const unsubscribe = authService.onAuthStateChange(async user => {
-      await applyUser(user);
-      if (!active) return;
-      initialAuthResolved = true;
-      finishLoading();
+    const unsubscribe = authService.onAuthStateChange(user => {
+      try {
+        if (!user && !authStateEventSeen && redirectUser) {
+          authStateEventSeen = true;
+          return;
+        }
+        authStateEventSeen = true;
+        applyUser(user);
+      } catch (error) {
+        console.error('Could not apply the Firebase auth state:', error);
+      } finally {
+        resolveInitialAuth(user || null);
+      }
+    }, error => {
+      try {
+        console.error('Firebase auth state listener failed:', error);
+        if (active) {
+          latestUid = null;
+          profiledUid = null;
+          setCurrentUser(null);
+          setUserProfile(null);
+        }
+      } finally {
+        resolveInitialAuth(null);
+      }
     });
 
-    authService.checkRedirectResult().then(async user => {
-      if (user && active && latestUid !== user.uid) await applyUser(user);
-    }).catch(error => {
-      console.warn('Could not complete sign-in redirect:', error);
-    }).finally(() => {
-      redirectResolved = true;
-      finishLoading();
-    });
+    const redirectResult = withTimeout(authService.checkRedirectResult(), AUTH_BOOTSTRAP_TIMEOUT_MS, 'Google sign-in redirect')
+      .then(user => {
+        if (user && active) {
+          redirectUser = user;
+          if (latestUid !== user.uid) applyUser(user);
+        }
+      })
+      .catch(error => {
+        console.warn('Could not complete Google sign-in redirect:', error);
+      });
+
+    const finishBootstrap = async () => {
+      try {
+        await Promise.all([
+          withTimeout(initialAuth, AUTH_BOOTSTRAP_TIMEOUT_MS, 'Firebase auth initialization'),
+          redirectResult
+        ]);
+      } catch (error) {
+        console.warn('Firebase auth initialization did not finish normally:', error);
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    finishBootstrap();
 
     return () => {
       active = false;
@@ -155,13 +248,19 @@ export const AuthProvider = ({ children }) => {
 
   const signInWithGoogle = async () => {
     setLoading(true);
-    const result = await authService.signInWithGoogle();
-    if (result.success && result.user) {
-      setCurrentUser(result.user);
-      await refreshProfile(result.user.uid, result.user);
+    try {
+      const result = await authService.signInWithGoogle();
+      if (result.success && result.user) {
+        setCurrentUser(result.user);
+        refreshProfile(result.user.uid, result.user);
+      }
+      return result;
+    } catch (error) {
+      console.error('Google sign-in failed:', error);
+      return { success: false, error: error?.message || 'Google sign-in failed.', code: error?.code };
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
-    return result;
   };
 
   const logout = async () => {
