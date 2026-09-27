@@ -125,7 +125,7 @@ export const App = () => {
       navigate('/dashboard');
     }
     if (!currentUser && ['/dashboard', '/vault', '/studio', '/settings'].includes(pathname)) {
-      navigate('/login');
+      navigate('/');
     }
   }, [currentUser, loading, navigate, pathname]);
 
@@ -143,7 +143,7 @@ export const App = () => {
 
   // ── Unauthenticated routes ─────────────────────────────────────────────────
   if (!currentUser) {
-    if (['/signin', '/login', '/dashboard', '/vault', '/studio', '/settings'].includes(pathname)) {
+    if (['/signin', '/login'].includes(pathname)) {
       return <SignIn onAuthenticated={goToDashboard} />;
     }
     // All unauthenticated users → Landing Page (also has sign-in)
@@ -255,9 +255,9 @@ export const App = () => {
             const updated = {
               ...(activeSession || { id: sid, title: 'Voice Chat' }),
               messages: [
-                ...(activeSession?.messages || []),
-                { id: Date.now().toString(), role: 'user', content: turn.user, timestamp: Date.now() },
-                { id: (Date.now() + 1).toString(), role: 'assistant', content: turn.assistant, timestamp: Date.now(), model: 'Gemini Live Voice' }
+                ...(Array.isArray(activeSession?.messages) ? activeSession.messages : []),
+                { id: Date.now().toString(), role: 'user', content: turn?.user || '', timestamp: Date.now() },
+                { id: (Date.now() + 1).toString(), role: 'assistant', content: turn?.assistant || '', timestamp: Date.now(), model: 'Gemini Live Voice' }
               ],
               updatedAt: Date.now()
             };

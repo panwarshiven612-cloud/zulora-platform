@@ -11,25 +11,12 @@ export default class ErrorBoundary extends React.Component {
     console.error('Uncaught application rendering error:', error, errorInfo);
   }
 
-  handleReload = () => {
-    const removeStorageKey = key => {
-      try { window.localStorage.removeItem(key); }
-      catch { /* Storage may be disabled; still navigate to the clean app route. */ }
-    };
-
-    removeStorageKey('activeChatId');
-    removeStorageKey('zulora_state');
-
+  handleReset = () => {
     try {
-      const activeChatKeys = [];
-      for (let index = 0; index < window.localStorage.length; index += 1) {
-        const key = window.localStorage.key(index);
-        if (key?.startsWith('zulora_active_chat_')) activeChatKeys.push(key);
-      }
-      activeChatKeys.forEach(removeStorageKey);
-    } catch { /* A storage access failure should not block the recovery navigation. */ }
-
-    this.setState({ hasError: false, error: null });
+      window.localStorage.clear();
+    } catch (error) {
+      console.warn('Could not clear local app state during recovery:', error);
+    }
     window.location.href = '/';
   };
 
@@ -51,7 +38,7 @@ export default class ErrorBoundary extends React.Component {
           <p style={{ margin: '0 0 24px', color: '#a9b7cc', lineHeight: 1.6 }}>Reload the app to restore your workspace.</p>
           <button
             type="button"
-            onClick={this.handleReload}
+            onClick={this.handleReset}
             style={{ border: 0, borderRadius: '12px', padding: '12px 20px', color: '#07111e', background: 'linear-gradient(110deg,#7dd3fc,#38bdf8)', fontWeight: 700, cursor: 'pointer' }}
           >
             Reload App

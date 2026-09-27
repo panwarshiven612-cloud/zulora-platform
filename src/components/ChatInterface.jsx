@@ -499,7 +499,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 
   // Sync messages when activeSession changes
   useEffect(() => {
-    if (activeSession?.messages) {
+    if (Array.isArray(activeSession?.messages)) {
       setMessages(activeSession.messages);
     } else {
       setMessages([]);
@@ -836,25 +836,28 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       onUpdateSession?.(updatedSession);
 
     } catch (err) {
-      console.error('Chat error:', err);
-      if (err.status === 429 || (err.payload?.upgradeRequired && err.payload?.usage?.blocked)) {
+      const error = err && typeof err === 'object'
+        ? err
+        : new Error(String(err || 'Unknown error'));
+      console.error('Chat error:', error);
+      if (error.status === 429 || (error.payload?.upgradeRequired && error.payload?.usage?.blocked)) {
         setMessages(newMessages);
         setIsUsageModalOpen(true);
         return;
       }
-      if (err.status === 403) {
-        if (err.payload?.upgradeRequired) setIsPricingModalOpen(true);
+      if (error.status === 403) {
+        if (error.payload?.upgradeRequired) setIsPricingModalOpen(true);
         else setIsUsageModalOpen(true);
       }
       const errorMsg = {
         id: (Date.now() + 2).toString(),
         role: 'assistant',
-        content: `⚠️ **Generation failed**: ${err.message || 'All AI providers unavailable. Please check your connection and try again.'}`,
+        content: `⚠️ **Generation failed**: ${error.message || 'All AI providers unavailable. Please check your connection and try again.'}`,
         timestamp: Date.now(),
         model: 'Error',
       };
       if (streamedText) {
-        errorMsg.content = `${streamedText}\n\n_Response interrupted: ${err.message || 'the connection ended before completion.'}_`;
+        errorMsg.content = `${streamedText}\n\n_Response interrupted: ${error.message || 'the connection ended before completion.'}_`;
       }
       const failedMessages = [...newMessages, errorMsg];
       setMessages(failedMessages);

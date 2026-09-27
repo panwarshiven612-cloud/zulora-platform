@@ -13,8 +13,29 @@ export const Chat = ({
   onNewChat,
   onOpenMobileSidebar
 }) => {
-  const { currentUser } = useAuth();
+  const { currentUser, loading } = useAuth();
   const [isVoiceOpen, setIsVoiceOpen] = useState(false);
+
+  useEffect(() => {
+    if (loading || currentUser) return;
+    try { window.location.replace('/'); }
+    catch { window.location.href = '/'; }
+  }, [loading, currentUser]);
+
+  if (loading) {
+    return (
+      <div role="status" aria-live="polite" className="min-h-screen grid place-items-center bg-[#f8fafc] dark:bg-[#070b14]">
+        <div className="flex items-center gap-3 rounded-2xl border border-white/20 bg-white/70 px-5 py-4 shadow-xl backdrop-blur-xl dark:bg-slate-900/70">
+          <span className="h-5 w-5 animate-spin rounded-full border-2 border-sky-500 border-t-transparent" />
+          <span className="text-sm text-slate-600 dark:text-slate-300">Loading your chat…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return <div role="status" className="min-h-screen grid place-items-center bg-[#f8fafc] text-sm text-slate-600 dark:bg-[#070b14] dark:text-slate-300">Returning to Zulora AI…</div>;
+  }
 
   return (
     <div className="flex-1 min-h-0 min-w-0 flex flex-col h-full overflow-hidden relative bg-[#f8fafc] dark:bg-[#070b14]">
@@ -81,9 +102,9 @@ export const Chat = ({
             const updated = {
               ...activeSession,
               messages: [
-                ...(activeSession.messages || []),
-                { id: Date.now().toString(), role: 'user', content: turn.user, timestamp: Date.now() },
-                { id: (Date.now() + 1).toString(), role: 'assistant', content: turn.assistant, timestamp: Date.now(), model: 'Gemini Live Voice' }
+                ...(Array.isArray(activeSession?.messages) ? activeSession.messages : []),
+                { id: Date.now().toString(), role: 'user', content: turn?.user || '', timestamp: Date.now() },
+                { id: (Date.now() + 1).toString(), role: 'assistant', content: turn?.assistant || '', timestamp: Date.now(), model: 'Gemini Live Voice' }
               ],
               updatedAt: Date.now()
             };

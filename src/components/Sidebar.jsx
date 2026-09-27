@@ -100,24 +100,33 @@ export const Sidebar = ({
 
   const handleSaveRename = async (sessionId, e) => {
     e?.stopPropagation();
-    if (!editTitle.trim()) return;
+    if (!currentUser?.uid || !sessionId || !editTitle.trim()) return;
     const title = editTitle.trim();
-    await firestoreService.renameChatSession(currentUser.uid, sessionId, title);
-    setSessions(previous => previous.map(session => session.id === sessionId ? { ...session, title, updatedAt: Date.now() } : session));
-    const activeSession = sessions.find(session => session.id === sessionId);
-    if (activeSession) onUpdateSession?.({ ...activeSession, title });
-    setEditingId(null);
-    await loadSessions();
+    try {
+      await firestoreService.renameChatSession(currentUser.uid, sessionId, title);
+      setSessions(previous => previous.map(session => session.id === sessionId ? { ...session, title, updatedAt: Date.now() } : session));
+      const activeSession = sessions.find(session => session.id === sessionId);
+      if (activeSession) onUpdateSession?.({ ...activeSession, title });
+      setEditingId(null);
+      await loadSessions();
+    } catch (error) {
+      console.warn('Could not rename chat session:', error);
+    }
   };
 
   const handleDelete = async (sessionId, e) => {
     e.stopPropagation();
-    if (confirm('Delete this chat session?')) {
-      await firestoreService.deleteChatSession(currentUser.uid, sessionId);
-      if (currentChatId === sessionId) {
-        onNewChat();
+    if (!currentUser?.uid || !sessionId) return;
+    try {
+      if (confirm('Delete this chat session?')) {
+        await firestoreService.deleteChatSession(currentUser.uid, sessionId);
+        if (currentChatId === sessionId) {
+          onNewChat?.();
+        }
+        await loadSessions();
       }
-      await loadSessions();
+    } catch (error) {
+      console.warn('Could not delete chat session:', error);
     }
   };
 
@@ -147,9 +156,14 @@ export const Sidebar = ({
       <div
         key={session.id}
         onClick={async () => {
-          const fullSession = currentUser?.uid
-            ? await firestoreService.getChatSession(currentUser.uid, session.id)
-            : null;
+          let fullSession = null;
+          try {
+            fullSession = currentUser?.uid
+              ? await firestoreService.getChatSession(currentUser.uid, session.id)
+              : null;
+          } catch (error) {
+            console.warn('Could not load chat session details:', error);
+          }
           onSelectChat(fullSession || session);
           if (onCloseMobile) onCloseMobile();
         }}

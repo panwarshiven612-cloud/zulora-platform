@@ -157,7 +157,7 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
               aria-expanded={profileMenuOpen}
             >
               {currentUser?.photoURL ? (
-                <img src={currentUser.photoURL} alt="" className="w-6 h-6 rounded-lg object-cover flex-shrink-0" />
+                <img src={currentUser?.photoURL} alt="" className="w-6 h-6 rounded-lg object-cover flex-shrink-0" />
               ) : (
                 <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-sky-500 to-indigo-500 flex items-center justify-center">
                   <span className="text-[10px] font-bold text-white">{currentUser?.displayName?.[0] || '?'}</span>
@@ -173,7 +173,7 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
                 <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800/60">
                   <div className="flex items-center gap-2.5">
                     {currentUser?.photoURL ? (
-                      <img src={currentUser.photoURL} alt="" className="w-9 h-9 rounded-xl object-cover" />
+                      <img src={currentUser?.photoURL} alt="" className="w-9 h-9 rounded-xl object-cover" />
                     ) : (
                       <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-500 to-indigo-500 flex items-center justify-center">
                         <span className="font-bold text-white text-sm">{currentUser?.displayName?.[0] || '?'}</span>
