@@ -13,7 +13,7 @@ const TAB_CONFIG = [
   { id: 'chat',  label: 'AI Chat',       icon: MessageSquare, description: 'Multi-model chat' },
   { id: 'image', label: 'Image Studio',  icon: ImageIcon,     description: 'AI image generation' },
   { id: 'video', label: 'Video Studio',  icon: Film,          description: 'AI video synthesis' },
-  { id: 'studio', label: 'AI Studio',    icon: Code2,         description: 'AI website builder' },
+  { id: 'studio', label: 'Code Editor',  icon: Code2,         description: 'AI website builder' },
 ];
 
 const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, onNewChat, onOpenVoiceAssistant }) => {
@@ -159,7 +159,7 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
               <img
                 src={currentUser?.photoURL || '/default-avatar.svg'}
                 onError={event => { event.currentTarget.onerror = null; event.currentTarget.src = '/default-avatar.svg'; }}
-                alt={`${currentUser?.displayName || 'User'} avatar`}
+                alt={`${currentUser?.displayName || 'Shiven'} avatar`}
                 className="w-6 h-6 rounded-lg object-cover flex-shrink-0"
               />
               <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform duration-200 hidden sm:block ${profileMenuOpen ? 'rotate-180' : ''}`} />
@@ -174,11 +174,11 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
                     <img
                       src={currentUser?.photoURL || '/default-avatar.svg'}
                       onError={event => { event.currentTarget.onerror = null; event.currentTarget.src = '/default-avatar.svg'; }}
-                      alt={`${currentUser?.displayName || 'User'} avatar`}
+                      alt={`${currentUser?.displayName || 'Shiven'} avatar`}
                       className="w-9 h-9 rounded-xl object-cover"
                     />
                     <div className="min-w-0">
-                      <p className="font-semibold text-slate-900 dark:text-white text-sm truncate">{currentUser?.displayName || 'User'}</p>
+                      <p className="font-semibold text-slate-900 dark:text-white text-sm truncate">{currentUser?.displayName || 'Shiven'}</p>
                       <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">{currentUser?.email || ''}</p>
                     </div>
                   </div>

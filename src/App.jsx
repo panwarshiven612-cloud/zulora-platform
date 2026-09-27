@@ -1,283 +1,138 @@
-import React, { Suspense, lazy, useCallback, useEffect, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { useAuth } from './context/AuthContext';
-import UsageLimitsModal from './components/UsageLimitsModal';
-import PricingModal from './components/PricingModal';
 import LandingPage from './components/LandingPage';
 import SignIn from './pages/SignIn';
-import AccountSettings from './pages/AccountSettings';
+import Dashboard from './pages/Dashboard';
 
-const Navbar        = lazy(() => import('./components/Navbar'));
-const Sidebar       = lazy(() => import('./components/Sidebar'));
-const ChatInterface = lazy(() => import('./components/ChatInterface'));
-const ImageGenerator = lazy(() => import('./components/ImageGenerator'));
-const VideoGenerator = lazy(() => import('./components/VideoGenerator'));
-const AiBrain = lazy(() => import('./components/AiBrain'));
-const UserVault = lazy(() => import('./components/UserVault'));
 const AIStudio = lazy(() => import('./pages/AIStudio'));
-const VoiceAssistantModal = lazy(() => import('./components/VoiceAssistantModal'));
 
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
-const readLocalStorage = key => {
-  try { return window.localStorage.getItem(key); }
-  catch (error) {
-    console.warn(`Could not read local state (${key}); continuing without it:`, error);
-    return null;
-  }
-};
-const writeLocalStorage = (key, value) => {
-  try { window.localStorage.setItem(key, value); return true; }
-  catch (error) {
-    console.warn(`Could not save local state (${key}):`, error);
-    return false;
-  }
+const WORKSPACE_TABS = {
+  '/dashboard': 'chat',
+  '/image': 'image',
+  '/video': 'video',
+  '/brain': 'brain',
+  '/vault': 'vault'
 };
 
-const LoadingSpinner = () => (
-  <div role="status" aria-live="polite" aria-label="Checking your secure sign-in" className="min-h-screen flex flex-col items-center justify-center bg-[#f8fafc] dark:bg-[#070b14]">
-    <div className="p-6 rounded-3xl glass-pearl dark:glass-dark border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col items-center space-y-4">
-      <div className="relative">
-        <img src={LOGO_URL} alt="Zulora" className="w-16 h-16 rounded-2xl object-cover ring-2 ring-sky-500 shadow-lg animate-pulse" />
-        <div className="absolute -inset-1 rounded-2xl bg-sky-500/30 blur animate-ping" />
-        <div className="absolute -inset-1 rounded-2xl border-2 border-sky-300/70 border-t-transparent animate-spin" />
-      </div>
-      <div className="text-center space-y-1">
-        <h2 className="text-lg font-black tracking-tight text-slate-900 dark:text-white">
-          Zulora <span className="text-sky-500">AI</span>
-        </h2>
-        <p className="text-xs text-slate-500 dark:text-slate-400">
-          Initializing Secure Multi-Model Intelligence...
-        </p>
-      </div>
+const AppLoading = ({ label = 'Opening your workspace...' }) => (
+  <main role="status" aria-live="polite" className="min-h-screen grid place-items-center bg-slate-50 text-slate-700 dark:bg-[#070b14] dark:text-slate-200">
+    <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/85 px-5 py-4 shadow-xl backdrop-blur-xl dark:border-slate-800 dark:bg-slate-900/85">
+      <img src={LOGO_URL} alt="" className="h-10 w-10 rounded-xl object-cover" />
+      <span className="h-5 w-5 animate-spin rounded-full border-2 border-sky-500 border-t-transparent" />
+      <span className="text-sm font-medium">{label}</span>
     </div>
-  </div>
+  </main>
 );
 
-export const App = () => {
-  const {
-    currentUser,
-    isAuthenticated,
-    loading,
-    isUsageModalOpen,
-    setIsUsageModalOpen,
-    isPricingModalOpen,
-    setIsPricingModalOpen,
-  } = useAuth();
+export class AppErrorBoundary extends React.Component {
+  state = { hasError: false };
 
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('Zulora AI could not render this view:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <main role="alert" className="min-h-screen grid place-items-center bg-slate-50 px-6 text-slate-800 dark:bg-[#070b14] dark:text-slate-100">
+          <section className="max-w-md rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-xl dark:border-slate-800 dark:bg-slate-900">
+            <img src={LOGO_URL} alt="Zulora AI" className="mx-auto mb-5 h-12 w-12 rounded-2xl object-cover" />
+            <h1 className="text-xl font-bold">This view hit a snag</h1>
+            <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
+              Zulora AI caught a rendering error. Reload the workspace to try again.
+            </p>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-6 rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-600"
+            >
+              Reload workspace
+            </button>
+          </section>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+const AppRouter = () => {
+  const { isAuthenticated, loading } = useAuth();
   const [pathname, setPathname] = useState(() => {
     try { return window.location.pathname || '/'; }
     catch { return '/'; }
   });
-  const [activeTab, setActiveTab] = useState('chat');
-  const [activeSession, setActiveSession] = useState(null);
-  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
 
   const navigate = useCallback((path, replace = true) => {
-    try { window.history[replace ? 'replaceState' : 'pushState']({}, '', path); }
-    catch (error) {
-      console.warn('Client-side navigation failed; using a full page navigation:', error);
-      try { window.location.assign(path); } catch { /* The current view remains usable. */ }
+    const safePath = typeof path === 'string' && path.startsWith('/') ? path : '/';
+    try {
+      window.history[replace ? 'replaceState' : 'pushState']({}, '', safePath);
+    } catch (error) {
+      console.error('App navigation failed:', error);
+      try { window.location.assign(safePath); }
+      catch (navigationError) { console.error('Full page navigation failed:', navigationError); }
     }
-    setPathname(path);
+    setPathname(safePath);
   }, []);
 
-  const selectTab = useCallback(tab => {
-    setActiveTab(tab);
-    if (currentUser) navigate(tab === 'vault' ? '/vault' : tab === 'studio' ? '/studio' : '/dashboard');
-  }, [currentUser, navigate]);
-
   useEffect(() => {
-    const handlePopState = () => setPathname(window.location.pathname);
+    const handlePopState = () => {
+      try { setPathname(window.location.pathname || '/'); }
+      catch (error) {
+        console.error('Could not read the current route:', error);
+        setPathname('/');
+      }
+    };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  useEffect(() => {
-    const uid = currentUser?.uid;
-    if (!uid) {
-      setActiveSession(null);
-      return undefined;
-    }
-    let active = true;
-    const activeChatKey = `zulora_active_chat_${uid}`;
-    let sessionId = readLocalStorage(activeChatKey);
-    if (sessionId && (sessionId.length > 150 || sessionId.includes('/'))) {
-      try { window.localStorage.removeItem(activeChatKey); } catch { /* Ignore corrupt or unavailable storage. */ }
-      sessionId = null;
-    }
-    if (!sessionId) {
-      setActiveSession(null);
-      return undefined;
-    }
-    import('./services/firestoreService').then(({ firestoreService }) => firestoreService.getChatSession(uid, sessionId)).then(session => {
-      if (active) setActiveSession(session || null);
-    }).catch(error => {
-      console.warn('Could not restore the active chat:', error.message);
-      if (active) setActiveSession(null);
-    });
-    return () => { active = false; };
-  }, [currentUser?.uid]);
-
-  // ── Post-login redirect logic ──────────────────────────────────────────────
   useEffect(() => {
     if (isAuthenticated && ['/', '/signin', '/login', '/chat'].includes(pathname)) {
       navigate('/dashboard');
       return;
     }
     if (loading) return;
-    if (!isAuthenticated && ['/dashboard', '/chat', '/vault', '/studio', '/settings'].includes(pathname)) {
+    if (!isAuthenticated && ['/dashboard', '/chat', '/image', '/video', '/brain', '/vault', '/studio', '/settings'].includes(pathname)) {
       navigate('/');
     }
   }, [isAuthenticated, loading, navigate, pathname]);
 
-  useEffect(() => {
-    if (pathname === '/vault') setActiveTab('vault');
-    else if (pathname === '/studio') setActiveTab('studio');
-    else if (pathname === '/dashboard' && activeTab === 'studio') setActiveTab('chat');
-    else if (pathname === '/dashboard' && activeTab === 'vault') setActiveTab('chat');
-  }, [pathname, activeTab]);
+  // Dashboard owns its auth-loading state, so a direct /dashboard visit mounts
+  // the workspace immediately while authentication finishes in the background.
+  if (pathname in WORKSPACE_TABS) {
+    return <Dashboard initialTab={WORKSPACE_TABS[pathname]} onNavigate={navigate} />;
+  }
 
-  const goToDashboard = useCallback(() => navigate('/dashboard'), [navigate]);
+  if (loading && !isAuthenticated) return <AppLoading label="Checking your secure sign-in..." />;
 
-  // ── Loading state ──────────────────────────────────────────────────────────
-  if (loading && !isAuthenticated) return <LoadingSpinner />;
-
-  // ── Unauthenticated routes ─────────────────────────────────────────────────
   if (!isAuthenticated) {
-    if (['/signin', '/login'].includes(pathname)) {
-      return <SignIn onAuthenticated={goToDashboard} />;
+    if (pathname === '/login' || pathname === '/signin') {
+      return <SignIn onAuthenticated={() => navigate('/dashboard')} />;
     }
-    // All unauthenticated users → Landing Page (also has sign-in)
-    return <LandingPage onSignIn={goToDashboard} />;
+    return <LandingPage onSignIn={() => navigate('/login')} />;
   }
 
-  if (pathname === '/studio' || activeTab === 'studio') {
-    return <Suspense fallback={<div className="min-h-screen grid place-items-center bg-[#070914] text-slate-300">Opening AI Studio…</div>}>
-      <AIStudio onExitDashboard={() => { setActiveTab('chat'); navigate('/dashboard'); }} />
-    </Suspense>;
-  }
-
-  // ── Authenticated: Dashboard ───────────────────────────────────────────────
-  const handleNewChat = useCallback(async () => {
-    // Preserve current ongoing chat before switching
-    if (currentUser?.uid && activeSession?.id && activeSession?.messages?.length > 0) {
-      try {
-        const { firestoreService } = await import('./services/firestoreService');
-        await firestoreService.saveChatSession(currentUser.uid, activeSession.id, activeSession);
-      } catch (err) {
-        console.warn('Could not auto-save previous chat before new chat:', err);
-      }
-    }
-
-    const newChatId = `chat_${Date.now()}`;
-    const freshSession = {
-      id: newChatId,
-      title: 'New Chat',
-      messages: [],
-      updatedAt: Date.now()
-    };
-
-    if (currentUser?.uid) writeLocalStorage(`zulora_active_chat_${currentUser.uid}`, newChatId);
-    setActiveSession(freshSession);
-    setActiveTab('chat');
-    if (pathname === '/vault' || pathname === '/studio') navigate('/dashboard');
-  }, [currentUser?.uid, activeSession, pathname, navigate]);
-
-  const handleSelectChat = session => {
-    if (!session || typeof session !== 'object') return;
-    if (currentUser?.uid && session?.id) writeLocalStorage(`zulora_active_chat_${currentUser.uid}`, String(session.id));
-    setActiveSession(session);
-    setActiveTab('chat');
-    if (pathname === '/vault' || pathname === '/studio') navigate('/dashboard');
-  };
-  const handleUpdateSession = (updatedSession) => {
-    if (!updatedSession || typeof updatedSession !== 'object') return;
-    if (currentUser?.uid && updatedSession?.id) writeLocalStorage(`zulora_active_chat_${currentUser.uid}`, String(updatedSession.id));
-    setActiveSession(updatedSession);
-  };
-  const handleSidebarSessionUpdate = updatedSession => {
-    if (!updatedSession || typeof updatedSession !== 'object') return;
-    setActiveSession(previous => previous?.id === updatedSession.id ? { ...previous, ...updatedSession } : previous);
-  };
-
-  return (
-    <div className="h-dvh min-h-0 flex flex-col overflow-hidden bg-[#f8fafc] dark:bg-[#070b14] text-slate-900 dark:text-slate-100 transition-colors duration-200">
-
-      <Suspense fallback={<div className="flex-1 grid place-items-center text-sm text-slate-500">Loading workspace...</div>}>
-
-        {/* Navbar */}
-        <Navbar
-          activeTab={activeTab}
-          setActiveTab={selectTab}
-          onOpenMobileSidebar={() => setIsMobileSidebarOpen(true)}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-          onNewChat={handleNewChat}
-          onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
-        />
-
-        {/* Main Workspace */}
-        <div className="flex-1 min-h-0 flex overflow-hidden">
-          <Sidebar
-            currentChatId={activeSession?.id}
-            onSelectChat={handleSelectChat}
-            onNewChat={handleNewChat}
-            onUpdateSession={handleSidebarSessionUpdate}
-            isMobileOpen={isMobileSidebarOpen}
-            onCloseMobile={() => setIsMobileSidebarOpen(false)}
-            setActiveTab={selectTab}
-          />
-
-          <main className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden relative">
-            {activeTab === 'chat' && (
-              <ChatInterface
-                activeSession={activeSession}
-                onUpdateSession={handleUpdateSession}
-                onNewChat={handleNewChat}
-                onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
-              />
-            )}
-            {activeTab === 'image' && <ImageGenerator />}
-            {activeTab === 'video' && <VideoGenerator />}
-            {activeTab === 'brain' && <AiBrain />}
-            {activeTab === 'vault' && <UserVault />}
-          </main>
-        </div>
-
+  if (pathname === '/studio') {
+    return (
+      <Suspense fallback={<AppLoading label="Opening the code editor..." />}>
+        <AIStudio onExitDashboard={() => navigate('/dashboard')} />
       </Suspense>
+    );
+  }
 
-      {/* Voice Assistant Modal */}
-      <VoiceAssistantModal
-        isOpen={isVoiceModalOpen}
-        onClose={() => setIsVoiceModalOpen(false)}
-        currentUser={currentUser}
-        onNewTurn={turn => {
-          if (currentUser?.uid) {
-            const sid = activeSession?.id || `chat_${Date.now()}`;
-            const updated = {
-              ...(activeSession || { id: sid, title: 'Voice Chat' }),
-              messages: [
-                ...(Array.isArray(activeSession?.messages) ? activeSession.messages : []),
-                { id: Date.now().toString(), role: 'user', content: turn?.user || '', timestamp: Date.now() },
-                { id: (Date.now() + 1).toString(), role: 'assistant', content: turn?.assistant || '', timestamp: Date.now(), model: 'Gemini Live Voice' }
-              ],
-              updatedAt: Date.now()
-            };
-            handleUpdateSession(updated);
-            import('./services/firestoreService').then(({ firestoreService }) => {
-              firestoreService.saveChatSession(currentUser.uid, sid, updated);
-            }).catch(console.warn);
-          }
-        }}
-      />
-
-      {/* Modals */}
-      <UsageLimitsModal isOpen={isUsageModalOpen} onClose={() => setIsUsageModalOpen(false)} />
-      <PricingModal isOpen={isPricingModalOpen} onClose={() => setIsPricingModalOpen(false)} />
-      {isSettingsOpen && <AccountSettings onClose={() => setIsSettingsOpen(false)} />}
-
-    </div>
-  );
+  return <Dashboard initialTab="chat" onNavigate={navigate} />;
 };
+
+export const App = () => (
+  <AppErrorBoundary>
+    <AppRouter />
+  </AppErrorBoundary>
+);
 
 export default App;

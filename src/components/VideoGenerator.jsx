@@ -47,10 +47,16 @@ export const VideoGenerator = () => {
   // Load user generated videos from Firestore / LocalStorage
   const loadVideos = async () => {
     if (!currentUser?.uid) return;
-    const items = await firestoreService.getUserAssets(currentUser.uid, 'video');
-    setGallery(items);
-    if (items.length > 0 && !activeVideo) {
-      setActiveVideo(items[0]);
+    try {
+      const items = await firestoreService.getUserAssets(currentUser.uid, 'video');
+      const safeItems = Array.isArray(items) ? items.filter(item => item && typeof item === 'object') : [];
+      setGallery(safeItems);
+      if (safeItems.length > 0 && !activeVideo) {
+        setActiveVideo(safeItems[0]);
+      }
+    } catch (error) {
+      console.warn('Could not load video history:', error);
+      setGallery([]);
     }
   };
 

@@ -65,8 +65,13 @@ export const ImageGenerator = () => {
   // Load previous generated images from Firestore / LocalStorage
   const loadGallery = async () => {
     if (!currentUser?.uid) return;
-    const items = await firestoreService.getUserAssets(currentUser.uid, 'image');
-    setGallery(items);
+    try {
+      const items = await firestoreService.getUserAssets(currentUser.uid, 'image');
+      setGallery(Array.isArray(items) ? items.filter(item => item && typeof item === 'object') : []);
+    } catch (error) {
+      console.warn('Could not load image history:', error);
+      setGallery([]);
+    }
   };
 
   useEffect(() => {

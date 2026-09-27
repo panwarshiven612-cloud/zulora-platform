@@ -40,6 +40,9 @@ export const Sidebar = ({
     setIsPricingModalOpen 
   } = useAuth();
 
+  const safeUsage = usage && typeof usage === 'object' ? usage : {};
+  const safeLimits = limits && typeof limits === 'object' ? limits : {};
+
   const [sessions, setSessions] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [editTitle, setEditTitle] = useState('');
@@ -51,7 +54,7 @@ export const Sidebar = ({
     if (!currentUser?.uid) return;
     try {
       const list = await firestoreService.getChatSessions(currentUser.uid);
-      setSessions(Array.isArray(list) ? list : []);
+      setSessions(Array.isArray(list) ? list.filter(session => session && typeof session === 'object') : []);
     } catch (error) {
       console.warn('Could not load chat sessions; showing an empty list:', error);
       setSessions([]);
@@ -67,7 +70,7 @@ export const Sidebar = ({
   // Dynamic countdown timer for Chat Window (2 hours rolling)
   useEffect(() => {
     const updateCountdown = () => {
-      const windowStart = usage.chatWindowStart || Date.now();
+      const windowStart = safeUsage.chatWindowStart || Date.now();
       const twoHours = 2 * 60 * 60 * 1000;
       const msLeft = Math.max(0, (windowStart + twoHours) - Date.now());
 
@@ -90,7 +93,7 @@ export const Sidebar = ({
     updateCountdown();
     const timer = setInterval(updateCountdown, 1000);
     return () => clearInterval(timer);
-  }, [usage.chatWindowStart]);
+  }, [safeUsage.chatWindowStart]);
 
   const handleStartRename = (session, e) => {
     e.stopPropagation();
@@ -142,9 +145,9 @@ export const Sidebar = ({
   });
   const olderSessions = sessions.filter(s => now - (s.updatedAt || 0) >= sevenDays);
   const tokenCap = tier === TIERS.ULTRA ? 100_000 : tier === TIERS.PRO ? 50_000 : 10_000;
-  const tokenWindowStart = Number(usage.tokenWindowStart) || Date.now();
+  const tokenWindowStart = Number(safeUsage.tokenWindowStart) || Date.now();
   const tokenWindowExpired = Date.now() - tokenWindowStart >= oneDay || tokenWindowStart > Date.now();
-  const tokenPercent = tokenWindowExpired ? 0 : Math.max(0, Math.min(100, Math.floor(((Number(usage.tokenUsed) || 0) / tokenCap) * 100)));
+  const tokenPercent = tokenWindowExpired ? 0 : Math.max(0, Math.min(100, Math.floor(((Number(safeUsage.tokenUsed) || 0) / tokenCap) * 100)));
   const tokenResetAt = new Date((tokenWindowExpired ? Date.now() : tokenWindowStart) + oneDay)
     .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -373,6 +376,21 @@ export const Sidebar = ({
               <Clock className="w-3 h-3 text-slate-400" />
               <span>Resets {tokenResetAt}</span>
             </span>
+          </div>
+
+          <div className="grid grid-cols-3 gap-1.5" aria-label="Usage counters">
+            {[
+              { label: 'Chats', used: safeUsage.chatCount ?? safeUsage.textUsed ?? 0, limit: safeLimits.chat },
+              { label: 'Images', used: safeUsage.imageCount ?? safeUsage.imageUsed ?? 0, limit: safeLimits.image },
+              { label: 'Videos', used: safeUsage.videoCount ?? safeUsage.videoUsed ?? 0, limit: safeLimits.video }
+            ].map(counter => (
+              <div key={counter.label} className="rounded-lg bg-slate-50 px-2 py-1.5 text-center dark:bg-slate-900/70">
+                <p className="text-[9px] font-medium text-slate-500 dark:text-slate-400">{counter.label}</p>
+                <p className="text-[11px] font-bold text-slate-800 dark:text-slate-200">
+                  {Number(counter.used) || 0}{Number(counter.limit) > 0 ? ` / ${Number(counter.limit)}` : ''}
+                </p>
+              </div>
+            ))}
           </div>
 
           {/* Daily token allocation */}

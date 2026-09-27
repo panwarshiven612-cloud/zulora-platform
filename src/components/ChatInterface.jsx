@@ -127,10 +127,11 @@ const CodeBlock = memo(({ language, value }) => {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
+    if (!navigator.clipboard?.writeText) return;
     navigator.clipboard.writeText(value).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    });
+    }).catch(error => console.warn('Could not copy code:', error));
   }, [value]);
 
   return (
@@ -500,7 +501,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   // Sync messages when activeSession changes
   useEffect(() => {
     if (Array.isArray(activeSession?.messages)) {
-      setMessages(activeSession.messages);
+      setMessages(activeSession.messages.filter(message => message && typeof message === 'object'));
     } else {
       setMessages([]);
     }
@@ -565,10 +566,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   };
 
   const handleCopy = useCallback((text, index) => {
+    if (!navigator.clipboard?.writeText) return;
     navigator.clipboard.writeText(text).then(() => {
       setCopiedIndex(index);
       setTimeout(() => setCopiedIndex(null), 2000);
-    });
+    }).catch(error => console.warn('Could not copy chat text:', error));
   }, []);
 
   const handleEditPrompt = useCallback(text => {
@@ -893,7 +895,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-4 md:px-6 py-4 sm:py-6 space-y-6 scroll-smooth"
       >
         {messages.length === 0 ? (
-          <WelcomeScreen user={currentUser} onSuggestion={(q) => sendMessage(q)} />
+          <WelcomeScreen user={{ displayName: currentUser?.displayName || 'Shiven' }} onSuggestion={(q) => sendMessage(q)} />
         ) : (
           <>
             {messages.map((msg, i) => (
