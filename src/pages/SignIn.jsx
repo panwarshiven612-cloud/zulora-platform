@@ -104,8 +104,12 @@ export const SignIn = ({ onAuthenticated }) => {
 
   // Persist consent in localStorage so we don't re-ask on auth redirect return
   useEffect(() => {
-    const saved = localStorage.getItem('zulora_consent_given');
-    if (saved === 'true') setConsent(true);
+    try {
+      const saved = localStorage.getItem('zulora_consent_given');
+      if (saved === 'true') setConsent(true);
+    } catch (storageError) {
+      console.warn('Could not read saved sign-in consent:', storageError);
+    }
   }, []);
 
   const signIn = async () => {
@@ -114,7 +118,8 @@ export const SignIn = ({ onAuthenticated }) => {
       setTimeout(() => setConsentError(false), 3000);
       return;
     }
-    localStorage.setItem('zulora_consent_given', 'true');
+    try { localStorage.setItem('zulora_consent_given', 'true'); }
+    catch (storageError) { console.warn('Could not save sign-in consent:', storageError); }
     setBusy(true);
     setError('');
     try {

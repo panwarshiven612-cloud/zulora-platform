@@ -3,7 +3,28 @@ import { authService } from '../services/authService';
 import { firestoreService, TIERS } from '../services/firestoreService';
 import { rateLimiter } from '../services/rateLimiter';
 
-const AuthContext = createContext(null);
+const noop = () => {};
+const SAFE_AUTH_CONTEXT = {
+  currentUser: null,
+  userProfile: null,
+  loading: true,
+  tier: TIERS.FREE,
+  limits: { chat: 50, image: 30, video: 4 },
+  usage: { chatCount: 0, imageCount: 0, videoCount: 0 },
+  theme: 'dark',
+  toggleTheme: noop,
+  signInWithGoogle: async () => ({ success: false, error: 'Authentication is unavailable.' }),
+  logout: async () => {},
+  refreshProfile: async () => null,
+  isPro: false,
+  checkUsage: async () => ({ allowed: false, error: 'Authentication is unavailable.' }),
+  recordUsage: async () => null,
+  isUsageModalOpen: false,
+  setIsUsageModalOpen: noop,
+  isPricingModalOpen: false,
+  setIsPricingModalOpen: noop
+};
+const AuthContext = createContext(SAFE_AUTH_CONTEXT);
 const PROFILE_TIMEOUT_MS = 8_000;
 const AUTH_BOOTSTRAP_TIMEOUT_MS = 12_000;
 const FALLBACK_AVATAR = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#38bdf8"/><stop offset="1" stop-color="#6366f1"/></linearGradient></defs><rect width="64" height="64" rx="18" fill="url(#g)"/><circle cx="32" cy="25" r="11" fill="#eaf7ff"/><path d="M12 58c2-13 9-20 20-20s18 7 20 20" fill="#eaf7ff"/></svg>')}`;
@@ -324,11 +345,7 @@ export const AuthProvider = ({ children }) => {
 };
 
 export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
+  return useContext(AuthContext) || SAFE_AUTH_CONTEXT;
 };
 
 export default AuthContext;

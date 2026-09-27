@@ -17,6 +17,20 @@ const AIStudio = lazy(() => import('./pages/AIStudio'));
 const VoiceAssistantModal = lazy(() => import('./components/VoiceAssistantModal'));
 
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
+const readLocalStorage = key => {
+  try { return window.localStorage.getItem(key); }
+  catch (error) {
+    console.warn(`Could not read local state (${key}); continuing without it:`, error);
+    return null;
+  }
+};
+const writeLocalStorage = (key, value) => {
+  try { window.localStorage.setItem(key, value); return true; }
+  catch (error) {
+    console.warn(`Could not save local state (${key}):`, error);
+    return false;
+  }
+};
 
 const LoadingSpinner = () => (
   <div role="status" aria-live="polite" aria-label="Checking your secure sign-in" className="min-h-screen flex flex-col items-center justify-center bg-[#f8fafc] dark:bg-[#070b14]">
@@ -48,7 +62,10 @@ export const App = () => {
     setIsPricingModalOpen,
   } = useAuth();
 
-  const [pathname, setPathname] = useState(() => window.location.pathname);
+  const [pathname, setPathname] = useState(() => {
+    try { return window.location.pathname || '/'; }
+    catch { return '/'; }
+  });
   const [activeTab, setActiveTab] = useState('chat');
   const [activeSession, setActiveSession] = useState(null);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
@@ -56,7 +73,11 @@ export const App = () => {
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
 
   const navigate = useCallback((path, replace = true) => {
-    window.history[replace ? 'replaceState' : 'pushState']({}, '', path);
+    try { window.history[replace ? 'replaceState' : 'pushState']({}, '', path); }
+    catch (error) {
+      console.warn('Client-side navigation failed; using a full page navigation:', error);
+      try { window.location.assign(path); } catch { /* The current view remains usable. */ }
+    }
     setPathname(path);
   }, []);
 
@@ -79,7 +100,11 @@ export const App = () => {
     }
     let active = true;
     const activeChatKey = `zulora_active_chat_${uid}`;
-    const sessionId = localStorage.getItem(activeChatKey);
+    let sessionId = readLocalStorage(activeChatKey);
+    if (sessionId && (sessionId.length > 150 || sessionId.includes('/'))) {
+      try { window.localStorage.removeItem(activeChatKey); } catch { /* Ignore corrupt or unavailable storage. */ }
+      sessionId = null;
+    }
     if (!sessionId) {
       setActiveSession(null);
       return undefined;
@@ -151,27 +176,28 @@ export const App = () => {
       updatedAt: Date.now()
     };
 
-    if (currentUser?.uid) {
-      localStorage.setItem(`zulora_active_chat_${currentUser.uid}`, newChatId);
-    }
+    if (currentUser?.uid) writeLocalStorage(`zulora_active_chat_${currentUser.uid}`, newChatId);
     setActiveSession(freshSession);
     setActiveTab('chat');
     if (pathname === '/vault' || pathname === '/studio') navigate('/dashboard');
   }, [currentUser?.uid, activeSession, pathname, navigate]);
 
-  const handleSelectChat = (session) => {
-    if (currentUser?.uid && session?.id) localStorage.setItem(`zulora_active_chat_${currentUser.uid}`, session.id);
+  const handleSelectChat = session => {
+    if (!session || typeof session !== 'object') return;
+    if (currentUser?.uid && session?.id) writeLocalStorage(`zulora_active_chat_${currentUser.uid}`, String(session.id));
     setActiveSession(session);
     setActiveTab('chat');
     if (pathname === '/vault' || pathname === '/studio') navigate('/dashboard');
   };
   const handleUpdateSession = (updatedSession) => {
-    if (currentUser?.uid && updatedSession?.id) localStorage.setItem(`zulora_active_chat_${currentUser.uid}`, updatedSession.id);
+    if (!updatedSession || typeof updatedSession !== 'object') return;
+    if (currentUser?.uid && updatedSession?.id) writeLocalStorage(`zulora_active_chat_${currentUser.uid}`, String(updatedSession.id));
     setActiveSession(updatedSession);
   };
-  const handleSidebarSessionUpdate = (updatedSession) => setActiveSession(previous =>
-    previous?.id === updatedSession.id ? { ...previous, ...updatedSession } : previous
-  );
+  const handleSidebarSessionUpdate = updatedSession => {
+    if (!updatedSession || typeof updatedSession !== 'object') return;
+    setActiveSession(previous => previous?.id === updatedSession.id ? { ...previous, ...updatedSession } : previous);
+  };
 
   return (
     <div className="h-dvh min-h-0 flex flex-col overflow-hidden bg-[#f8fafc] dark:bg-[#070b14] text-slate-900 dark:text-slate-100 transition-colors duration-200">

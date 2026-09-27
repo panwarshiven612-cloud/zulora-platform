@@ -49,8 +49,13 @@ export const Sidebar = ({
   // Load chat sessions from Firestore / LocalStorage
   const loadSessions = async () => {
     if (!currentUser?.uid) return;
-    const list = await firestoreService.getChatSessions(currentUser.uid);
-    setSessions(list);
+    try {
+      const list = await firestoreService.getChatSessions(currentUser.uid);
+      setSessions(Array.isArray(list) ? list : []);
+    } catch (error) {
+      console.warn('Could not load chat sessions; showing an empty list:', error);
+      setSessions([]);
+    }
   };
 
   useEffect(() => {

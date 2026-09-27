@@ -146,10 +146,20 @@ export const getTokenUsagePercent = (usage = {}, tier = TIERS.FREE) => {
 };
 
 const readLocalList = key => {
-  try { return JSON.parse(localStorage.getItem(key) || '[]'); }
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || '[]');
+    return Array.isArray(value) ? value.filter(item => item && typeof item === 'object' && !Array.isArray(item)) : [];
+  }
   catch { return []; }
 };
-const hasLocalCache = key => localStorage.getItem(key) !== null;
+const hasLocalCache = key => {
+  try {
+    const value = localStorage.getItem(key);
+    if (value === null) return false;
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) && (parsed.length === 0 || parsed.some(item => item && typeof item === 'object' && !Array.isArray(item)));
+  } catch { return false; }
+};
 
 function debounceFirestoreWrite(key, write) {
   const previous = firestoreWriteTimers.get(key);
@@ -198,9 +208,16 @@ export const deriveChatTitle = prompt => {
 };
 
 const normalizeChatSession = session => {
-  if (session?.title && session.title !== 'Untitled Chat') return session;
-  const firstPrompt = session?.messages?.find(message => message.role === 'user')?.displayContent || session?.messages?.find(message => message.role === 'user')?.content;
-  return { ...session, title: deriveChatTitle(firstPrompt) };
+  const source = session && typeof session === 'object' && !Array.isArray(session) ? session : {};
+  const messages = Array.isArray(source.messages)
+    ? source.messages.filter(message => message && typeof message === 'object' && !Array.isArray(message))
+    : [];
+  const firstUserMessage = messages.find(message => message.role === 'user');
+  const firstPrompt = firstUserMessage?.displayContent || firstUserMessage?.content;
+  const title = typeof source.title === 'string' && source.title.trim() && source.title !== 'Untitled Chat'
+    ? source.title
+    : deriveChatTitle(firstPrompt);
+  return { ...source, messages, title };
 };
 
 export const firestoreService = {
