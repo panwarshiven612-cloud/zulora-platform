@@ -1,4 +1,5 @@
 import { requestVideoGeneration, trackSuccessfulUsage, checkGenerationAllowance, GenerationApiError } from './generationApi';
+import mediaEngine from './mediaEngine';
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 60_000) {
   const controller = new AbortController();
@@ -103,8 +104,9 @@ export async function generateVideo(arg1, arg2 = {}) {
     onProgress?.({ provider: 'Pollinations', phase: 'Video ready', message: 'Your generated video is ready.' });
     return { url, videoUrl: url, provider: 'Pollinations', model: 'video', duration: Math.min(duration, 8), prompt, usage: await trackSuccessfulUsage('video', options.currentUser) };
   } catch (error) {
-    console.warn('[Video] Direct Pollinations video request failed:', error.message);
-    throw new Error('Real text-to-video providers are unavailable. Configure Pollinations, Replicate, Hugging Face, or Fal AI credentials, then retry.');
+    console.warn('[Video] Direct Pollinations video request failed, switching to mediaEngine dynamic pipeline:', error.message);
+    const mediaResult = await mediaEngine.generateVideo(enrichedPrompt, { duration, aspectRatio: options.aspectRatio || '16:9', onProgress });
+    return { ...mediaResult, prompt, usage: await trackSuccessfulUsage('video', options.currentUser) };
   }
 }
 

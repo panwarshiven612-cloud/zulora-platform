@@ -7,8 +7,7 @@ Disallow: /__/
 Disallow: /private/
 
 # Sitemap location
-Sitemap: https://zulora-al.firebaseapp.com/sitemap.xml
+Sitemap: https://zulora.in/sitemap.xml
 
 # Crawl delay for good bots
 Crawl-delay: 10
-

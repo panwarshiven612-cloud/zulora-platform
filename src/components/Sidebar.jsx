@@ -222,17 +222,27 @@ export const Sidebar = ({
     <div className="flex flex-col h-full bg-white/70 dark:bg-slate-950/70 backdrop-blur-xl border-r border-slate-200/80 dark:border-slate-800/80">
       
       {/* Top action: New Chat Button */}
-      <div className="p-3 border-b border-slate-200/80 dark:border-slate-800/80">
+      <div className="p-3 border-b border-slate-200/80 dark:border-slate-800/80 flex items-center gap-2">
         <button
           onClick={() => {
             onNewChat();
             if (onCloseMobile) onCloseMobile();
           }}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs text-white azure-gradient-btn shadow-md group"
+          className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs text-white azure-gradient-btn shadow-md group"
         >
           <Plus className="w-4 h-4 group-hover:rotate-90 transition-transform duration-200" />
           <span>New Chat & Search</span>
         </button>
+        {onCloseMobile && (
+          <button
+            onClick={onCloseMobile}
+            className="md:hidden p-2 rounded-xl text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors"
+            title="Close sidebar"
+            aria-label="Close sidebar"
+          >
+            <X className="w-4.5 h-4.5" />
+          </button>
+        )}
       </div>
 
       {/* Studios Quick Navigator */}
@@ -482,12 +492,6 @@ export const Sidebar = ({
           />
           <div className="relative w-80 max-w-[85vw] h-dvh z-10 shadow-2xl animate-fade-in">
             {sidebarContent}
-            <button
-              onClick={onCloseMobile}
-              className="absolute top-3 right-3 p-1.5 rounded-xl text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800"
-            >
-              <X className="w-5 h-5" />
-            </button>
           </div>
         </div>
       )}

@@ -50,6 +50,7 @@ import {
   Plus,
   Lock,
   Pencil,
+  Radio,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { apiRouter, MODEL_TIERS } from '../services/apiRouter';
@@ -467,7 +468,7 @@ const WelcomeScreen = ({ user, onSuggestion }) => (
 /* ============================================================
    MAIN CHAT INTERFACE
    ============================================================ */
-export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => {
+export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpenVoiceAssistant }) => {
   const { currentUser, isPro, setIsUsageModalOpen, setIsPricingModalOpen, checkUsage, recordUsage } = useAuth();
 
   const [messages, setMessages] = useState([]);
@@ -1048,6 +1049,19 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat }) => 
               >
                 {isListening ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
               </button>
+
+              {/* Gemini Live Voice Assistant Modal Trigger */}
+              {onOpenVoiceAssistant && (
+                <button
+                  type="button"
+                  onClick={onOpenVoiceAssistant}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg border border-sky-300/60 dark:border-sky-700/60 bg-sky-50 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 hover:bg-sky-100 hover:border-sky-400 transition-all shadow-sm"
+                  title="Open Gemini Live Voice Assistant"
+                >
+                  <Radio className="w-3.5 h-3.5 text-sky-500 animate-pulse" />
+                  <span className="hidden xs:inline sm:inline text-xs font-semibold">Live</span>
+                </button>
+              )}
             </div>
 
             {/* Right: Send Button */}

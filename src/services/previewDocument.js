@@ -1,4 +1,4 @@
-const PREVIEW_POLICY = `default-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; connect-src 'none'; img-src data: blob: https:; media-src data: blob: https:; style-src 'unsafe-inline' data: https://cdnjs.cloudflare.com https://fonts.googleapis.com https://cdn.jsdelivr.net https://unpkg.com; script-src 'unsafe-inline' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com; font-src data: https://cdnjs.cloudflare.com https://fonts.gstatic.com; worker-src blob:`;
+const PREVIEW_POLICY = `default-src 'self' data: blob: https:; base-uri 'self'; object-src 'none'; connect-src 'self' data: blob: https:; img-src * data: blob: https:; media-src * data: blob: https:; style-src 'unsafe-inline' data: https:; script-src 'unsafe-inline' 'unsafe-eval' data: blob: https:; font-src * data: https:; worker-src * blob:;`;
 
 const DEPENDENCIES = [
   {

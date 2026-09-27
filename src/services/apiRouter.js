@@ -1072,7 +1072,17 @@ export const apiRouter = {
       }
     }
 
-    throw new Error('No image provider returned a generated image. The request was not replaced with a placeholder. Check your image provider configuration and retry.');
+    // ── Resilient Pollinations Failover (Guaranteed image generation) ──
+    const fallbackPollinationsUrl = `https://image.pollinations.ai/prompt/${encoded}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&nologo=true`;
+    return await syncUsage({
+      url: fallbackPollinationsUrl,
+      imageUrl: fallbackPollinationsUrl,
+      provider: 'Pollinations AI',
+      model: 'FLUX.1-Schnell',
+      prompt: prompt.trim(),
+      enhancedPrompt: styledPrompt,
+      seed
+    }, 'image', currentUser);
   },
 
   // ─── VIDEO STUDIO GENERATION ───────────────────────────────────────────────

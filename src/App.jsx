@@ -14,6 +14,7 @@ const VideoGenerator = lazy(() => import('./components/VideoGenerator'));
 const AiBrain = lazy(() => import('./components/AiBrain'));
 const UserVault = lazy(() => import('./components/UserVault'));
 const AIStudio = lazy(() => import('./pages/AIStudio'));
+const VoiceAssistantModal = lazy(() => import('./components/VoiceAssistantModal'));
 
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 
@@ -51,6 +52,7 @@ export const App = () => {
   const [activeSession, setActiveSession] = useState(null);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
 
   const navigate = useCallback((path, replace = true) => {
     window.history[replace ? 'replaceState' : 'pushState']({}, '', path);
@@ -129,17 +131,38 @@ export const App = () => {
   }
 
   // ── Authenticated: Dashboard ───────────────────────────────────────────────
-  const handleNewChat = () => {
-    if (currentUser?.uid) localStorage.removeItem(`zulora_active_chat_${currentUser.uid}`);
-    setActiveSession(null);
+  const handleNewChat = useCallback(async () => {
+    // Preserve current ongoing chat before switching
+    if (currentUser?.uid && activeSession?.id && activeSession?.messages?.length > 0) {
+      try {
+        const { firestoreService } = await import('./services/firestoreService');
+        await firestoreService.saveChatSession(currentUser.uid, activeSession.id, activeSession);
+      } catch (err) {
+        console.warn('Could not auto-save previous chat before new chat:', err);
+      }
+    }
+
+    const newChatId = `chat_${Date.now()}`;
+    const freshSession = {
+      id: newChatId,
+      title: 'New Chat',
+      messages: [],
+      updatedAt: Date.now()
+    };
+
+    if (currentUser?.uid) {
+      localStorage.setItem(`zulora_active_chat_${currentUser.uid}`, newChatId);
+    }
+    setActiveSession(freshSession);
     setActiveTab('chat');
-    if (pathname === '/vault') navigate('/dashboard');
-  };
+    if (pathname === '/vault' || pathname === '/studio') navigate('/dashboard');
+  }, [currentUser?.uid, activeSession, pathname, navigate]);
+
   const handleSelectChat = (session) => {
     if (currentUser?.uid && session?.id) localStorage.setItem(`zulora_active_chat_${currentUser.uid}`, session.id);
     setActiveSession(session);
     setActiveTab('chat');
-    if (pathname === '/vault') navigate('/dashboard');
+    if (pathname === '/vault' || pathname === '/studio') navigate('/dashboard');
   };
   const handleUpdateSession = (updatedSession) => {
     if (currentUser?.uid && updatedSession?.id) localStorage.setItem(`zulora_active_chat_${currentUser.uid}`, updatedSession.id);
@@ -160,6 +183,8 @@ export const App = () => {
           setActiveTab={selectTab}
           onOpenMobileSidebar={() => setIsMobileSidebarOpen(true)}
           onOpenSettings={() => setIsSettingsOpen(true)}
+          onNewChat={handleNewChat}
+          onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
         />
 
         {/* Main Workspace */}
@@ -180,6 +205,7 @@ export const App = () => {
                 activeSession={activeSession}
                 onUpdateSession={handleUpdateSession}
                 onNewChat={handleNewChat}
+                onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
               />
             )}
             {activeTab === 'image' && <ImageGenerator />}
@@ -190,6 +216,31 @@ export const App = () => {
         </div>
 
       </Suspense>
+
+      {/* Voice Assistant Modal */}
+      <VoiceAssistantModal
+        isOpen={isVoiceModalOpen}
+        onClose={() => setIsVoiceModalOpen(false)}
+        currentUser={currentUser}
+        onNewTurn={turn => {
+          if (currentUser?.uid) {
+            const sid = activeSession?.id || `chat_${Date.now()}`;
+            const updated = {
+              ...(activeSession || { id: sid, title: 'Voice Chat' }),
+              messages: [
+                ...(activeSession?.messages || []),
+                { id: Date.now().toString(), role: 'user', content: turn.user, timestamp: Date.now() },
+                { id: (Date.now() + 1).toString(), role: 'assistant', content: turn.assistant, timestamp: Date.now(), model: 'Gemini Live Voice' }
+              ],
+              updatedAt: Date.now()
+            };
+            handleUpdateSession(updated);
+            import('./services/firestoreService').then(({ firestoreService }) => {
+              firestoreService.saveChatSession(currentUser.uid, sid, updated);
+            }).catch(console.warn);
+          }
+        }}
+      />
 
       {/* Modals */}
       <UsageLimitsModal isOpen={isUsageModalOpen} onClose={() => setIsUsageModalOpen(false)} />

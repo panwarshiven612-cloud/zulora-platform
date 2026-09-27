@@ -3,7 +3,7 @@ import {
   Sparkles, MessageSquare, Image as ImageIcon, Film,
   Sun, Moon, LogOut, ChevronDown, Menu, Zap, BarChart3,
   User, Crown, Settings, Clock,
-  Code2,
+  Code2, Plus, Radio, Mic
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -16,7 +16,7 @@ const TAB_CONFIG = [
   { id: 'studio', label: 'AI Studio',    icon: Code2,         description: 'AI website builder' },
 ];
 
-const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings }) => {
+const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, onNewChat, onOpenVoiceAssistant }) => {
   const {
     currentUser, theme, toggleTheme, logout, tier,
     setIsUsageModalOpen, setIsPricingModalOpen, userProfile,
@@ -92,6 +92,30 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings }
 
         {/* Right Actions */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
+
+          {/* Prominent + New Chat button for Mobile & Desktop */}
+          {onNewChat && (
+            <button
+              onClick={onNewChat}
+              className="flex items-center gap-1 px-2.5 sm:px-3 py-1.5 rounded-xl font-bold text-xs text-white azure-gradient-btn shadow-sm hover:opacity-95 transition-all flex-shrink-0"
+              title="Create New Chat"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span className="hidden xs:inline sm:inline">New Chat</span>
+            </button>
+          )}
+
+          {/* Gemini Live Voice Assistant button */}
+          {onOpenVoiceAssistant && (
+            <button
+              onClick={onOpenVoiceAssistant}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold text-sky-600 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/60 border border-sky-300/60 dark:border-sky-700/60 hover:border-sky-400 shadow-sm transition-all flex-shrink-0"
+              title="Open Gemini Live Voice Assistant"
+            >
+              <Radio className="w-3.5 h-3.5 text-sky-500 animate-pulse" />
+              <span className="hidden md:inline">Live Voice</span>
+            </button>
+          )}
 
           {/* Usage */}
           <button
