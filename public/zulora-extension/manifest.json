@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Zulora AI Computer Plugin",
+  "version": "1.0.0",
+  "description": "Chrome automation agent for Zulora AI — lets Zulora control your browser to complete complex multi-step tasks hands-free.",
+  "icons": {
+    "16":  "icons/icon16.png",
+    "48":  "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "permissions": [
+    "tabs",
+    "scripting",
+    "activeTab",
+    "storage",
+    "webNavigation",
+    "notifications",
+    "alarms"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "externally_connectable": {
+    "matches": [
+      "http://localhost:*/*",
+      "https://zulora.vercel.app/*",
+      "https://*.zulora.ai/*",
+      "https://zulora-ai.web.app/*",
+      "https://zulora-ai.firebaseapp.com/*"
+    ]
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Zulora AI Computer Plugin"
+  }
+}

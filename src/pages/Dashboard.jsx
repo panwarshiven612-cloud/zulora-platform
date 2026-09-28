@@ -11,6 +11,7 @@ import UsageLimitsModal from '../components/UsageLimitsModal';
 import PricingModal from '../components/PricingModal';
 import AccountSettings from './AccountSettings';
 import VoiceAgentModal from '../components/VoiceAgentModal';
+import ComputerPluginModal from '../components/ComputerPluginModal';
 import { firestoreService } from '../services/firestoreService';
 
 const AIStudio = lazy(() => import('./AIStudio'));
@@ -37,6 +38,7 @@ export const Dashboard = ({
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
+  const [isComputerPluginOpen, setIsComputerPluginOpen] = useState(false);
 
   const safeDisplayName = currentUser?.displayName || userProfile?.displayName || 'Shiven';
 
@@ -173,6 +175,7 @@ export const Dashboard = ({
         onOpenSettings={() => setIsSettingsOpen(true)}
         onNewChat={handleNewChat}
         onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
+        onOpenComputerPlugin={() => setIsComputerPluginOpen(true)}
       />
 
       {/* Main Workspace Layout */}
@@ -186,6 +189,7 @@ export const Dashboard = ({
           isMobileOpen={isMobileSidebarOpen}
           onCloseMobile={() => setIsMobileSidebarOpen(false)}
           setActiveTab={handleSelectTab}
+          onOpenComputerPlugin={() => setIsComputerPluginOpen(true)}
         />
 
         {/* Main Interactive Area */}
@@ -239,6 +243,12 @@ export const Dashboard = ({
       <UsageLimitsModal isOpen={isUsageModalOpen} onClose={() => setIsUsageModalOpen(false)} />
       <PricingModal isOpen={isPricingModalOpen} onClose={() => setIsPricingModalOpen(false)} />
       {isSettingsOpen && <AccountSettings onClose={() => setIsSettingsOpen(false)} />}
+
+      {/* Computer Plugin Drawer */}
+      <ComputerPluginModal
+        isOpen={isComputerPluginOpen}
+        onClose={() => setIsComputerPluginOpen(false)}
+      />
     </div>
   );
 };
