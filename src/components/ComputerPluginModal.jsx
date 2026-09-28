@@ -94,16 +94,6 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   const inputRef  = useRef(null);
   const recognitionRef = useRef(null);
 
-  // ── Sync session token storage ──────────────────────────────────────────────
-  const recordTokens = useCallback((tokens) => {
-    if (!tokens || isNaN(tokens)) return;
-    setSessionTokens(prev => {
-      const next = prev + tokens;
-      sessionStorage.setItem('zulora_plugin_session_tokens', String(next));
-      return next;
-    });
-  }, []);
-
   // ── Extension Connection Check ──────────────────────────────────────────────
   const checkConnection = useCallback(async () => {
     setCheckingConnection(true);
@@ -234,12 +224,40 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
       localStorage.setItem('zulora_plugin_task_count', String(nextCount));
     }
 
+    const tokenStart = sessionTokens;
     const result = await executeCommand(command, (entry) => {
       setActionLog(prev => [...prev, entry]);
-    }, currentUser);
+    }, currentUser, (tokens) => {
+      const liveTotal = tokenStart + tokens;
+      setSessionTokens(liveTotal);
+      sessionStorage.setItem('zulora_plugin_session_tokens', String(liveTotal));
+    });
 
     if (result.tokensUsed) {
-      recordTokens(result.tokensUsed);
+      const finalTotal = tokenStart + result.tokensUsed;
+      setSessionTokens(finalTotal);
+      sessionStorage.setItem('zulora_plugin_session_tokens', String(finalTotal));
+    }
+
+    if (result.error === 'Task stopped.') return;
+
+    if (!result.ok && !result.success && /extension context|reload this page to reconnect|not connected/i.test(result.error || '')) {
+      setTaskStatus('paused');
+      setIsRunning(false);
+      setShowInstallGuide(true);
+      setActionLog(prev => [...prev, {
+        index: prev.length + 1,
+        label: 'Extension connection needs a refresh. Reload this page to reconnect.',
+        status: 'paused',
+        timestamp: Date.now()
+      }]);
+      return;
+    }
+
+    if (result.analysis) {
+      setTaskStatus('done');
+      setIsRunning(false);
+      setIsLogOpen(true);
     }
 
     if (!result.ok && !result.success) {
@@ -252,7 +270,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
         timestamp: Date.now()
       }]);
     }
-  }, [command, isRunning, isPro, taskCount, checkConnection, currentUser, recordTokens]);
+  }, [command, isRunning, isPro, taskCount, checkConnection, currentUser, sessionTokens]);
 
   const handlePause = useCallback(async () => {
     await pauseTask();
@@ -346,10 +364,10 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
             ) : (
               <button
                 onClick={() => setShowInstallGuide(v => !v)}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-50 dark:bg-red-950/30 text-red-500 text-[10px] font-bold border border-red-200 dark:border-red-800/60 hover:bg-red-100 transition-colors"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 text-[10px] font-bold border border-amber-200 dark:border-amber-800/60 hover:bg-amber-100 transition-colors"
               >
-                <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                Not Installed
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                Reconnect
               </button>
             )}
           </div>
@@ -608,7 +626,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
                     title="Stop Agent Task"
                   >
                     <Square className="w-3.5 h-3.5" />
-                    Stop Agent
+                    Stop Task
                   </button>
                 </>
               )}
@@ -693,7 +711,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
 
         {/* ── Footer ──────────────────────────────────────────────────────── */}
         <div className="px-5 py-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-[10px] text-slate-400 bg-slate-50 dark:bg-slate-900/40">
-          <span>Zulora Computer Plugin v1.1</span>
+          <span>Zulora Computer Plugin v1.2.0</span>
           <div className="flex items-center gap-3">
             <button
               onClick={() => setIsPricingModalOpen(true)}

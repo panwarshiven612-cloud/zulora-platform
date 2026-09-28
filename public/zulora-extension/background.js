@@ -9,6 +9,59 @@ let taskStatus = 'idle';   // 'idle' | 'running' | 'paused' | 'done' | 'error'
 let actionLog  = [];
 let currentStepIndex = 0;
 let zuloraOrigin = null;
+let agentTabIds = new Set();
+let activeStepTabIds = new Set();
+let activeTimers = new Map();
+let taskGeneration = 0;
+let cancelRequested = false;
+let pausedAfterAction = false;
+let queueRunnerActive = false;
+const HEARTBEAT_ALARM = 'zulora-task-recovery-heartbeat';
+const TASK_STATE_KEY = 'zuloraAgentTaskState';
+
+async function persistTaskState() {
+  try {
+    await chrome.storage.session.set({ [TASK_STATE_KEY]: {
+      taskQueue, taskStatus, actionLog, currentStepIndex,
+      agentTabIds: [...agentTabIds], pausedAfterAction, savedAt: Date.now()
+    } });
+  } catch {}
+}
+
+async function restoreTaskState() {
+  try {
+    const stored = (await chrome.storage.session.get(TASK_STATE_KEY))?.[TASK_STATE_KEY];
+    if (!stored) return;
+    taskQueue = Array.isArray(stored.taskQueue) ? stored.taskQueue : [];
+    taskStatus = stored.taskStatus || 'idle';
+    actionLog = Array.isArray(stored.actionLog) ? stored.actionLog : [];
+    currentStepIndex = Math.max(0, Number(stored.currentStepIndex) || 0);
+    agentTabIds = new Set(Array.isArray(stored.agentTabIds) ? stored.agentTabIds : []);
+    pausedAfterAction = !!stored.pausedAfterAction;
+    if (taskStatus === 'running') {
+      taskStatus = 'paused';
+      actionLog.push({ index: actionLog.length + 1, label: 'Service worker restarted. Review the current step, then resume.', status: 'paused', detail: 'The interrupted step may need review before it is retried.', timestamp: Date.now() });
+    }
+    await persistTaskState();
+  } catch {}
+}
+
+const stateReady = restoreTaskState();
+
+async function ensureHeartbeatAlarm() {
+  try {
+    const alarm = await chrome.alarms.get(HEARTBEAT_ALARM);
+    if (!alarm) chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 0.5 });
+  } catch {}
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === HEARTBEAT_ALARM) void stateReady.then(() => persistTaskState());
+});
+chrome.runtime.onInstalled.addListener(() => { void ensureHeartbeatAlarm(); });
+chrome.runtime.onStartup.addListener(() => { void ensureHeartbeatAlarm(); });
+chrome.tabs.onRemoved.addListener((tabId) => { agentTabIds.delete(tabId); void persistTaskState(); });
+void ensureHeartbeatAlarm();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function log(stepLabel, status = 'done', detail = '') {
@@ -20,6 +73,7 @@ function log(stepLabel, status = 'done', detail = '') {
     timestamp: Date.now()
   };
   actionLog.push(entry);
+  void persistTaskState();
   broadcastStatus();
   return entry;
 }
@@ -44,17 +98,61 @@ function broadcastStatus() {
 
 function isZuloraOrigin(url) {
   try {
-    const u = new URL(url);
-    return (
-      u.hostname === 'localhost' ||
-      u.hostname.includes('zulora') ||
-      u.hostname.includes('vercel.app')
-    );
+    const host = new URL(url).hostname.toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === 'zulora.in' || host.endsWith('.zulora.in') ||
+      host === 'zulora.ai' || host.endsWith('.zulora.ai') ||
+      ['zulora.vercel.app', 'zulora-ai.web.app', 'zulora-ai.firebaseapp.com'].includes(host);
   } catch { return false; }
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function taskSleep(ms, generation = taskGeneration) {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => {
+      activeTimers.delete(timer);
+      resolve(generation !== taskGeneration || cancelRequested);
+    }, ms);
+    activeTimers.set(timer, resolve);
+  });
+}
+
+function assertTaskActive(generation = taskGeneration) {
+  if (generation !== taskGeneration || cancelRequested) {
+    const error = new Error('Task stopped by user.');
+    error.cancelled = true;
+    throw error;
+  }
+}
+
+function trackAgentTab(tab) {
+  if (!tab?.id) return tab;
+  agentTabIds.add(tab.id);
+  void persistTaskState();
+  if (cancelRequested) {
+    chrome.tabs.remove(tab.id).catch(() => {});
+    const error = new Error('Task stopped by user.');
+    error.cancelled = true;
+    throw error;
+  }
+  return tab;
+}
+
+async function createAgentTab(options) {
+  const tab = await chrome.tabs.create(options);
+  trackAgentTab(tab);
+  return tab;
+}
+
+function markActiveStepTab(tab) {
+  if (tab?.id) activeStepTabIds.add(tab.id);
+  return tab;
+}
+
+async function ensureContentScript(tabId) {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['lib/dom-selectors.js', 'content.js'] });
+  } catch (error) {
+    throw new Error(`Could not load browser automation on this page: ${error.message}`);
+  }
 }
 
 async function getActiveTab(preferredTabId = null) {
@@ -72,51 +170,50 @@ async function getActiveTab(preferredTabId = null) {
   return firstTab || null;
 }
 
-function waitForTabLoad(tabId, timeout = 15000) {
-  return new Promise(async (resolve) => {
-    try {
-      const tabInfo = await chrome.tabs.get(tabId);
-      if (tabInfo && tabInfo.status === 'complete') {
-        resolve();
-        return;
-      }
-    } catch {}
-
-    let resolved = false;
-    const timer = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        try { chrome.webNavigation.onCompleted.removeListener(listener); } catch {}
-        resolve();
-      }
-    }, timeout);
-
-    const listener = (details) => {
-      if (details.tabId === tabId && details.frameId === 0) {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timer);
-          try { chrome.webNavigation.onCompleted.removeListener(listener); } catch {}
-          resolve();
-        }
-      }
-    };
-
-    try {
-      chrome.webNavigation.onCompleted.addListener(listener);
-    } catch {
+function waitForTabLoad(tabId, timeout = 30000) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer;
+    const cleanup = () => {
       clearTimeout(timer);
-      resolve();
-    }
+      activeTimers.delete(timer);
+      try { chrome.tabs.onUpdated.removeListener(onUpdated); } catch {}
+      try { chrome.tabs.onRemoved.removeListener(onRemoved); } catch {}
+    };
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error); else resolve();
+    };
+    const onUpdated = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') finish();
+    };
+    const onRemoved = removedTabId => {
+      if (removedTabId === tabId) finish(new Error(`Tab ${tabId} was closed before loading completed.`));
+    };
+    timer = setTimeout(() => finish(new Error(`Timed out waiting for tab ${tabId} to finish loading.`)), timeout);
+    activeTimers.set(timer, () => {
+      const error = new Error('Task stopped by user.');
+      error.cancelled = true;
+      finish(error);
+    });
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+    chrome.tabs.get(tabId).then(tab => {
+      if (tab.status === 'complete') finish();
+    }).catch(() => finish(new Error(`Tab ${tabId} was closed before loading completed.`)));
   });
 }
 
 // ─── Action Executor ──────────────────────────────────────────────────────────
-async function executeStep(step) {
+async function executeStep(step, generation = taskGeneration) {
   const { action, params = {} } = step;
+  activeStepTabIds.clear();
   log(`Step ${currentStepIndex + 1}: ${humanLabel(action, params)}`, 'running');
 
   try {
+    assertTaskActive(generation);
     switch (action) {
       // ── Generic Browsing ──
       case 'open_url': {
@@ -124,8 +221,10 @@ async function executeStep(step) {
         if (!url.startsWith('http://') && !url.startsWith('https://')) {
           url = 'https://' + url;
         }
-        const tab = await chrome.tabs.create({ url, active: params.active !== false });
+        const tab = await createAgentTab({ url, active: params.active !== false });
         await waitForTabLoad(tab.id);
+        assertTaskActive(generation);
+        await ensureContentScript(tab.id);
         log(`Opened URL → ${url}`, 'done');
         return { tabId: tab.id };
       }
@@ -133,8 +232,10 @@ async function executeStep(step) {
       case 'search_google': {
         const query = params.query || '';
         const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-        const tab = await chrome.tabs.create({ url, active: true });
+        const tab = await createAgentTab({ url, active: true });
         await waitForTabLoad(tab.id);
+        assertTaskActive(generation);
+        await ensureContentScript(tab.id);
         log(`Searched Google: "${query}"`, 'done');
         return { tabId: tab.id };
       }
@@ -159,9 +260,24 @@ async function executeStep(step) {
         return {};
       }
 
+      case 'automate_page': {
+        const tab = markActiveStepTab(await getActiveTab(params.tabId));
+        if (!tab?.id) throw new Error('No active browser tab found for automate_page');
+        await ensureContentScript(tab.id);
+        const [result] = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (automationParams) => window.__ZULORA_CONTENT__?.executeAutomation(automationParams),
+          args: [params]
+        });
+        assertTaskActive(generation);
+        const payload = result?.result;
+        log(`Browser action completed: ${params.operation || params.intent || 'read'}`, 'done', payload?.text?.slice(0, 350) || payload?.target || 'Page updated.');
+        return { result: payload };
+      }
+
       // ── DOM Automation ──
       case 'type_text': {
-        const tab = await getActiveTab(params.tabId);
+        const tab = markActiveStepTab(await getActiveTab(params.tabId));
         if (!tab?.id) throw new Error('No active browser tab found for type_text');
 
         await chrome.scripting.executeScript({
@@ -185,7 +301,7 @@ async function executeStep(step) {
       }
 
       case 'click_element': {
-        const tab = await getActiveTab(params.tabId);
+        const tab = markActiveStepTab(await getActiveTab(params.tabId));
         if (!tab?.id) throw new Error('No active browser tab found for click_element');
 
         await chrome.scripting.executeScript({
@@ -204,7 +320,7 @@ async function executeStep(step) {
       }
 
       case 'extract_content': {
-        const tab = await getActiveTab(params.tabId);
+        const tab = markActiveStepTab(await getActiveTab(params.tabId));
         if (!tab?.id) throw new Error('No active browser tab found for extract_content');
 
         const [result] = await chrome.scripting.executeScript({
@@ -221,9 +337,10 @@ async function executeStep(step) {
 
       // ── DOM & Screen Reader ──
       case 'read_page_dom': {
-        const tab = await getActiveTab(params.tabId);
+        const tab = markActiveStepTab(await getActiveTab(params.tabId));
         if (!tab?.id) throw new Error('No active browser tab to read');
 
+        await ensureContentScript(tab.id);
         const [result] = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: () => {
@@ -237,16 +354,51 @@ async function executeStep(step) {
             };
           }
         });
-        log(`Read DOM of ${tab.title || tab.url}`, 'done');
+        log(`Read DOM of ${tab.title || tab.url}`, 'done', result?.result?.contentSnippet?.slice(0, 350) || '');
         return { dom: result?.result };
+      }
+
+      case 'capture_screen': {
+        const tab = markActiveStepTab(await getActiveTab(params.tabId));
+        if (!tab?.id) throw new Error('No active browser tab to capture');
+        await chrome.tabs.update(tab.id, { active: true });
+        const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+        log(`Captured visible screen of ${tab.title || tab.url}`, 'done');
+        return { screenshot };
+      }
+
+      case 'ocr_screen': {
+        const tab = markActiveStepTab(await getActiveTab(params.tabId));
+        if (!tab?.id) throw new Error('No active browser tab to read');
+        await chrome.tabs.update(tab.id, { active: true });
+        const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['lib/tesseract/tesseract.min.js'] });
+        const workerUrl = chrome.runtime.getURL('lib/tesseract/worker.min.js');
+        const langPath = chrome.runtime.getURL('lib/tesseract/lang');
+        const corePath = chrome.runtime.getURL('lib/tesseract/core');
+        const [recognized] = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: async (image, workerPath, localLangPath, localCorePath) => {
+            const worker = await Tesseract.createWorker('eng', 1, { workerPath, langPath: localLangPath, corePath: localCorePath, gzip: true });
+            try { return (await worker.recognize(image)).data.text; }
+            finally { await worker.terminate(); }
+          },
+          args: [screenshot, workerUrl, langPath, corePath]
+        });
+        const text = recognized?.result || '';
+        log(`Read visible screen with offline OCR`, 'done', text.slice(0, 350));
+        return { text };
       }
 
       // ── Gmail Automation ──
       case 'gmail_compose': {
         const composeUrl = 'https://mail.google.com/mail/u/0/#inbox?compose=new';
-        const tab = await chrome.tabs.create({ url: composeUrl, active: true });
+        const tab = await createAgentTab({ url: composeUrl, active: true });
+        markActiveStepTab(tab);
         await waitForTabLoad(tab.id);
-        await sleep(3500); // Allow Gmail SPA interface to hydrate
+        await taskSleep(1800, generation); // Give the Gmail SPA time to hydrate
+        assertTaskActive(generation);
+        await ensureContentScript(tab.id);
 
         const [res] = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
@@ -267,6 +419,7 @@ async function executeStep(step) {
           args: [params.bodyHtml || params.body || '', params.to || '', params.subject || '']
         });
 
+        assertTaskActive(generation);
         log(`Gmail Draft Prepared (${params.template || 'Rich HTML'}) → ${params.to || 'recipient'}`, 'done');
         return { tabId: tab.id, details: res?.result };
       }
@@ -275,10 +428,13 @@ async function executeStep(step) {
         const tabs = await chrome.tabs.query({});
         let gmailTab = tabs.find(t => t.url && t.url.includes('mail.google.com'));
         if (!gmailTab) {
-          gmailTab = await chrome.tabs.create({ url: 'https://mail.google.com/mail/u/0/#inbox', active: true });
+          gmailTab = await createAgentTab({ url: 'https://mail.google.com/mail/u/0/#inbox', active: true });
           await waitForTabLoad(gmailTab.id);
-          await sleep(3000);
+          await taskSleep(1800, generation);
+          assertTaskActive(generation);
         }
+        markActiveStepTab(gmailTab);
+        await ensureContentScript(gmailTab.id);
         const [res] = await chrome.scripting.executeScript({
           target: { tabId: gmailTab.id },
           func: () => window.__ZULORA_CONTENT__?.readGmailInbox?.() || []
@@ -290,8 +446,9 @@ async function executeStep(step) {
       case 'send_email': {
         // Direct Gmail Compose URL fallback
         const gmailUrl = `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(params.to || '')}&su=${encodeURIComponent(params.subject || '')}&body=${encodeURIComponent(params.body || '')}`;
-        const tab = await chrome.tabs.create({ url: gmailUrl, active: true });
+        const tab = await createAgentTab({ url: gmailUrl, active: true });
         await waitForTabLoad(tab.id);
+        await ensureContentScript(tab.id);
         log(`Opened Gmail compose → ${params.to || 'recipient'}`, 'done');
         return { tabId: tab.id };
       }
@@ -301,13 +458,17 @@ async function executeStep(step) {
         const tabs = await chrome.tabs.query({});
         let waTab = tabs.find(t => t.url && t.url.includes('web.whatsapp.com'));
         if (!waTab) {
-          waTab = await chrome.tabs.create({ url: 'https://web.whatsapp.com', active: true });
+          waTab = await createAgentTab({ url: 'https://web.whatsapp.com', active: true });
           await waitForTabLoad(waTab.id);
-          await sleep(5000); // WhatsApp Web loading time
+          await taskSleep(2500, generation);
+          assertTaskActive(generation);
         } else {
           await chrome.tabs.update(waTab.id, { active: true });
-          await sleep(1000);
+          await taskSleep(700, generation);
+          assertTaskActive(generation);
         }
+        markActiveStepTab(waTab);
+        await ensureContentScript(waTab.id);
 
         const [res] = await chrome.scripting.executeScript({
           target: { tabId: waTab.id },
@@ -320,15 +481,19 @@ async function executeStep(step) {
           args: [params.recipient || '', params.message || '']
         });
 
+        assertTaskActive(generation);
         log(`WhatsApp: Message sent to "${params.recipient || 'recipient'}"`, 'done');
         return { tabId: waTab.id, result: res?.result };
       }
 
       // ── ChatGPT & Gemini Automation ──
       case 'chatgpt_prompt': {
-        const tab = await chrome.tabs.create({ url: 'https://chatgpt.com', active: true });
+        const tab = await createAgentTab({ url: 'https://chatgpt.com', active: true });
+        markActiveStepTab(tab);
         await waitForTabLoad(tab.id);
-        await sleep(3500);
+        await taskSleep(1800, generation);
+        assertTaskActive(generation);
+        await ensureContentScript(tab.id);
 
         const [res] = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
@@ -341,14 +506,18 @@ async function executeStep(step) {
           args: [params.prompt || '']
         });
 
+        assertTaskActive(generation);
         log(`ChatGPT: Prompt submitted ("${params.prompt?.slice(0, 30)}…")`, 'done');
         return { tabId: tab.id, result: res?.result };
       }
 
       case 'gemini_prompt': {
-        const tab = await chrome.tabs.create({ url: 'https://gemini.google.com/app', active: true });
+        const tab = await createAgentTab({ url: 'https://gemini.google.com/app', active: true });
+        markActiveStepTab(tab);
         await waitForTabLoad(tab.id);
-        await sleep(3500);
+        await taskSleep(1800, generation);
+        assertTaskActive(generation);
+        await ensureContentScript(tab.id);
 
         const [res] = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
@@ -361,6 +530,7 @@ async function executeStep(step) {
           args: [params.prompt || '']
         });
 
+        assertTaskActive(generation);
         log(`Gemini: Prompt submitted ("${params.prompt?.slice(0, 30)}…")`, 'done');
         return { tabId: tab.id, result: res?.result };
       }
@@ -376,16 +546,32 @@ async function executeStep(step) {
       }
 
       case 'export_pdf': {
-        const tab = await getActiveTab(params.tabId);
+        const tab = markActiveStepTab(await getActiveTab(params.tabId));
         if (tab?.id) {
-          await chrome.scripting.executeScript({
+          await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['lib/html2canvas.min.js', 'lib/jspdf.umd.min.js'] });
+          const [result] = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
-            func: (filename) => {
-              window.print();
+            func: async (filename) => {
+              if (!window.html2canvas || !window.jspdf?.jsPDF) throw new Error('Offline PDF libraries could not be loaded.');
+              const { jsPDF } = window.jspdf;
+              const pdf = new jsPDF('p', 'mm', 'a4');
+              const canvas = await window.html2canvas(document.body, { scale: 1.5, useCORS: false, backgroundColor: '#ffffff', logging: false });
+              const pageWidth = pdf.internal.pageSize.getWidth();
+              const pageHeight = pdf.internal.pageSize.getHeight();
+              const imageHeight = (canvas.height * pageWidth) / canvas.width;
+              const image = canvas.toDataURL('image/jpeg', 0.88);
+              let offset = 0;
+              while (offset < imageHeight) {
+                if (offset > 0) pdf.addPage();
+                pdf.addImage(image, 'JPEG', 0, -offset, pageWidth, imageHeight, undefined, 'FAST');
+                offset += pageHeight;
+              }
+              pdf.save(filename);
+              return { filename, pages: Math.max(1, Math.ceil(imageHeight / pageHeight)) };
             },
             args: [params.filename || 'zulora_document.pdf']
           });
-          log(`Triggered PDF export dialog`, 'done');
+          log(`Exported page as PDF`, 'done', result?.result?.filename || '');
         }
         return {};
       }
@@ -398,7 +584,8 @@ async function executeStep(step) {
 
       case 'wait': {
         const ms = params.ms || 2000;
-        await sleep(ms);
+        await taskSleep(ms, generation);
+        assertTaskActive(generation);
         log(`Waited ${ms}ms`, 'done');
         return {};
       }
@@ -406,10 +593,10 @@ async function executeStep(step) {
       case 'notify_user': {
         chrome.notifications.create({
           type: 'basic',
-          iconUrl: 'icons/icon48.png',
+          iconUrl: chrome.runtime.getURL('icons/icon128.png'),
           title: 'Zulora AI Computer Plugin',
           message: params.message || 'Action required.'
-        });
+        }, () => { try { void chrome.runtime.lastError; } catch {} });
         log(`Notification: ${params.message}`, 'paused');
         taskStatus = 'paused';
         broadcastStatus();
@@ -421,14 +608,19 @@ async function executeStep(step) {
         return {};
     }
   } catch (err) {
-    log(`Error in ${action}: ${err.message}`, 'error', err.message);
+    if (!err?.cancelled && generation === taskGeneration && !cancelRequested) {
+      log(`Error in ${action}: ${err.message}`, 'error', err.message);
+    }
     throw err;
+  } finally {
+    activeStepTabIds.clear();
   }
 }
 
 function humanLabel(action, params) {
   const map = {
     open_url:        `Open URL → ${params.url}`,
+    automate_page:   `Page ${params.operation || 'automation'}${params.target ? `: ${params.target}` : ''}`,
     switch_tab:      `Switch Tab (${params.urlContains})`,
     close_tab:       `Close Tab`,
     search_google:   `Google: "${params.query}"`,
@@ -436,6 +628,8 @@ function humanLabel(action, params) {
     click_element:   `Click ${params.selector}`,
     extract_content: `Extract page text`,
     read_page_dom:   `Screen & DOM Reader`,
+    capture_screen:  `Capture visible screen`,
+    ocr_screen:      `Offline screen OCR`,
     gmail_compose:   `Gmail: Compose with ${params.template ? `Zulora ${params.template}` : 'Rich HTML'} → ${params.to || 'recipient'}`,
     gmail_read_inbox:`Gmail: Read Inbox`,
     send_email:      `Email to ${params.to}`,
@@ -454,49 +648,71 @@ function humanLabel(action, params) {
 // ─── Queue Runner ─────────────────────────────────────────────────────────────
 async function runQueue() {
   taskStatus = 'running';
+  queueRunnerActive = true;
+  void persistTaskState();
   broadcastStatus();
 
-  while (currentStepIndex < taskQueue.length) {
-    if (taskStatus === 'paused') break;
-    if (taskStatus === 'error')  break;
-    if (taskStatus === 'idle')   break;
-
-    const step = taskQueue[currentStepIndex];
-    try {
-      const result = await executeStep(step);
-      if (result?.paused) break;
-      await sleep(750);
-    } catch (err) {
-      taskStatus = 'error';
-      broadcastStatus();
-      return;
+  const generation = taskGeneration;
+  try {
+    while (currentStepIndex < taskQueue.length) {
+      if (taskStatus !== 'running') break;
+      assertTaskActive(generation);
+      const step = taskQueue[currentStepIndex];
+      const result = await executeStep(step, generation);
+      if (result?.paused) {
+        pausedAfterAction = true;
+        taskStatus = 'paused';
+        break;
+      }
+      currentStepIndex++;
+      void persistTaskState();
+      await taskSleep(400, generation);
+      assertTaskActive(generation);
     }
-    currentStepIndex++;
-  }
 
-  if (taskStatus === 'running') {
-    taskStatus = 'done';
-    chrome.notifications.create({
-      type: 'basic',
-      iconUrl: 'icons/icon48.png',
-      title: '✅ Zulora Task Complete',
-      message: `All ${taskQueue.length} steps executed successfully!`
-    });
-    broadcastStatus();
+    if (taskStatus === 'running' && currentStepIndex >= taskQueue.length) {
+      taskStatus = 'done';
+      chrome.notifications.create({
+        type: 'basic',
+        iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+        title: 'Zulora Task Complete',
+        message: `All ${taskQueue.length} steps executed successfully!`
+      }, () => { try { void chrome.runtime.lastError; } catch {} });
+      broadcastStatus();
+    }
+  } catch (err) {
+    if (!err?.cancelled && generation === taskGeneration) {
+      taskStatus = 'error';
+      log(`Task stopped: ${err.message}`, 'error', err.message);
+    }
+  } finally {
+    if (generation === taskGeneration) {
+      queueRunnerActive = false;
+      void persistTaskState();
+      broadcastStatus();
+    }
   }
 }
 
 // ─── Agent Task Handler ───────────────────────────────────────────────────────
 async function handleAgentTask(payload) {
+  await stateReady;
   if (!payload) return { ok: true, queued: 0 };
+  if ((payload.type === 'EXECUTE_ACTION' || payload.type === 'EXECUTE_STEP') && payload.payload) {
+    return handleAgentTask(payload.payload);
+  }
 
   // Task queue execution
   if (payload.type === 'ZULORA_RUN_TASK' || payload.steps) {
     const steps = payload.steps || (Array.isArray(payload) ? payload : []);
+    taskGeneration++;
+    cancelRequested = false;
+    pausedAfterAction = false;
     taskQueue        = Array.isArray(steps) ? steps : [];
     actionLog        = [];
     currentStepIndex = 0;
-    taskStatus       = 'idle';
+    taskStatus       = 'running';
+    void persistTaskState();
     runQueue();
     return { ok: true, success: true, queued: taskQueue.length };
   }
@@ -504,24 +720,42 @@ async function handleAgentTask(payload) {
   // Control commands
   if (payload.type === 'ZULORA_PAUSE') {
     taskStatus = 'paused';
+    pausedAfterAction = false;
+    void persistTaskState();
     broadcastStatus();
     return { ok: true, success: true, status: 'paused' };
   }
 
   if (payload.type === 'ZULORA_RESUME') {
     if (taskStatus === 'paused') {
-      currentStepIndex++;
+      if (pausedAfterAction) currentStepIndex++;
+      pausedAfterAction = false;
       taskStatus = 'running';
+      void persistTaskState();
       runQueue();
     }
     return { ok: true, success: true, status: 'running' };
   }
 
   if (payload.type === 'ZULORA_CANCEL') {
+    taskGeneration++;
+    cancelRequested = true;
+    for (const [timer, resolve] of activeTimers) {
+      clearTimeout(timer);
+      resolve(true);
+    }
+    activeTimers.clear();
+    for (const tabId of activeStepTabIds) chrome.tabs.sendMessage(tabId, { type: 'ZULORA_ABORT_AUTOMATION' }).catch(() => {});
+    activeStepTabIds.clear();
+    for (const tabId of agentTabIds) chrome.tabs.remove(tabId).catch(() => {});
+    agentTabIds.clear();
     taskQueue        = [];
     actionLog        = [];
     currentStepIndex = 0;
     taskStatus       = 'idle';
+    pausedAfterAction = false;
+    queueRunnerActive = false;
+    void persistTaskState();
     broadcastStatus();
     return { ok: true, success: true, status: 'idle' };
   }
@@ -538,19 +772,26 @@ async function handleAgentTask(payload) {
   }
 
   if (payload.type === 'PING') {
-    return { ok: true, success: true, status: 'PONG' };
+    return {
+      ok: true, success: true, status: 'PONG', taskStatus,
+      actionLog: [...actionLog], currentStep: currentStepIndex, totalSteps: taskQueue.length
+    };
   }
 
   // Single step execution
   const step = payload.step || (payload.action ? payload : null);
   if (step && step.action) {
-    const result = await executeStep(step);
+    cancelRequested = false;
+    taskGeneration++;
+    const result = await executeStep(step, taskGeneration);
     return { ok: true, success: true, ...result };
   }
 
   const action = payload.action || (payload.type !== 'EXECUTE_ACTION' && payload.type !== 'EXECUTE_STEP' ? payload.type : null);
   if (action && typeof executeStep === 'function') {
-    const result = await executeStep(payload);
+    cancelRequested = false;
+    taskGeneration++;
+    const result = await executeStep(payload, taskGeneration);
     return { ok: true, success: true, ...result };
   }
 
@@ -575,7 +816,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'PING') {
-    sendResponse({ status: 'PONG', ok: true, success: true });
+    sendResponse({ status: 'PONG', ok: true, success: true, taskStatus, actionLog: [...actionLog], currentStep: currentStepIndex, totalSteps: taskQueue.length });
     return true;
   }
 

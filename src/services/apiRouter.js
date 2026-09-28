@@ -192,14 +192,19 @@ export const MODEL_TIERS = {
 // ─── TIMEOUT FETCH HELPER ────────────────────────────────────────────────────
 const fetchWithTimeout = async (url, options = {}, timeoutMs = 15000) => {
   const controller = new AbortController();
+  const externalSignal = options.signal;
+  const abortFromCaller = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) controller.abort(externalSignal.reason);
+  else externalSignal?.addEventListener('abort', abortFromCaller, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, { ...options, signal: controller.signal });
-    clearTimeout(timer);
     return res;
   } catch (err) {
-    clearTimeout(timer);
     throw err;
+  } finally {
+    clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', abortFromCaller);
   }
 };
 
@@ -327,13 +332,15 @@ const retryableProviderError = error => {
   const message = error?.message || '';
   return !/HTTP \d{3}/i.test(message) && /network|fetch|timeout|aborted/i.test(message);
 };
-const withProviderRetry = async (operation, attempts = 2) => {
+const withProviderRetry = async (operation, attempts = 2, signal) => {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
     try {
       return await operation();
     } catch (error) {
       lastError = error;
+      if (signal?.aborted) throw error;
       if (attempt + 1 >= attempts || !retryableProviderError(error)) break;
       await pause(350 * (attempt + 1));
     }
@@ -383,6 +390,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
       'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
       {
         method: 'POST',
+        signal: options.signal,
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${key}`
@@ -416,6 +424,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
       throw providerError;
     }
   } catch (openaiErr) {
+    if (options.signal?.aborted) throw openaiErr;
     if (openaiErr?.status) throw openaiErr;
     if (options.streamState?.sent) {
       options.onReset?.();
@@ -428,6 +437,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:${options.onToken ? 'streamGenerateContent?alt=sse' : 'generateContent'}?key=${key}`,
     {
       method: 'POST',
+      signal: options.signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [
@@ -490,6 +500,7 @@ async function tryGeminiKeyWaterfall(prompt, contextMessages, preferredModel, op
         activeGeminiIdx = (keyIndex + 1) % keys.length;
         return result;
       } catch (error) {
+        if (options.signal?.aborted) throw error;
         const previous = geminiKeyPerformance.get(keyIndex) || { successes: 0, failures: 0, averageMs: 100_000 };
         geminiKeyPerformance.set(keyIndex, { ...previous, failures: previous.failures + 1 });
         errors.push(`${model} (Gemini key ${keyIndex + 1}/${keys.length}): ${error.message}`);
@@ -530,6 +541,7 @@ const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
     'https://api.groq.com/openai/v1/chat/completions',
     {
       method: 'POST',
+      signal: options.signal,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${GROQ_KEY}`
@@ -580,6 +592,7 @@ const tryCerebras = async (prompt, contextMessages, tier = 'pro', options = {}) 
     'https://api.cerebras.ai/v1/chat/completions',
     {
       method: 'POST',
+      signal: options.signal,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${CEREBRAS_KEY}`
@@ -626,6 +639,7 @@ const tryOpenRouter = async (prompt, contextMessages, tier = 'pro', keyIdx = 0, 
     'https://openrouter.ai/api/v1/chat/completions',
     {
       method: 'POST',
+      signal: options.signal,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${key}`,
@@ -672,6 +686,7 @@ const tryMistral = async (prompt, contextMessages, tier = 'pro', options = {}) =
     'https://api.mistral.ai/v1/chat/completions',
     {
       method: 'POST',
+      signal: options.signal,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${MISTRAL_KEY}`
@@ -710,12 +725,13 @@ const tryPollinationsText = async (prompt, options = {}, contextMessages = []) =
   const res = POLLINATIONS_KEY
     ? await fetchWithTimeout('https://gen.pollinations.ai/v1/chat/completions', {
       method: 'POST',
+      signal: options.signal,
       headers: { Authorization: `Bearer ${POLLINATIONS_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: 'mistralai/mistral-small-3.2', messages, max_tokens: options.coding || options.flagship ? 16_384 : 4096 })
     }, 20_000)
     : await fetchWithTimeout(
       `https://text.pollinations.ai/${encodeURIComponent(messages.map(message => `${message.role}: ${message.content}`).join('\n\n'))}?model=mistral&seed=${Date.now() % 10000}`,
-      {},
+      { signal: options.signal },
       20_000
     );
   if (!res.ok) throw new Error(`Pollinations HTTP ${res.status}`);
@@ -859,10 +875,11 @@ export const apiRouter = {
         }, () => {
           emittedStreamTokens = false;
           options.onReset?.();
-        }, route => options.onProvider?.(route))
-        : await requestGeneration('chat', chatPayload, options.currentUser);
+        }, route => options.onProvider?.(route), options.signal)
+        : await requestGeneration('chat', chatPayload, options.currentUser, '/api/ai', options.signal);
       if (serverResult?.text) return await syncUsage(serverResult, 'chat', options.currentUser);
     } catch (error) {
+      if (options.signal?.aborted) throw error;
       if (isQuotaAuthorityError(error)) throw error;
       if (options.onToken && emittedStreamTokens) {
         options.onReset?.();
@@ -879,6 +896,7 @@ export const apiRouter = {
       ? ['groq', 'gemini', 'cerebras', 'mistral', 'openrouter']
       : ['gemini', 'cerebras', 'groq', 'mistral', 'openrouter'];
     for (const provider of providerOrder) {
+      if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
       if (provider === 'gemini') {
         const result = await tryGeminiKeyWaterfall(prompt, contextMessages, geminiModel, options, errors);
         if (result) return await syncUsage(result, 'chat', options.currentUser);
@@ -886,16 +904,17 @@ export const apiRouter = {
       }
       try {
         const result = provider === 'groq'
-          ? await withProviderRetry(() => tryGroq(prompt, contextMessages, 'auto', options), 2)
+          ? await withProviderRetry(() => tryGroq(prompt, contextMessages, 'auto', options), 2, options.signal)
           : provider === 'cerebras'
-            ? await withProviderRetry(() => tryCerebras(prompt, contextMessages, 'auto', options), 2)
+            ? await withProviderRetry(() => tryCerebras(prompt, contextMessages, 'auto', options), 2, options.signal)
             : provider === 'mistral'
-              ? await withProviderRetry(() => tryMistral(prompt, contextMessages, 'auto', options), 2)
+              ? await withProviderRetry(() => tryMistral(prompt, contextMessages, 'auto', options), 2, options.signal)
               : await (async () => {
                 let lastError;
                 for (let keyIndex = 0; keyIndex < OPENROUTER_KEYS.length; keyIndex += 1) {
-                  try { return await withProviderRetry(() => tryOpenRouter(prompt, contextMessages, 'auto', keyIndex, options), 2); }
+                  try { return await withProviderRetry(() => tryOpenRouter(prompt, contextMessages, 'auto', keyIndex, options), 2, options.signal); }
                   catch (error) {
+                    if (options.signal?.aborted) throw error;
                     lastError = error;
                     errors.push(`OpenRouter key ${keyIndex + 1}/${OPENROUTER_KEYS.length}: ${error.message}`);
                     if (options.streamState.sent) { options.onReset?.(); options.streamState.sent = false; }
@@ -905,6 +924,7 @@ export const apiRouter = {
               })();
         return await syncUsage(result, 'chat', options.currentUser);
       } catch (error) {
+        if (options.signal?.aborted) throw error;
         errors.push(`${provider}: ${error.message}`);
         if (options.streamState.sent) { options.onReset?.(); options.streamState.sent = false; }
       }

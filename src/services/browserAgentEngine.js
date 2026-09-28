@@ -8,6 +8,8 @@ import { apiRouter } from './apiRouter';
 
 // ─── Extension ID ─────────────────────────────────────────────────────────────
 const EXTENSION_ID = 'emimeingkoocmgljpjkpdnlnbkpkfbff';
+let commandExecutionEpoch = 0;
+let activeCommandAbortController = null;
 
 // ─── Action Type Constants ────────────────────────────────────────────────────
 export const ACTION_TYPES = {
@@ -19,6 +21,9 @@ export const ACTION_TYPES = {
   CLICK_ELEMENT:   'click_element',
   EXTRACT:         'extract_content',
   READ_DOM:        'read_page_dom',
+  AUTOMATE_PAGE:   'automate_page',
+  CAPTURE_SCREEN: 'capture_screen',
+  OCR_SCREEN:      'ocr_screen',
   SUMMARIZE_PAGE:  'summarize_page',
   GMAIL_COMPOSE:   'gmail_compose',
   GMAIL_READ:      'gmail_read_inbox',
@@ -122,10 +127,25 @@ function _emit(status) {
 // ─── Extension DOM Bridge with Retry Logic ────────────────────────────────────
 
 export async function checkExtensionConnected() {
-  if (typeof document !== 'undefined' && document.documentElement.getAttribute('data-zulora-plugin-active') === 'true') {
-    return true;
-  }
-  return false;
+  if (typeof document === 'undefined') return false;
+  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = (connected) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      window.removeEventListener('message', onMessage);
+      resolve(connected);
+    };
+    const onMessage = event => {
+      if (event.source === window && event.data?.source === 'ZULORA_EXTENSION' &&
+          event.data?.type === 'ZULORA_PING_RESPONSE' && event.data?.nonce === nonce) finish(!!event.data.ok);
+    };
+    const timer = setTimeout(() => finish(false), 1200);
+    window.addEventListener('message', onMessage);
+    window.dispatchEvent(new CustomEvent('ZULORA_PING_EXTENSION', { detail: { nonce } }));
+  });
 }
 
 /**
@@ -200,7 +220,13 @@ export async function resumeTask() {
 }
 
 export async function cancelTask() {
+  commandExecutionEpoch++;
+  activeCommandAbortController?.abort();
   return sendBridgeMessageWithRetry({ type: 'ZULORA_CANCEL' }, 3, 1500, 2000);
+}
+
+export async function executeExtensionAction(step) {
+  return sendBridgeMessageWithRetry({ type: 'EXECUTE_ACTION', payload: step }, 1, 0, 150000);
 }
 
 export async function getTaskStatus() {
@@ -232,21 +258,36 @@ ${isHtml ? 'Format the email in clean, well-spaced HTML paragraphs (<p style="ma
     prompt = `You are an AI assistant. Draft a natural, concise, and friendly WhatsApp message based on this request: "${instruction}". Include relevant emojis where appropriate. Do NOT include quotation marks around the output.`;
   } else if (contextType === 'code') {
     prompt = `You are a principal software engineer. Generate production-ready code based on this request: "${instruction}". Output only clean code without backticks if possible, or well-structured code.`;
+  } else if (contextType === 'analysis') {
+    prompt = `Analyze the page content below and answer the user's request using only information present in the page. If the page does not contain enough information, say so. User request: "${instruction}"\n\nPage content:\n${String(options.contextText || '').slice(0, 14000)}`;
   } else {
     prompt = `You are an autonomous AI web assistant. Generate the exact content payload requested here: "${instruction}". Be thorough and concise.`;
   }
 
   try {
-    const res = await apiRouter.generateText(prompt, [], 'auto', {
+    let streamedChars = 0;
+    let lastReportedTokens = Math.ceil(prompt.length / 4);
+    options.onTokensProgress?.(lastReportedTokens);
+    const res = await apiRouter.generateChat(prompt, [], {
       currentUser: options.currentUser,
-      temperature: 0.7
+      temperature: 0.7,
+      signal: options.signal,
+      onToken: (chunk) => {
+        streamedChars += String(chunk || '').length;
+        const estimate = Math.ceil(prompt.length / 4) + Math.ceil(streamedChars / 4);
+        if (estimate > lastReportedTokens) {
+          lastReportedTokens = estimate;
+          options.onTokensProgress?.(estimate);
+        }
+      }
     });
 
     const rawText = String(res?.text || '').trim();
     const cleanText = rawText.replace(/^```html\s*|```$/gi, '').trim();
 
     // Estimate tokens
-    const tokens = res?.tokens || Math.ceil((prompt.length + cleanText.length) / 4);
+    const tokens = res?.tokens || res?.tokenUsage?.totalTokens || Math.ceil((prompt.length + cleanText.length) / 4);
+    options.onTokensProgress?.(tokens);
 
     // Template selection
     let templateType = null;
@@ -293,8 +334,18 @@ export function parseCommandToSteps(command) {
   const cmd = command.toLowerCase().trim();
   const steps = [];
 
+  if (/google sheets|spreadsheet/i.test(command)) {
+    if (/\b(create|fill|enter|update|add|edit|change|append|type|click|find|search)\b/i.test(command)) {
+      steps.push({ action: ACTION_TYPES.SEARCH_GOOGLE, app: 'Google Sheets', params: { query: command } });
+    } else {
+      steps.push({ action: ACTION_TYPES.OPEN_URL, app: 'Google Sheets', params: { url: 'https://sheets.google.com' } });
+    }
+    return steps;
+  }
+
   // ── 1. Gmail / Email ──────────────────────────────────────────────
-  if (cmd.includes('email') || cmd.includes('gmail') || cmd.includes('send mail') || cmd.includes('draft email')) {
+  if ((cmd.includes('email') || cmd.includes('gmail') || cmd.includes('send mail') || cmd.includes('draft email')) &&
+      /draft|compose|write|email|mail to|send mail/i.test(command)) {
     const toMatch   = command.match(/to\s+([\w._%+-]+@[\w.-]+\.[a-z]{2,})/i);
     const subjMatch = command.match(/subject[:\s]+["']?(.+?)["']?(?:\s+(?:body|saying|with|and|message)|$)/i);
     const bodyMatch = command.match(/(?:body|saying|message|draft|write)[:\s]+["']?(.+?)["']?$/i);
@@ -318,9 +369,17 @@ export function parseCommandToSteps(command) {
   }
 
   // ── 2. WhatsApp Web ───────────────────────────────────────────────
-  if (cmd.includes('whatsapp') || cmd.includes('whats app')) {
+  if ((cmd.includes('whatsapp') || cmd.includes('whats app')) && /send|message|text/i.test(command)) {
     const toMatch = command.match(/to\s+([A-Za-z0-9\s]+?)(?:\s+(?:saying|with|message)|$)/i);
-    const msgMatch = command.match(/(?:saying|message|with|text)[:\s]+["']?(.+?)["']?$/i);
+    const msgMatch = command.match(/\bsaying\s+["']?(.+?)["']?$/i) || command.match(/\b(?:message|text)\s*[:=]\s*["']?(.+?)["']?$/i);
+    if (!toMatch?.[1]?.trim()) {
+      steps.push({ action: ACTION_TYPES.OPEN_URL, app: 'WhatsApp', params: { url: 'https://web.whatsapp.com' } });
+      return steps;
+    }
+    if (!msgMatch?.[1]?.trim()) {
+      steps.push({ action: 'notify_user', app: 'WhatsApp', params: { message: `No message was sent. Add the message text for ${toMatch[1].trim()}.` } });
+      return steps;
+    }
 
     steps.push({
       action: ACTION_TYPES.WHATSAPP_SEND,
@@ -328,7 +387,7 @@ export function parseCommandToSteps(command) {
       needsLlm: true,
       llmType: 'whatsapp',
       params: {
-        recipient: toMatch?.[1]?.trim() || '',
+        recipient: toMatch[1].trim(),
         rawPrompt: msgMatch?.[1] || command
       }
     });
@@ -362,7 +421,12 @@ export function parseCommandToSteps(command) {
   }
 
   // ── 5. Screen & DOM Reader ────────────────────────────────────────
-  if (cmd.includes('summarize this page') || cmd.includes('read page') || cmd.includes('read dom') || cmd.includes('screen reader') || cmd.includes('what is on this page')) {
+  if (cmd.includes('ocr') || cmd.includes('read screen') || cmd.includes('read screenshot')) {
+    steps.push({ action: ACTION_TYPES.OCR_SCREEN, app: 'Screen Reader', params: {} });
+    return steps;
+  }
+
+  if (cmd.includes('summarize this page') || cmd.includes('read page') || cmd.includes('read dom') || cmd.includes('screen reader') || cmd.includes('what is on this page') || cmd.includes('analyze this page')) {
     steps.push({
       action: ACTION_TYPES.READ_DOM,
       app: 'Screen Reader',
@@ -413,6 +477,14 @@ export function parseCommandToSteps(command) {
       steps.push({ action: ACTION_TYPES.OPEN_URL, app: 'Browser', params: { url } });
       return steps;
     }
+    const appUrl = /whatsapp/i.test(command) ? 'https://web.whatsapp.com'
+      : /gmail|email/i.test(command) ? 'https://mail.google.com'
+        : /gemini/i.test(command) ? 'https://gemini.google.com/app'
+          : /chatgpt|chat gpt/i.test(command) ? 'https://chatgpt.com' : '';
+    if (appUrl) {
+      steps.push({ action: ACTION_TYPES.OPEN_URL, app: 'Browser', params: { url: appUrl } });
+      return steps;
+    }
   }
 
   // ── Fallback: Default Google Search & User Assist ──────────────────
@@ -434,13 +506,70 @@ export function parseCommandToSteps(command) {
  * 4. Tracks token metrics
  * 5. Executes actions via extension bridge
  */
-export async function executeCommand(command, onLog, currentUser = null) {
+const PLANNER_ACTIONS = new Set([
+  'open_url', 'search_google', 'switch_tab', 'close_tab', 'type_text', 'click_element',
+  'extract_content', 'read_page_dom', 'automate_page', 'capture_screen', 'ocr_screen',
+  'gmail_compose', 'whatsapp_send', 'chatgpt_prompt', 'gemini_prompt', 'export_pdf',
+  'export_code', 'download_file', 'wait'
+]);
+
+function parsePlannerJson(value) {
+  const clean = String(value || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  const first = clean.indexOf('{');
+  const last = clean.lastIndexOf('}');
+  if (first < 0 || last <= first) throw new Error('Planner did not return a JSON plan.');
+  return JSON.parse(clean.slice(first, last + 1));
+}
+
+async function planUnknownCommand(command, currentUser, onTokensProgress, signal) {
+  const actions = [...PLANNER_ACTIONS].join(', ');
+  const prompt = `Convert the user's browser task into a short JSON action plan. Return only {"steps":[{"action":"...","params":{...}}]}. Allowed actions: ${actions}. For general page work use automate_page with operation fill, type, search, click, submit, read, extract, analyze, or wait_for. Use HTTPS URLs. Do not send messages, submit emails, delete data, purchase, or make other external changes unless the user explicitly asked for that exact action. Do not invent recipients, message text, selectors, or facts. If the request is ambiguous, return {"steps":[]}.\nUser task: ${command}`;
+  let streamedChars = 0;
+  const baseline = Math.ceil(prompt.length / 4);
+  onTokensProgress?.(baseline);
+  const result = await apiRouter.generateChat(prompt, [], {
+    currentUser,
+    temperature: 0.1,
+    signal,
+    onToken: chunk => {
+      streamedChars += String(chunk || '').length;
+      onTokensProgress?.(baseline + Math.ceil(streamedChars / 4));
+    }
+  });
+  const tokens = result?.tokens || result?.tokenUsage?.totalTokens || Math.ceil((prompt.length + String(result?.text || '').length) / 4);
+  onTokensProgress?.(tokens);
+  const plan = parsePlannerJson(result?.text);
+  const steps = Array.isArray(plan.steps) ? plan.steps : [];
+  return {
+    tokens,
+    steps: steps.filter(step => {
+      if (!PLANNER_ACTIONS.has(step?.action) || !step.params || typeof step.params !== 'object') return false;
+      if (step.action === 'whatsapp_send' && !/\b(send|message|text)\b/i.test(command)) return false;
+      if (step.action === 'close_tab' && !/\b(close|shut)\b/i.test(command)) return false;
+      if (step.action === 'automate_page' && !['fill', 'type', 'search', 'click', 'submit', 'read', 'extract', 'analyze', 'wait_for'].includes(String(step.params.operation || '').toLowerCase())) return false;
+      if (step.action === 'open_url' && !/^https:\/\//i.test(String(step.params.url || ''))) return false;
+      return true;
+    })
+  };
+}
+
+export async function executeCommand(command, onLog, currentUser = null, onTokenUsage) {
+  const executionEpoch = commandExecutionEpoch;
+  const abortController = new AbortController();
+  activeCommandAbortController = abortController;
+  const wasCancelled = () => executionEpoch !== commandExecutionEpoch;
+  const tokenBySource = new Map();
+  const publishTokenCount = (source, count) => {
+    tokenBySource.set(source, Math.max(0, Math.ceil(Number(count) || 0)));
+    onTokenUsage?.([...tokenBySource.values()].reduce((sum, value) => sum + value, 0));
+  };
   const connected = await checkExtensionConnected();
+  if (wasCancelled()) return { ok: false, success: false, error: 'Task stopped.' };
   if (!connected) {
     return { ok: false, success: false, error: 'Extension not connected. Please install the Zulora Computer Plugin.' };
   }
 
-  const steps = parseCommandToSteps(command);
+  let steps = parseCommandToSteps(command);
   if (!steps.length) {
     return { ok: false, success: false, error: 'Could not parse command into executable steps.' };
   }
@@ -448,8 +577,46 @@ export async function executeCommand(command, onLog, currentUser = null) {
   let totalTokensUsed = 0;
   let templateUsed = null;
 
+  if (steps.length === 1 && steps[0].action === ACTION_TYPES.SEARCH_GOOGLE &&
+      (!/\b(search|google)\b/i.test(command) || /google sheets|spreadsheet/i.test(command))) {
+    onLog?.({ index: 1, label: 'AI is planning browser actions using Zulora’s provider waterfall…', status: 'running', timestamp: Date.now() });
+    try {
+      const plan = await planUnknownCommand(command, currentUser, count => publishTokenCount('planner', count), abortController.signal);
+      if (wasCancelled()) return { ok: false, success: false, error: 'Task stopped.' };
+      steps = plan.steps.length ? plan.steps : steps;
+      publishTokenCount('planner', plan.tokens);
+      onLog?.({ index: 1, label: `AI planned ${steps.length} browser action${steps.length === 1 ? '' : 's'}`, status: 'done', timestamp: Date.now() });
+    } catch (error) {
+      if (wasCancelled()) return { ok: false, success: false, error: 'Task stopped.' };
+      onLog?.({ index: 1, label: 'AI planning was unavailable; using a Google search fallback.', status: 'paused', detail: error.message, timestamp: Date.now() });
+    }
+  }
+
+  if (/\b(summarize|summarise|analyze|analyse)\b.*\b(page|screen|screenshot)\b/i.test(command)) {
+    const useOcr = /\b(screen|screenshot|ocr)\b/i.test(command);
+    const readAction = useOcr ? ACTION_TYPES.OCR_SCREEN : ACTION_TYPES.READ_DOM;
+    onLog?.({ index: 1, label: `Step 1: Reading the ${useOcr ? 'visible screen with offline OCR' : 'current page DOM'}`, status: 'running', timestamp: Date.now() });
+    const readResult = await executeExtensionAction({ action: readAction, params: {} });
+    if (wasCancelled()) return { ok: false, success: false, error: 'Task stopped.' };
+    if (!readResult?.ok || readResult?.error) return { ok: false, success: false, error: readResult?.error || 'Could not read the current page.' };
+    const contextText = useOcr ? readResult.text : readResult.dom?.contentSnippet;
+    if (!contextText) return { ok: false, success: false, error: 'The current page did not expose readable text.' };
+    onLog?.({ index: 2, label: 'Step 2: Analyzing page content with the AI provider waterfall', status: 'running', timestamp: Date.now() });
+    const analysis = await generateTaskPayload(command, 'analysis', {
+      currentUser,
+      contextText,
+      signal: abortController.signal,
+      onTokensProgress: count => publishTokenCount('analysis', count)
+    });
+    if (wasCancelled()) return { ok: false, success: false, error: 'Task stopped.' };
+    totalTokensUsed = analysis.tokens || 0;
+    publishTokenCount('analysis', totalTokensUsed);
+    onLog?.({ index: 2, label: 'Page analysis complete', status: 'done', detail: analysis.text, timestamp: Date.now() });
+    return { ok: true, success: true, analysis: analysis.text, steps: [{ action: readAction }], tokensUsed: totalTokensUsed };
+  }
+
   // Process LLM generation for steps that need rich payloads
-  for (const step of steps) {
+  for (const [stepIndex, step] of steps.entries()) {
     if (step.needsLlm && step.params?.rawPrompt) {
       if (onLog) {
         onLog({
@@ -460,13 +627,17 @@ export async function executeCommand(command, onLog, currentUser = null) {
         });
       }
 
+      const tokenSource = `payload-${stepIndex}`;
       const generated = await generateTaskPayload(step.params.rawPrompt, step.llmType, {
         currentUser,
         to: step.params.to,
-        subject: step.params.subject
+        subject: step.params.subject,
+        signal: abortController.signal,
+        onTokensProgress: count => publishTokenCount(tokenSource, count)
       });
-
-      totalTokensUsed += generated.tokens || 0;
+      if (wasCancelled()) return { ok: false, success: false, error: 'Task stopped.' };
+      publishTokenCount(tokenSource, generated.tokens);
+      totalTokensUsed = [...tokenBySource.values()].reduce((sum, value) => sum + value, 0);
       templateUsed = generated.template || templateUsed;
 
       if (step.action === ACTION_TYPES.GMAIL_COMPOSE) {
@@ -500,6 +671,8 @@ export async function executeCommand(command, onLog, currentUser = null) {
   }
 
   const result = await runTask(steps);
+  if (wasCancelled()) return { ok: false, success: false, error: 'Task stopped.' };
+  totalTokensUsed = [...tokenBySource.values()].reduce((sum, value) => sum + value, 0);
   return {
     ...result,
     steps,
@@ -514,6 +687,7 @@ export default {
   pauseTask,
   resumeTask,
   cancelTask,
+  executeExtensionAction,
   getTaskStatus,
   parseCommandToSteps,
   generateTaskPayload,

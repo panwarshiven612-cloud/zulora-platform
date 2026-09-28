@@ -10,7 +10,7 @@ export class GenerationApiError extends Error {
 }
 
 /** Calls the authenticated server route when it is available (production/Vercel). */
-export async function requestGeneration(action, payload, currentUser, endpoint = '/api/ai') {
+export async function requestGeneration(action, payload, currentUser, endpoint = '/api/ai', externalSignal) {
   if (!currentUser?.getIdToken) return null;
 
   let token;
@@ -23,6 +23,9 @@ export async function requestGeneration(action, payload, currentUser, endpoint =
   let response;
   const timeoutMs = action === 'video' ? 52_000 : action === 'image' ? 48_000 : 35_000;
   const controller = new AbortController();
+  const abortFromCaller = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) controller.abort(externalSignal.reason);
+  else externalSignal?.addEventListener('abort', abortFromCaller, { once: true });
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     response = await fetch(endpoint, {
@@ -36,11 +39,13 @@ export async function requestGeneration(action, payload, currentUser, endpoint =
     });
   } catch (error) {
     if (error?.name === 'AbortError') {
+      if (externalSignal?.aborted) throw error;
       throw new GenerationApiError(`${action} generation timed out; switching to available fallbacks.`, 504);
     }
     return null;
   } finally {
     window.clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', abortFromCaller);
   }
 
   const contentType = response.headers.get('content-type') || '';
@@ -91,7 +96,7 @@ export async function requestVoiceAudio(text, voiceId, currentUser) {
 }
 
 /** Requests chat output as authenticated server-sent events and forwards each token to the UI. */
-export async function requestGenerationStream(payload, currentUser, onToken, onReset, onProvider) {
+export async function requestGenerationStream(payload, currentUser, onToken, onReset, onProvider, signal) {
   if (!currentUser?.getIdToken) return null;
   let token;
   try { token = await currentUser.getIdToken(); }
@@ -102,9 +107,13 @@ export async function requestGenerationStream(payload, currentUser, onToken, onR
     response = await fetch('/api/ai', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ action: 'chat-stream', ...payload })
+      body: JSON.stringify({ action: 'chat-stream', ...payload }),
+      signal
     });
-  } catch { return null; }
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
 
   const contentType = response.headers.get('content-type') || '';
   if (response.status === 404) return null;
