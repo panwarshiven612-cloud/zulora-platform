@@ -1,3 +1,5 @@
+import { buildImagePrompt } from './imageGen';
+
 /**
  * imageApi.js — Bulletproof Image Studio API powered by Pollinations AI
  * Ensures image generation NEVER breaks by using Pollinations as primary & failover.
@@ -5,15 +7,7 @@
  */
 
 export function buildStyledPrompt(prompt, style, negativePrompt) {
-  const p = String(prompt || '').trim();
-  const parts = [p];
-  if (style && style !== 'None' && !p.toLowerCase().includes(style.toLowerCase())) {
-    parts.push(`${style} style, highly detailed, masterwork`);
-  }
-  if (negativePrompt) {
-    parts.push(`avoid: ${negativePrompt}`);
-  }
-  return parts.join(', ');
+  return buildImagePrompt(prompt, style, negativePrompt);
 }
 
 export function getDimensionsForRatio(aspectRatio = '1:1') {

@@ -11,7 +11,7 @@ const SAFE_AUTH_CONTEXT = {
   userProfile: null,
   loading: true,
   tier: TIERS.FREE,
-  limits: { chat: 50, image: 30, video: 4 },
+  limits: { chat: 60, image: 30, video: 4 },
   usage: { chatCount: 0, imageCount: 0, videoCount: 0 },
   theme: 'dark',
   toggleTheme: noop,
@@ -320,9 +320,9 @@ export const AuthProvider = ({ children }) => {
     setUserProfile(null);
   };
 
-  const checkUsage = async (type) => {
+  const checkUsage = async (type, options = {}) => {
     if (!currentUser) return { allowed: false, error: 'User not signed in' };
-    const result = await firestoreService.checkUsageAllowance(currentUser.uid, type);
+    const result = await firestoreService.checkUsageAllowance(currentUser.uid, type, options);
     // Automatically trigger usage limits modal if limit reached
     if (!result.allowed) {
       setIsUsageModalOpen(true);

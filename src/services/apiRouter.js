@@ -17,6 +17,8 @@ import { requestGeneration, requestGenerationStream, trackSuccessfulUsage, check
 import { generateVideo as generateVideoWithProviders } from './videoService';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from './systemPrompt';
 import { AI_STUDIO_SYSTEM_PROMPT } from './aiStudioPrompt';
+import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_MODELS, GEMINI_MODEL_FALLBACKS, isCodeGenerationPrompt, normalizeGeminiModelId } from './aiModels';
+import { buildImagePrompt } from './imageGen';
 
 // ─── SAFE ENVIRONMENT EXTRACTOR ──────────────────────────────────────────────
 const clientEnv = import.meta.env || {};
@@ -26,9 +28,10 @@ export const GROQ_MODELS = Object.freeze({
   fastStream: 'llama-3.1-8b-instant',
   fallback: 'gemini-2.5-flash',
 });
-const GEMINI_FAST_MODEL = getEnv('VITE_GEMINI_FAST_MODEL') || 'gemini-3.5-flash-lite';
-const GEMINI_HIGH_CAPACITY_MODEL = getEnv('VITE_GEMINI_HIGH_CAPACITY_MODEL') || 'gemini-3.8-flash';
-const GEMINI_FLASH_VARIANTS = [GEMINI_HIGH_CAPACITY_MODEL, 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+const GEMINI_FAST_MODEL = getEnv('VITE_GEMINI_FAST_MODEL') || GEMINI_FAST_MODEL_ID;
+const GEMINI_HIGH_CAPACITY_MODEL = getEnv('VITE_GEMINI_HIGH_CAPACITY_MODEL') || GEMINI_BEST_MODEL_ID;
+const GEMINI_FLASH_VARIANTS = [...new Set([GEMINI_HIGH_CAPACITY_MODEL, ...GEMINI_MODEL_FALLBACKS])];
+export { GEMINI_MODELS };
 
 // ─── DYNAMIC GEMINI KEY POOL ─────────────────────────────────────────────────
 const GEMINI_KEYS = Array.from({ length: 7 }, (_, index) => getEnv(`VITE_GEMINI_KEY_${index + 1}`) || getEnv(`VITE_GEMINI_API_KEY_${index + 1}`));
@@ -170,7 +173,7 @@ export const MODEL_TIERS = {
   },
   think: {
     id: 'think',
-    label: 'Zulora 3.5 Pro Ultra',
+    label: 'Zulora 3.1 Pro Ultra',
     shortLabel: 'Pro Ultra',
     description: 'Extended reasoning & complex analysis',
     badge: '🧠',
@@ -279,17 +282,6 @@ async function browserHuggingFaceImage(prompt, modelId) {
   return blobToDataUrl(blob);
 }
 
-function buildImagePrompt(prompt, style, negativePrompt) {
-  const subject = String(prompt || '').trim();
-  const instructions = [
-    `User's requested image: ${subject}`,
-    "Subject fidelity is essential: make the requested subject and every named object the clear focus. Preserve the user's requested attributes and scene; do not replace them with a different subject or omit requested details.",
-    style ? `Visual style: ${String(style).trim()}. Apply this style without changing the requested subject.` : '',
-    negativePrompt ? `Avoid including: ${String(negativePrompt).trim()}.` : ''
-  ];
-  return instructions.filter(Boolean).join('\n\n');
-}
-
 async function browserReplicateImage(prompt, aspectRatio) {
   if (!REPLICATE_IMAGE_KEY) throw new Error('No Replicate browser key is configured.');
   const response = await fetchWithTimeout('https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions', {
@@ -314,11 +306,12 @@ async function browserReplicateImage(prompt, aspectRatio) {
 const buildHistory = (contextMessages = []) =>
   contextMessages.map((m) => ({ role: m.role, content: m.content }));
 
-const isCodingPrompt = prompt => /(?:\bcode\b|\bhtml\b|\bcss\b|\bjs\b|\bjavascript\b|\breact\b|\bfunction\b|\bbuild\s+(?:a\s+)?ui\b|\bwebsite\b|\bwebpage\b|\bweb\s+app\b|\blanding\s+page\b|\b(?:1000|\d{4,})\s*(?:\+\s*)?lines?\b|\bfull\s+(?:landing\s+page|website|web\s+app|application)\b|\binteractive\s+app\b|\bcomplete\s+(?:landing\s+page|website|web\s+app|application)\b)/i.test(String(prompt || ''));
+const isCodingPrompt = prompt => isCodeGenerationPrompt(prompt);
 const isComplexPrompt = prompt => /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(String(prompt || ''));
 const normalizeModelPreference = value => {
   const raw = String(value || 'auto').trim().toLowerCase();
-  if (/^gemini-\d+(?:\.\d+)?-[a-z0-9.-]+$/.test(raw)) return raw;
+  const modelId = normalizeGeminiModelId(raw);
+  if (modelId) return modelId;
   const selected = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
   if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra') || ['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'think';
   if (selected === 'llama' || (selected.includes('llama') && selected.includes('70b'))) return 'llama';
@@ -353,16 +346,12 @@ const syncUsage = async (result, type, currentUser) => {
 };
 const isQuotaAuthorityError = error => error instanceof GenerationApiError &&
   (error.status === 401 || error.status === 403 || error.status === 429 || error.payload?.upgradeRequired || (error.status >= 500 && /Firestore|quota|usage|plan validation|verify sign-in|session/i.test(error.message)));
-const ensureGenerationAllowance = async (type, currentUser, bypass = false) => {
-  if (bypass) return;
-  const allowance = await checkGenerationAllowance(type, currentUser);
+const ensureGenerationAllowance = async (type, currentUser, requestContext = {}) => {
+  const allowance = await checkGenerationAllowance(type, currentUser, requestContext);
   if (allowance && !allowance.allowed) {
-    if (allowance.softCooldown) {
-      throw new GenerationApiError('Taking a 5-minute breather to maintain top performance...', 429, { ...allowance, upgradeRequired: false });
-    }
     const hardLimit = Boolean(allowance.usage?.blocked || allowance.upgradeRequired);
     throw new GenerationApiError(
-      hardLimit ? 'Your daily AI token allocation is used. Upgrade or wait for the reset to continue.' : `${type} request is currently unavailable.`,
+      hardLimit ? 'Your rolling four-hour usage limit is reached. Earlier requests will return to your balance automatically.' : `${type} request is currently unavailable.`,
       hardLimit ? 429 : 403,
       { ...allowance, upgradeRequired: hardLimit }
     );
@@ -402,7 +391,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
         body: JSON.stringify({
           model,
           messages,
-          max_tokens: options.coding || options.flagship ? 8192 : tierConfig.maxTokens,
+          max_tokens: options.coding || options.flagship ? 16_384 : tierConfig.maxTokens,
           ...(options.onToken ? { stream: true } : {}),
           temperature: 0.7
         })
@@ -451,7 +440,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
         ],
         system_instruction: { parts: [{ text: providerSystemPrompt(options) }] },
         generationConfig: {
-          maxOutputTokens: options.coding || options.flagship ? 8192 : tierConfig.maxTokens,
+          maxOutputTokens: options.coding || options.flagship ? 16_384 : tierConfig.maxTokens,
           temperature: 0.7
         }
       })
@@ -480,7 +469,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
 async function tryGeminiKeyWaterfall(prompt, contextMessages, preferredModel, options, errors) {
   const keys = getGeminiKeyPool();
   if (!keys.length) return null;
-  const models = [preferredModel];
+    const models = [preferredModel];
   for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
     const model = models[modelIndex];
     let modelUnavailable = false;
@@ -505,7 +494,7 @@ async function tryGeminiKeyWaterfall(prompt, contextMessages, preferredModel, op
         const previous = geminiKeyPerformance.get(keyIndex) || { successes: 0, failures: 0, averageMs: 100_000 };
         geminiKeyPerformance.set(keyIndex, { ...previous, failures: previous.failures + 1 });
         errors.push(`${model} (Gemini key ${keyIndex + 1}/${keys.length}): ${error.message}`);
-        if (/Gemini HTTP (404|503)|model.{0,30}(not found|unavailable)|model.{0,30}404/i.test(error.message || '')) modelUnavailable = true;
+        if (/Gemini HTTP (403|404|408|425|429|500|502|503|504)|model.{0,30}(not found|unavailable|rate limit|quota|permission)|model.{0,30}404/i.test(error.message || '')) modelUnavailable = true;
         if (options.streamState?.sent) {
           options.onReset?.();
           options.streamState.sent = false;
@@ -545,8 +534,8 @@ const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
         model,
         messages,
         ...(tier === 'think'
-          ? { max_completion_tokens: options.flagship ? 8192 : tierConfig.maxTokens, reasoning_effort: 'high', reasoning_format: 'hidden', temperature: 0.6 }
-          : { max_tokens: options.coding || options.flagship ? 8192 : tierConfig.maxTokens, temperature: 0.7 }),
+          ? { max_completion_tokens: options.flagship ? 16_384 : tierConfig.maxTokens, reasoning_effort: 'high', reasoning_format: 'hidden', temperature: 0.6 }
+          : { max_tokens: options.coding || options.flagship ? 16_384 : tierConfig.maxTokens, temperature: 0.7 }),
         ...(options.onToken ? { stream: true } : {})
       })
     },
@@ -594,7 +583,7 @@ const tryCerebras = async (prompt, contextMessages, tier = 'pro', options = {}) 
       body: JSON.stringify({
         model,
         messages,
-        max_tokens: options.coding || options.flagship ? 8192 : tierConfig.maxTokens,
+        max_tokens: options.coding || options.flagship ? 16_384 : tierConfig.maxTokens,
         temperature: 0.7,
         ...(options.onToken ? { stream: true } : {})
       })
@@ -642,7 +631,7 @@ const tryOpenRouter = async (prompt, contextMessages, tier = 'pro', keyIdx = 0, 
       body: JSON.stringify({
         model,
         messages,
-        max_tokens: options.coding || options.flagship ? 8192 : tierConfig.maxTokens,
+        max_tokens: options.coding || options.flagship ? 16_384 : tierConfig.maxTokens,
         ...(options.onToken ? { stream: true } : {})
       })
     },
@@ -686,7 +675,7 @@ const tryMistral = async (prompt, contextMessages, tier = 'pro', options = {}) =
       body: JSON.stringify({
         model,
         messages,
-        max_tokens: options.coding || options.flagship ? 8192 : tierConfig.maxTokens,
+        max_tokens: options.coding || options.flagship ? 16_384 : tierConfig.maxTokens,
         ...(options.onToken ? { stream: true } : {})
       })
     },
@@ -718,7 +707,7 @@ const tryPollinationsText = async (prompt, options = {}, contextMessages = []) =
     ? await fetchWithTimeout('https://gen.pollinations.ai/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${POLLINATIONS_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'mistralai/mistral-small-3.2', messages, max_tokens: options.coding || options.flagship ? 8192 : 4096 })
+      body: JSON.stringify({ model: 'mistralai/mistral-small-3.2', messages, max_tokens: options.coding || options.flagship ? 16_384 : 4096 })
     }, 20_000)
     : await fetchWithTimeout(
       `https://text.pollinations.ai/${encodeURIComponent(messages.map(message => `${message.role}: ${message.content}`).join('\n\n'))}?model=mistral&seed=${Date.now() % 10000}`,
@@ -781,12 +770,18 @@ export const apiRouter = {
     const tier = vision
       ? directGeminiModel ? requestedTier : (geminiSelected ? 'gemini' : requestedTier === 'think' || requestedTier === 'pro' ? requestedTier : 'flash')
       : requestedTier === 'auto' ? (coding ? 'think' : complex ? 'pro' : 'flash') : requestedTier;
-    options = { ...options, coding, flagship, preferBestKey: flagship, streamState: options.streamState || { sent: false } };
+    const highTierCodeRequest = coding && (flagship || requestedTier === 'pro' || (directGeminiModel && /pro/i.test(requestedTier)));
+    options = { ...options, coding, flagship: highTierCodeRequest, preferBestKey: flagship || highTierCodeRequest, streamState: options.streamState || { sent: false } };
     const errors = [];
     const messages = [...buildHistory(contextMessages), { role: 'user', content: prompt }];
     const geminiModel = directGeminiModel ? requestedTier : geminiSelected ? intentGeminiModel : flagship ? GEMINI_HIGH_CAPACITY_MODEL : (MODEL_TIERS[tier]?.geminiModel || MODEL_TIERS.flash.geminiModel);
 
-    await ensureGenerationAllowance('chat', options.currentUser, flagship);
+    await ensureGenerationAllowance('chat', options.currentUser, {
+      modelPreference: requestedTier,
+      messages,
+      coding,
+      skipTokenLimit: highTierCodeRequest
+    });
 
     let emittedStreamTokens = false;
     try {

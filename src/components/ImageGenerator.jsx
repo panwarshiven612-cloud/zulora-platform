@@ -22,6 +22,7 @@ import { firestoreService, getTokenUsagePercent } from '../services/firestoreSer
 import { downloadMedia } from '../services/downloadService';
 
 const STYLES = [
+  { id: 'None', name: 'Follow Prompt', preview: 'https://images.unsplash.com/photo-1634017839464-5c339ebe3cb4?auto=format&fit=crop&w=300&q=80' },
   { id: 'Photorealistic', name: 'Photorealistic 8K', preview: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=300&q=80' },
   { id: 'Azure Dream', name: 'Azure Glassmorphism', preview: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=300&q=80' },
   { id: 'Cyberpunk', name: 'Cyberpunk Neon', preview: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?auto=format&fit=crop&w=300&q=80' },
@@ -51,7 +52,7 @@ export const ImageGenerator = () => {
 
   const [prompt, setPrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
-  const [selectedStyle, setSelectedStyle] = useState('Photorealistic');
+  const [selectedStyle, setSelectedStyle] = useState('None');
   const [aspectRatio, setAspectRatio] = useState('1:1');
   const [imageEngine, setImageEngine] = useState('flux-quick');
   const [loading, setLoading] = useState(false);
@@ -255,7 +256,7 @@ export const ImageGenerator = () => {
           <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-2.5">
             Art Style Preset
           </label>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2.5">
+          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 lg:grid-cols-7">
             {STYLES.map(style => {
               const isSelected = selectedStyle === style.id;
               return (

@@ -174,7 +174,7 @@ export const LandingPage = () => {
       title: 'Multi-Model AI Chat',
       badge: '7+ Models',
       desc: 'Intelligent waterfall routing across Gemini, Groq, Mistral, Cerebras & more. Zero downtime, always the best available model.',
-      items: ['50 chats / 2 hours (Free)', 'Markdown & code rendering', 'Voice input & TTS output', 'Chat history & sessions'],
+      items: ['60 chats / rolling 4 hours (Free)', 'Markdown & code rendering', 'Voice input & TTS output', 'Chat history & sessions'],
     },
     {
       icon: Wand2,
@@ -224,7 +224,7 @@ export const LandingPage = () => {
       price: 0,
       period: 'month',
       desc: 'Perfect for getting started',
-      features: ['50 chats / 2 hours', '30 image generations / day', '4 video generations / day', 'All AI models (waterfall)', 'Chat history storage', 'Voice input & output'],
+      features: ['60 chats / rolling 4 hours', '30 image generations / day', '4 video generations / day', 'Gemini model waterfall', 'Chat history storage', 'Voice input & output'],
     },
     {
       tier: 'Pro',
@@ -233,14 +233,14 @@ export const LandingPage = () => {
       desc: 'Best for regular creators',
       highlight: true,
       badge: 'Most Popular',
-      features: ['100 chats / 2 hours', '60 image generations / day', '8 video generations / day', 'Priority model routing', 'Extended history storage', 'Email support'],
+      features: ['120 chats / rolling 4 hours', '60 image generations / day', '8 video generations / day', 'Priority model routing', 'Extended history storage', 'Email support'],
     },
     {
       tier: 'Ultra Pro Max',
       price: 599,
       period: 'month',
       desc: 'For power users & teams',
-      features: ['250 chats / 2 hours', '150 image generations / day', '20 video generations / day', 'Priority queue access', 'Dedicated model access', 'WhatsApp priority support'],
+      features: ['300 chats / rolling 4 hours', '150 image generations / day', '20 video generations / day', 'Priority queue access', 'Dedicated model access', 'WhatsApp priority support'],
     },
   ];
 

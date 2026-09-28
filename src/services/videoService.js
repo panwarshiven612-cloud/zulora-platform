@@ -77,11 +77,8 @@ export async function generateVideo(arg1, arg2 = {}) {
 
   const allowance = await checkGenerationAllowance('video', options.currentUser);
   if (allowance && !allowance.allowed) {
-    if (allowance.softCooldown) {
-      throw new GenerationApiError('Taking a 5-minute breather to maintain top performance...', 429, { ...allowance, upgradeRequired: false });
-    }
     throw new GenerationApiError(
-      allowance.usage?.blocked ? 'Your daily AI token allocation is used. Upgrade or wait for the reset to continue.' : 'Video generation is currently unavailable.',
+      allowance.usage?.blocked ? 'Your rolling four-hour usage limit is reached. Earlier requests will return to your balance automatically.' : 'Video generation is currently unavailable.',
       allowance.usage?.blocked ? 429 : 403,
       { ...allowance, upgradeRequired: Boolean(allowance.usage?.blocked || allowance.upgradeRequired) }
     );

@@ -48,12 +48,12 @@ import {
   MoreHorizontal,
   ArrowDown,
   Plus,
-  Lock,
   Pencil,
   Radio,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { apiRouter, MODEL_TIERS } from '../services/apiRouter';
+import { GEMINI_MODELS, isCodeGenerationPrompt } from '../services/aiModels';
 import { firestoreService, deriveChatTitle } from '../services/firestoreService';
 import { imageFileToDataUrl } from '../services/imageUtils';
 import CodeArtifactRunner from './CodeArtifactRunner';
@@ -78,6 +78,15 @@ const MODEL_OPTIONS = [
     color: t.color,
     badge: t.badge,
     tier: t.tier,
+  })),
+  ...GEMINI_MODELS.map(model => ({
+    id: model.id,
+    label: model.label,
+    shortLabel: model.label.replace('Gemini ', ''),
+    icon: model.speed === 'reasoning' ? FlaskConical : Zap,
+    color: model.speed === 'reasoning' ? 'text-violet-500' : 'text-sky-500',
+    badge: model.tier === 'preview' ? 'Preview' : 'Gemini',
+    tier: 'free'
   }))
 ];
 
@@ -637,25 +646,25 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     const basePrompt = (promptOverride || inputPrompt).trim();
     if (!basePrompt || loading || sendingRef.current) return;
 
-    if (modelPreference === 'think' && !isPro) {
+    const codeGenerationRequest = isCodeGenerationPrompt(basePrompt);
+    const highTierCodeRequest = codeGenerationRequest && (modelPreference === 'think' || modelPreference === 'pro' || /-pro(?:-|$)/i.test(modelPreference));
+    if (modelPreference === 'think' && !isPro && !codeGenerationRequest) {
       setIsPricingModalOpen(true);
       return;
     }
     sendingRef.current = true;
-    if (modelPreference !== 'think') {
-      let allowance;
-      try {
-        allowance = await checkUsage('chat');
-      } catch (error) {
-        sendingRef.current = false;
-        console.warn('Could not check chat usage:', error.message);
-        setIsUsageModalOpen(true);
-        return;
-      }
-      if (!allowance.allowed) {
-        sendingRef.current = false;
-        return;
-      }
+    let allowance;
+    try {
+      allowance = await checkUsage('chat', { skipTokenLimit: highTierCodeRequest });
+    } catch (error) {
+      sendingRef.current = false;
+      console.warn('Could not check chat usage:', error.message);
+      setIsUsageModalOpen(true);
+      return;
+    }
+    if (!allowance.allowed) {
+      sendingRef.current = false;
+      return;
     }
 
     // Keep image data separate from prompt text; only text document contents are appended.
@@ -812,7 +821,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       setMessages(finalMessages);
       const estimatedTokens = Math.max(512, Math.ceil((fullPrompt.length + String(result.text || '').length) / 4));
       const processedTokens = Number(result.tokenUsage?.totalTokens || result.usage?.processedTokens) || estimatedTokens;
-      await recordUsage('chat', Boolean(result.usage?.tracked), processedTokens, modelPreference === 'think');
+      await recordUsage('chat', Boolean(result.usage?.tracked), processedTokens);
       if (currentUser?.uid) firestoreService.recordQueryContext(currentUser.uid, basePrompt, enableWebSearch ? 'search' : 'chat');
       const generatedCode = Array.from(String(result.text || '').matchAll(/```([^\r\n]*)\r?\n([\s\S]*?)```/g))
         .map(([, language, source]) => `\`\`\`${language.trim()}\n${source.replace(/\n$/, '')}\n\`\`\``)
@@ -995,11 +1004,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
                         aria-checked={modelPreference === opt.id}
                         key={opt.id}
                         onClick={() => {
-                          if (opt.id === 'think' && !isPro) {
-                            setShowModelMenu(false);
-                            setIsPricingModalOpen(true);
-                            return;
-                          }
                           setModelPreference(opt.id);
                           setShowModelMenu(false);
                         }}
@@ -1011,7 +1015,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
                       >
                         <opt.icon className={`w-3.5 h-3.5 ${opt.color}`} />
                         <span className="truncate">{opt.label}</span>
-                        {opt.id === 'think' && !isPro && <Lock className="w-3 h-3 ml-auto text-amber-500" />}
                         {modelPreference === opt.id && <Check className="w-3 h-3 ml-auto" />}
                       </button>
                     ))}

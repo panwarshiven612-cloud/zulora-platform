@@ -62,11 +62,32 @@ export async function requestLimits(currentUser) {
   let token;
   try { token = await currentUser.getIdToken(); } catch { return null; }
   try {
-    const response = await fetch('/api/limits', { headers: { Authorization: `Bearer ${token}` } });
+    const response = await fetch('/api/limits', { cache: 'no-store', headers: { Authorization: `Bearer ${token}` } });
     if (response.status === 404) return null;
     const data = await response.json().catch(() => ({}));
     return response.ok ? data.usage || null : null;
   } catch { return null; }
+}
+
+export async function requestVoiceAudio(text, voiceId, currentUser) {
+  if (!currentUser?.getIdToken) return null;
+  let token;
+  try { token = await currentUser.getIdToken(); }
+  catch { return null; }
+  let response;
+  try {
+    response = await fetch('/api/voice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ text, voiceId })
+    });
+  } catch { return null; }
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new GenerationApiError(data.error || 'Voice synthesis failed.', response.status, data);
+  }
+  return response.blob();
 }
 
 /** Requests chat output as authenticated server-sent events and forwards each token to the UI. */
@@ -219,16 +240,14 @@ export async function requestVideoGeneration(payload, currentUser, onProgress, e
   return result;
 }
 
-export async function checkGenerationAllowance(type, currentUser) {
+export async function checkGenerationAllowance(type, currentUser, requestContext = {}) {
   let result;
-  try { result = await requestGeneration('allowance', { usageType: type }, currentUser); }
+  try { result = await requestGeneration('allowance', { usageType: type, ...requestContext }, currentUser); }
   catch (error) {
     if (error instanceof GenerationApiError && [403, 429].includes(error.status)) {
       return {
         allowed: false,
         upgradeRequired: Boolean(error.payload?.upgradeRequired),
-        softCooldown: Boolean(error.payload?.softCooldown),
-        cooldownUntil: error.payload?.cooldownUntil || error.payload?.usage?.cooldownUntil || null,
         usage: error.payload?.usage,
         tier: error.payload?.planTier
       };
@@ -238,7 +257,7 @@ export async function checkGenerationAllowance(type, currentUser) {
   const serverAllowance = result?.allowance || null;
   if (serverAllowance && !serverAllowance.allowed) return serverAllowance;
   if (!currentUser?.uid) return serverAllowance;
-  const clientAllowance = await firestoreService.checkUsageAllowance(currentUser.uid, type);
+  const clientAllowance = await firestoreService.checkUsageAllowance(currentUser.uid, type, { skipTokenLimit: Boolean(requestContext.skipTokenLimit) });
   if (clientAllowance && !clientAllowance.allowed) return clientAllowance;
   return serverAllowance || clientAllowance || null;
 }

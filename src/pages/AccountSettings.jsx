@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   User, Mail, Shield, Trash2, AlertTriangle, CheckCircle2,
   ChevronLeft, Crown, BarChart3, Lock, Download, X,
@@ -7,6 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import { firestoreService } from '../services/firestoreService';
 import { doc, deleteDoc, collection, getDocs, query, where, limit, startAfter } from 'firebase/firestore';
 import { db } from '../services/firebase';
+import { getPreferredVoiceId, setPreferredVoiceId, VOICE_OPTIONS } from '../services/voicePreferences';
 
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 const DELETE_BATCH_SIZE = 15;
@@ -94,6 +95,12 @@ const DeleteConfirmModal = ({ onConfirm, onCancel, loading }) => {
 /* ─── MAIN ACCOUNT SETTINGS ─── */
 export const AccountSettings = ({ onClose }) => {
   const { currentUser, logout, tier, userProfile } = useAuth();
+  const [preferredVoice, setPreferredVoice] = useState(getPreferredVoiceId);
+  useEffect(() => {
+    const voice = VOICE_OPTIONS.find(option => option.id === preferredVoice);
+    if (voice && (voice.tier === 'free' || tier !== 'free')) return;
+    setPreferredVoice(setPreferredVoiceId('adam'));
+  }, [preferredVoice, tier]);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState('');
@@ -162,10 +169,10 @@ export const AccountSettings = ({ onClose }) => {
         />
       )}
 
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay animate-scale-in">
-        <div className="glass-elevated dark:glass-dark rounded-2xl border border-white/80 dark:border-slate-700/60 shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+      <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-y-auto p-2 modal-overlay animate-scale-in sm:p-4">
+        <div className="glass-elevated dark:glass-dark my-auto w-full max-w-lg max-h-[calc(100dvh-1rem)] overflow-y-auto overscroll-contain rounded-2xl border border-white/80 dark:border-slate-700/60 shadow-2xl sm:max-h-[calc(100dvh-2rem)]">
           {/* Header */}
-          <div className="sticky top-0 glass-pearl dark:glass-dark border-b border-slate-200/60 dark:border-slate-700/50 px-5 py-3 flex items-center justify-between rounded-t-2xl">
+          <div className="sticky top-0 z-20 glass-pearl dark:glass-dark border-b border-slate-200/60 dark:border-slate-700/50 px-4 py-3 flex items-center justify-between rounded-t-2xl sm:px-5">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-xl overflow-hidden">
                 <img src={LOGO_URL} alt="Zulora" className="w-full h-full object-cover" />
@@ -174,13 +181,14 @@ export const AccountSettings = ({ onClose }) => {
             </div>
             <button
               onClick={onClose}
-              className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20 transition-all"
+              aria-label="Close account settings"
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20 transition-all"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
 
-          <div className="p-5 space-y-5">
+          <div className="space-y-5 p-4 sm:p-5">
             {/* Profile Card */}
             <div className="glass-pearl dark:glass-dark rounded-xl border border-white/70 dark:border-slate-700/50 p-4 flex items-center gap-3">
               {currentUser?.photoURL ? (
@@ -198,6 +206,23 @@ export const AccountSettings = ({ onClose }) => {
                 </div>
               </div>
             </div>
+
+            <section className="rounded-xl border border-sky-200/60 bg-sky-50/50 p-4 dark:border-sky-900/50 dark:bg-sky-950/20">
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Voice assistant</h3>
+              <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">Choose the voice Zulora uses for spoken replies. Hindi and Hinglish speech are supported.</p>
+              <label className="mt-3 block text-xs font-semibold text-slate-600 dark:text-slate-300" htmlFor="account-voice-choice">Preferred voice</label>
+              <select
+                id="account-voice-choice"
+                value={preferredVoice}
+                onChange={event => setPreferredVoice(setPreferredVoiceId(event.target.value))}
+                className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-sky-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              >
+                {VOICE_OPTIONS.filter(voice => voice.tier === 'free' || tier !== 'free').map(voice => (
+                  <option key={voice.id} value={voice.id}>{voice.name} · {voice.gender}{voice.tier === 'pro' ? ' · Pro' : ''}</option>
+                ))}
+              </select>
+              {tier === 'free' && <p className="mt-2 text-[10px] text-slate-500 dark:text-slate-400">Upgrade to Pro for two additional studio voices.</p>}
+            </section>
 
             {/* Data Info Section */}
             <div>

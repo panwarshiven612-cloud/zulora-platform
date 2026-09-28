@@ -43,7 +43,7 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
     tier === 'pro'   ? 'from-amber-500 to-orange-500'  : 'from-slate-400 to-slate-500';
 
   return (
-    <header className="sticky top-0 z-40 glass-pearl dark:glass-dark border-b border-white/60 dark:border-slate-800/60 shadow-sm">
+    <header className="sticky top-0 z-40 isolate glass-pearl dark:glass-dark border-b border-white/60 dark:border-slate-800/60 shadow-sm">
       <div className="flex items-center h-14 px-3 md:px-5 gap-2">
 
         {/* Mobile Menu Button */}
@@ -71,8 +71,8 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
         </div>
 
         {/* Studio Tabs */}
-        <nav className="flex-1 flex items-center justify-center gap-1 mx-2">
-          <div className="flex items-center gap-1 glass-pearl dark:glass-dark rounded-xl border border-white/70 dark:border-slate-700/50 p-1 shadow-sm">
+        <nav aria-label="Workspace navigation" className="min-w-0 flex-1 overflow-x-auto overscroll-x-contain mx-1 sm:mx-2">
+          <div className="mx-auto flex w-max items-center gap-1 glass-pearl dark:glass-dark rounded-xl border border-white/70 dark:border-slate-700/50 p-1 shadow-sm">
             {TAB_CONFIG.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
@@ -167,7 +167,7 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
 
             {/* Dropdown */}
             {profileMenuOpen && (
-              <div className="absolute right-0 top-full mt-2 w-56 glass-elevated dark:glass-dark rounded-2xl border border-white/80 dark:border-slate-700/60 shadow-2xl z-50 overflow-hidden animate-scale-in">
+              <div className="absolute right-0 top-full mt-2 w-[min(14rem,calc(100vw-1rem))] max-h-[min(78dvh,34rem)] glass-elevated dark:glass-dark rounded-2xl border border-white/80 dark:border-slate-700/60 shadow-2xl z-[60] overflow-y-auto overscroll-contain animate-scale-in">
                 {/* User Info */}
                 <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800/60">
                   <div className="flex items-center gap-2.5">

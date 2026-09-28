@@ -10,7 +10,7 @@ import UserVault from '../components/UserVault';
 import UsageLimitsModal from '../components/UsageLimitsModal';
 import PricingModal from '../components/PricingModal';
 import AccountSettings from './AccountSettings';
-import VoiceAssistantModal from '../components/VoiceAssistantModal';
+import VoiceAgentModal from '../components/VoiceAgentModal';
 import { firestoreService } from '../services/firestoreService';
 
 const AIStudio = lazy(() => import('./AIStudio'));
@@ -213,7 +213,7 @@ export const Dashboard = ({
       </div>
 
       {/* Voice Assistant Modal Overlay */}
-      <VoiceAssistantModal
+      <VoiceAgentModal
         isOpen={isVoiceModalOpen}
         onClose={() => setIsVoiceModalOpen(false)}
         currentUser={currentUser}

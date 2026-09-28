@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Menu, Plus, Radio, Sparkles } from 'lucide-react';
 import ChatInterface from '../components/ChatInterface';
-import VoiceAssistantModal from '../components/VoiceAssistantModal';
+import VoiceAgentModal from '../components/VoiceAgentModal';
 import { firestoreService } from '../services/firestoreService';
 import { useAuth } from '../context/AuthContext';
 
@@ -93,7 +93,7 @@ export const Chat = ({
       </div>
 
       {/* Voice Assistant Modal Overlay */}
-      <VoiceAssistantModal
+      <VoiceAgentModal
         isOpen={isVoiceOpen}
         onClose={() => setIsVoiceOpen(false)}
         currentUser={user}

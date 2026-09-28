@@ -27,7 +27,7 @@ export const TIERS = {
 };
 
 export const BASE_LIMITS = {
-  chat: 50,    // per 2 hours
+  chat: 60,    // per rolling 4 hours
   image: 30,   // per 24 hours
   video: 4     // per 24 hours
 };
@@ -39,9 +39,9 @@ export const TIER_MULTIPLIERS = {
 };
 
 const TIER_LIMITS = {
-  [TIERS.FREE]: { chat: 50, image: 30, video: 4 },
-  [TIERS.PRO]: { chat: 100, image: 60, video: 8 },
-  [TIERS.ULTRA]: { chat: 250, image: 150, video: 20 }
+  [TIERS.FREE]: { chat: 60, image: 30, video: 4 },
+  [TIERS.PRO]: { chat: 120, image: 60, video: 8 },
+  [TIERS.ULTRA]: { chat: 300, image: 150, video: 20 }
 };
 
 export const TIER_PRICING = {
@@ -50,10 +50,10 @@ export const TIER_PRICING = {
   [TIERS.ULTRA]: { price: 599, label: 'Ultra Pro Max', multiplier: 5, period: 'month' }
 };
 
-const CHAT_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
+const CHAT_WINDOW_MS = 4 * 60 * 60 * 1000; // rolling 4 hours
 const DAY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
-const TOKEN_WINDOW_MS = DAY_WINDOW_MS;
-const TOKEN_LIMITS = { free: 10_000, pro: 50_000, ultra: 100_000 };
+const TOKEN_WINDOW_MS = CHAT_WINDOW_MS;
+const TOKEN_LIMITS = { free: 2_000_000, pro: 4_000_000, ultra: 8_000_000 };
 
 // LocalStorage fallback prefix
 const STORAGE_PREFIX = 'zulora_store_';
@@ -704,6 +704,20 @@ export const firestoreService = {
               ? Math.max(Number(usage.tokenUsed) || 0, Number(local.usage?.tokenUsed) || 0)
               : Number(local.usage?.tokenUsed) || 0;
           }
+          if (Array.isArray(local.usage?.tokenEvents)) {
+            const now = Date.now();
+            const eventsById = new Map();
+            [...(Array.isArray(usage.tokenEvents) ? usage.tokenEvents : []), ...local.usage.tokenEvents].forEach(event => {
+              const timestamp = Number(event?.timestamp);
+              if (Number.isFinite(timestamp) && timestamp > now - TOKEN_WINDOW_MS && timestamp <= now) {
+                const id = String(event?.id || `${timestamp}:${Number(event?.tokens) || 0}`);
+                eventsById.set(id, { id, timestamp, tokens: Math.max(0, Number(event?.tokens) || 0) });
+              }
+            });
+            usage.tokenEvents = [...eventsById.values()].sort((left, right) => left.timestamp - right.timestamp);
+            usage.tokenWindowStart = usage.tokenEvents[0]?.timestamp || now;
+            usage.tokenUsed = usage.tokenEvents.reduce((total, event) => total + event.tokens, 0);
+          }
           profileData.usage = usage;
           profileData.usageLocalOnly = true;
         }
@@ -749,11 +763,34 @@ export const firestoreService = {
     const usage = { ...(profile.usage || {}) };
     let changed = false;
 
-    // Chat window check (2 hours)
-    if (!usage.chatWindowStart || now - usage.chatWindowStart >= CHAT_WINDOW_MS) {
+    // Keep legacy chat counters usable while the server maintains exact sliding timestamps.
+    const chatEvents = Array.isArray(usage.chatRequestTimes)
+      ? usage.chatRequestTimes.map(Number).filter(timestamp => Number.isFinite(timestamp) && timestamp > now - CHAT_WINDOW_MS && timestamp <= now)
+      : [];
+    if (Array.isArray(usage.chatRequestTimes)) {
+      usage.chatRequestTimes = chatEvents;
+      usage.chatCount = chatEvents.length;
+      usage.chatWindowStart = chatEvents[0] || now;
+      usage.chatResetAt = chatEvents.length ? chatEvents[0] + CHAT_WINDOW_MS : now;
+      profile.textUsed = usage.chatCount;
+      changed = true;
+    } else if (!usage.chatWindowStart || now - usage.chatWindowStart >= CHAT_WINDOW_MS) {
       usage.chatCount = 0;
       profile.textUsed = 0;
       usage.chatWindowStart = now;
+      changed = true;
+    }
+
+    if (Array.isArray(usage.tokenEvents)) {
+      const tokenEvents = usage.tokenEvents.map(event => ({
+        id: String(event?.id || `${Number(event?.timestamp) || 0}`),
+        timestamp: Number(event?.timestamp),
+        tokens: Math.max(0, Math.ceil(Number(event?.tokens) || 0))
+      })).filter(event => Number.isFinite(event.timestamp) && event.timestamp > now - TOKEN_WINDOW_MS && event.timestamp <= now)
+        .sort((left, right) => left.timestamp - right.timestamp);
+      usage.tokenEvents = tokenEvents;
+      usage.tokenUsed = tokenEvents.reduce((total, event) => total + event.tokens, 0);
+      usage.tokenWindowStart = tokenEvents[0]?.timestamp || now;
       changed = true;
     }
 
@@ -783,7 +820,7 @@ export const firestoreService = {
    * Check the current allowance for early UI feedback. The server performs
    * the authoritative check and increments usage after successful generation.
    */
-  async checkUsageAllowance(uid, type = 'chat') {
+  async checkUsageAllowance(uid, type = 'chat', options = {}) {
     let profile = await this.getUserProfile(uid);
     profile = this.evaluateUsageWindows(profile);
 
@@ -794,10 +831,10 @@ export const firestoreService = {
     const tokenWindowStart = Number(profile.usage?.tokenWindowStart) || Date.now();
     const tokenExpired = Date.now() - tokenWindowStart >= TOKEN_WINDOW_MS || tokenWindowStart > Date.now();
     const tokenUsed = tokenExpired ? 0 : Math.max(0, Number(profile.usage?.tokenUsed) || 0);
-    const tokenAllowed = tokenUsed < tokenLimit;
+    const tokenAllowed = options.skipTokenLimit || tokenUsed < tokenLimit;
     const tokenStatus = {
       usedPercent: Math.max(0, Math.min(100, Math.floor((tokenUsed / tokenLimit) * 100))),
-      resetAt: new Date((tokenExpired ? Date.now() : tokenWindowStart) + TOKEN_WINDOW_MS).toISOString(),
+      resetAt: new Date(tokenExpired ? Date.now() : tokenWindowStart + TOKEN_WINDOW_MS).toISOString(),
       blocked: !tokenAllowed
     };
     if (!actionStatus.allowed) {
@@ -816,7 +853,7 @@ export const firestoreService = {
         error: `${type} quota reached. Please wait for the quota window to reset.`
       };
     }
-    if (!tokenAllowed) return { allowed: false, usage: tokenStatus, tier: getTier(profile), error: 'Daily AI token allocation reached.' };
+    if (!tokenAllowed) return { allowed: false, usage: tokenStatus, tier: getTier(profile), error: 'Four-hour AI token allocation reached.' };
 
     return {
       allowed: true,
@@ -840,10 +877,18 @@ export const firestoreService = {
     catch { profile = {}; }
     profile = this.evaluateUsageWindows(profile);
     const now = Date.now();
+    const previousStart = Number(profile.usage?.tokenWindowStart) || 0;
+    const previousUsed = previousStart > 0 && previousStart <= now && now - previousStart < TOKEN_WINDOW_MS
+      ? Math.max(0, Number(profile.usage?.tokenUsed) || 0) : 0;
+    const tokenEvents = (Array.isArray(profile.usage?.tokenEvents) ? profile.usage.tokenEvents : previousUsed ? [{ id: `legacy:${previousStart}`, timestamp: previousStart, tokens: previousUsed }] : [])
+      .map(event => ({ id: String(event?.id || ''), timestamp: Number(event?.timestamp), tokens: Math.max(0, Number(event?.tokens) || 0) }))
+      .filter(event => Number.isFinite(event.timestamp) && event.timestamp > now - TOKEN_WINDOW_MS && event.timestamp <= now);
+    tokenEvents.push({ id: `${uid}:${now}:${Math.random().toString(36).slice(2, 10)}`, timestamp: now, tokens: Math.max(1, Math.ceil(Number(estimatedTokens) || (type === 'image' ? 2_048 : type === 'video' ? 4_096 : 1_000))) });
     const usage = {
       ...(profile.usage || {}),
-      tokenWindowStart: (Number(profile.usage?.tokenWindowStart) && now - Number(profile.usage.tokenWindowStart) < TOKEN_WINDOW_MS) ? Number(profile.usage.tokenWindowStart) : now,
-      tokenUsed: ((Number(profile.usage?.tokenWindowStart) && now - Number(profile.usage.tokenWindowStart) < TOKEN_WINDOW_MS) ? Number(profile.usage?.tokenUsed) || 0 : 0) + Math.max(1, Math.ceil(Number(estimatedTokens) || (type === 'image' ? 2_048 : type === 'video' ? 4_096 : 1_000)))
+      tokenEvents,
+      tokenWindowStart: tokenEvents[0]?.timestamp || now,
+      tokenUsed: tokenEvents.reduce((total, event) => total + event.tokens, 0)
     };
     profile = {
       ...profile,

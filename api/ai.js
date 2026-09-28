@@ -1,20 +1,21 @@
 import { createPublicKey, createSign, verify as verifySignature } from 'node:crypto';
-import { apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
+import { GEMINI_KEYS, apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from '../src/services/systemPrompt.js';
 import { AI_STUDIO_SYSTEM_PROMPT } from '../src/services/aiStudioPrompt.js';
+import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_MODEL_FALLBACKS, isCodeGenerationPrompt, normalizeGeminiModelId } from '../src/services/aiModels.js';
+import { buildImagePrompt } from '../src/services/imageGen.js';
 
 export const maxDuration = 60;
 export const config = { maxDuration };
 
 const CHAT_ORDER = ['gemini', 'cerebras', 'groq', 'mistral', 'openrouter'];
-const GEMINI_FAST_MODEL = process.env.GEMINI_FAST_MODEL || 'gemini-3.5-flash-lite';
-const GEMINI_HIGH_CAPACITY_MODEL = process.env.GEMINI_HIGH_CAPACITY_MODEL || 'gemini-3.8-flash';
-const GEMINI_FLASH_VARIANTS = [...new Set([GEMINI_HIGH_CAPACITY_MODEL, 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'])];
-const TOKEN_LIMITS = { free: 10_000, pro: 50_000, ultra: 100_000 };
-const TOKEN_WINDOW_MS = 24 * 60 * 60 * 1000;
-const PROMPT_BURST_WINDOW_MS = 2 * 60 * 1000;
-const PROMPT_BURST_LIMIT = 8;
-const SOFT_COOLDOWN_MS = 5 * 60 * 1000;
+const GEMINI_FAST_MODEL = process.env.GEMINI_FAST_MODEL || GEMINI_FAST_MODEL_ID;
+const GEMINI_HIGH_CAPACITY_MODEL = process.env.GEMINI_HIGH_CAPACITY_MODEL || GEMINI_BEST_MODEL_ID;
+const GEMINI_FLASH_VARIANTS = [...new Set([GEMINI_HIGH_CAPACITY_MODEL, ...GEMINI_MODEL_FALLBACKS])];
+const CHAT_WINDOW_MS = 4 * 60 * 60 * 1000;
+const CHAT_REQUEST_LIMIT = 60;
+const TOKEN_LIMITS = { free: 2_000_000, pro: 4_000_000, ultra: 8_000_000 };
+const TOKEN_WINDOW_MS = CHAT_WINDOW_MS;
 let cachedFirestoreToken = null;
 let cachedFirebaseCertificates = null;
 
@@ -190,15 +191,33 @@ function tokenUsageState(profile, now = Date.now()) {
   const usage = { ...(profile.usage || {}) };
   const rawTiers = [profile.planTier, profile.tier].map(value => String(value || '').toLowerCase().replace(/[ _-]/g, ''));
   const tier = rawTiers.some(value => value.includes('ultra')) ? 'ultra' : rawTiers.some(value => value.includes('pro')) ? 'pro' : 'free';
-  const previousStart = Number(usage.tokenWindowStart) || now;
-  const expired = now - previousStart >= TOKEN_WINDOW_MS || previousStart > now;
-  const windowStart = expired ? now : previousStart;
-  const current = expired ? 0 : Math.max(0, Number(usage.tokenUsed) || 0);
+  const tokenEvents = (Array.isArray(usage.tokenEvents) ? usage.tokenEvents : [])
+    .map((event, index) => ({
+      id: String(event?.id || `${Number(event?.timestamp) || 0}:${index}`),
+      timestamp: Number(event?.timestamp),
+      tokens: Math.max(0, Math.ceil(Number(event?.tokens) || 0))
+    }))
+    .filter(event => Number.isFinite(event.timestamp) && event.timestamp <= now && event.timestamp > now - TOKEN_WINDOW_MS)
+    .sort((left, right) => left.timestamp - right.timestamp);
+  if (!tokenEvents.length) {
+    const legacyStart = Number(usage.tokenWindowStart) || 0;
+    const legacyTokens = Math.max(0, Number(usage.tokenUsed) || 0);
+    if (legacyTokens && legacyStart <= now && legacyStart > now - TOKEN_WINDOW_MS) {
+      tokenEvents.push({ id: `legacy:${legacyStart}`, timestamp: legacyStart, tokens: legacyTokens });
+    }
+  }
+  const current = tokenEvents.reduce((total, event) => total + event.tokens, 0);
+  const windowStart = tokenEvents[0]?.timestamp || now;
+  const tokenResetAt = tokenEvents.length ? windowStart + TOKEN_WINDOW_MS : now;
+  const chatRequestTimes = (Array.isArray(usage.chatRequestTimes) ? usage.chatRequestTimes : [])
+    .map(Number).filter(timestamp => Number.isFinite(timestamp) && timestamp <= now && timestamp > now - CHAT_WINDOW_MS).sort((left, right) => left - right);
+  const chatResetAt = chatRequestTimes.length ? chatRequestTimes[0] + CHAT_WINDOW_MS : now;
   const limit = TOKEN_LIMITS[tier];
-  const cooldownUntil = Math.max(0, Number(profile.rateLimit?.cooldownUntil) || 0);
   return {
-    usage, tier, current, limit, windowStart, resetAt: windowStart + TOKEN_WINDOW_MS,
-    allowed: current < limit, cooldownUntil, softCooldown: cooldownUntil > now
+    usage: { ...usage, tokenEvents, tokenUsed: current, tokenWindowStart: windowStart, chatRequestTimes },
+    tier, current, limit, windowStart, resetAt: tokenResetAt,
+    chatRequestTimes, chatResetAt, chatRemaining: Math.max(0, CHAT_REQUEST_LIMIT - chatRequestTimes.length),
+    allowed: current < limit
   };
 }
 
@@ -209,7 +228,7 @@ async function readTokenUsageState(uid) {
   return tokenUsageState(profile);
 }
 
-async function incrementTokenUsage(uid, estimatedTokens = 1000, allowOverage = false) {
+async function incrementTokenUsage(uid, estimatedTokens = 1000, allowOverage = false, reservationId = null) {
   const adminToken = await firestoreAccessToken();
   const charge = Math.max(1, Math.min(20_000, Math.ceil(Number(estimatedTokens) || 1000)));
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -221,8 +240,14 @@ async function incrementTokenUsage(uid, estimatedTokens = 1000, allowOverage = f
     const { profile, error } = await readUsageProfile(uid, adminToken, transaction);
     if (error) throw new Error(error);
     const state = tokenUsageState(profile);
-    if (!state.allowed && !allowOverage) return { allowed: false, usedPercent: 100, resetAt: state.resetAt, planTier: state.tier };
-    const usage = { ...state.usage, tokenUsed: state.current + charge, tokenWindowStart: state.windowStart };
+    const tokenEvents = [...state.usage.tokenEvents];
+    const reservationIndex = reservationId ? tokenEvents.findIndex(event => event.id === reservationId) : -1;
+    if (reservationIndex >= 0) tokenEvents[reservationIndex] = { ...tokenEvents[reservationIndex], tokens: charge };
+    else tokenEvents.push({ id: `${uid}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`, timestamp: Date.now(), tokens: charge });
+    const activeTokenEvents = tokenEvents.filter(event => event.timestamp > Date.now() - TOKEN_WINDOW_MS).sort((left, right) => left.timestamp - right.timestamp);
+    const nextTokenCount = activeTokenEvents.reduce((total, event) => total + event.tokens, 0);
+    if (!state.allowed && !allowOverage && reservationIndex < 0) return { allowed: false, usedPercent: 100, resetAt: state.resetAt, planTier: state.tier };
+    const usage = { ...state.usage, tokenEvents: activeTokenEvents, tokenUsed: nextTokenCount, tokenWindowStart: activeTokenEvents[0]?.timestamp || Date.now() };
     const write = {
       update: { name: firestoreDoc(uid), fields: { usage: toFirestoreValue(usage) } },
       updateMask: { fieldPaths: ['usage'] }
@@ -232,11 +257,15 @@ async function incrementTokenUsage(uid, estimatedTokens = 1000, allowOverage = f
     }, 8_000);
     if (commit.ok) return {
       allowed: true,
-      usedTokens: state.current + charge,
+      usedTokens: nextTokenCount,
       processedTokens: charge,
       tokenLimit: state.limit,
-      usedPercent: Math.max(0, Math.min(100, Math.floor(((state.current + charge) / state.limit) * 100))),
-      resetAt: state.resetAt,
+      usedPercent: Math.max(0, Math.min(100, Math.floor((nextTokenCount / state.limit) * 100))),
+      resetAt: activeTokenEvents.length ? new Date(activeTokenEvents[0].timestamp + TOKEN_WINDOW_MS).toISOString() : new Date(Date.now()).toISOString(),
+      chatCount: state.chatRequestTimes.length,
+      chatLimit: CHAT_REQUEST_LIMIT,
+      chatRemaining: state.chatRemaining,
+      chatResetAt: state.chatResetAt ? new Date(state.chatResetAt).toISOString() : null,
       planTier: state.tier
     };
     const details = await commit.text();
@@ -246,7 +275,49 @@ async function incrementTokenUsage(uid, estimatedTokens = 1000, allowOverage = f
   throw new Error('Firestore token usage update could not be committed.');
 }
 
-async function registerPromptAttempt(uid, now = Date.now()) {
+export async function reserveVoiceUsage(uid, characterCount) {
+  const adminToken = await firestoreAccessToken();
+  const charge = Math.max(1, Math.min(5_000, Math.ceil(Number(characterCount) || 0)));
+  const voiceLimits = { free: 60_000, pro: 120_000, ultra: 300_000 };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const now = Date.now();
+    const begin = await fetchWithTimeout(`${firestoreRoot()}:beginTransaction`, {
+      method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ options: { readWrite: {} } })
+    }, 8_000);
+    if (!begin.ok) throw new Error('Could not start the voice usage transaction.');
+    const transaction = (await begin.json()).transaction;
+    const { profile, error } = await readUsageProfile(uid, adminToken, transaction);
+    if (error) throw new Error(error);
+    const state = tokenUsageState(profile, now);
+    const events = (Array.isArray(state.usage.voiceEvents) ? state.usage.voiceEvents : [])
+      .filter(event => Number(event.timestamp) > now - CHAT_WINDOW_MS && Number(event.timestamp) <= now)
+      .map(event => ({ timestamp: Number(event.timestamp), characters: Math.max(0, Number(event.characters) || 0) }));
+    const used = events.reduce((total, event) => total + event.characters, 0);
+    const limit = voiceLimits[state.tier];
+    if (used + charge > limit) {
+      await fetchWithTimeout(`${firestoreRoot()}:rollback`, {
+        method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction })
+      }, 8_000).catch(() => {});
+      return { allowed: false, remainingCharacters: Math.max(0, limit - used), resetAt: events.length ? new Date(events[0].timestamp + CHAT_WINDOW_MS).toISOString() : new Date(now).toISOString() };
+    }
+    const nextEvents = [...events, { timestamp: now, characters: charge }];
+    const usage = { ...state.usage, voiceEvents: nextEvents };
+    const write = {
+      update: { name: firestoreDoc(uid), fields: { usage: toFirestoreValue(usage) } },
+      updateMask: { fieldPaths: ['usage'] }
+    };
+    const commit = await fetchWithTimeout(`${firestoreRoot()}:commit`, {
+      method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction, writes: [write] })
+    }, 8_000);
+    if (commit.ok) return { allowed: true, remainingCharacters: limit - used - charge };
+    const details = await commit.text();
+    if (attempt < 2 && (commit.status === 409 || details.includes('ABORTED'))) continue;
+    throw new Error('Firestore rejected the voice usage update.');
+  }
+  throw new Error('Firestore voice usage update could not be committed.');
+}
+
+async function registerPromptAttempt(uid, estimatedTokens = 9_000, allowOverage = false, now = Date.now()) {
   const adminToken = await firestoreAccessToken();
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const begin = await fetchWithTimeout(`${firestoreRoot()}:beginTransaction`, {
@@ -256,43 +327,54 @@ async function registerPromptAttempt(uid, now = Date.now()) {
     const transaction = (await begin.json()).transaction;
     const { profile, error } = await readUsageProfile(uid, adminToken, transaction);
     if (error) throw new Error(error);
-    const rateLimit = { ...(profile.rateLimit || {}) };
-    const cooldownUntil = Number(rateLimit.cooldownUntil) || 0;
-    if (cooldownUntil > now) {
+    const state = tokenUsageState(profile, now);
+    if (state.chatRequestTimes.length >= CHAT_REQUEST_LIMIT) {
       await fetchWithTimeout(`${firestoreRoot()}:rollback`, {
         method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction })
       }, 8_000).catch(() => {});
-      return { allowed: false, softCooldown: true, cooldownUntil };
+      return { allowed: false, requestLimit: true, chatRemaining: 0, chatCount: state.chatRequestTimes.length, chatLimit: CHAT_REQUEST_LIMIT, chatResetAt: new Date(state.chatResetAt).toISOString() };
     }
-    const promptTimes = (Array.isArray(rateLimit.promptTimes) ? rateLimit.promptTimes : [])
-      .map(Number).filter(timestamp => Number.isFinite(timestamp) && timestamp > now - PROMPT_BURST_WINDOW_MS && timestamp <= now);
-    if (promptTimes.length >= PROMPT_BURST_LIMIT) {
-      const until = now + SOFT_COOLDOWN_MS;
-      const write = {
-        update: { name: firestoreDoc(uid), fields: { rateLimit: toFirestoreValue({ promptTimes: [...promptTimes, now].slice(-PROMPT_BURST_LIMIT - 1), cooldownUntil: until }) } },
-        updateMask: { fieldPaths: ['rateLimit'] }
-      };
-      const commit = await fetchWithTimeout(`${firestoreRoot()}:commit`, {
-        method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction, writes: [write] })
-      }, 8_000);
-      if (commit.ok) return { allowed: false, softCooldown: true, cooldownUntil: until };
-      const details = await commit.text();
-      if (attempt < 2 && (commit.status === 409 || details.includes('ABORTED'))) continue;
-      throw new Error('Firestore rejected the prompt rate-limit update.');
+    const reservationTokens = Math.max(1, Math.min(40_000, Math.ceil(Number(estimatedTokens) || 9_000)));
+    if (state.current + reservationTokens > state.limit && !allowOverage) {
+      await fetchWithTimeout(`${firestoreRoot()}:rollback`, {
+        method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction })
+      }, 8_000).catch(() => {});
+      return { allowed: false, tokenLimit: true, usedPercent: 100, resetAt: new Date(state.resetAt).toISOString(), planTier: state.tier };
     }
+    const reservationId = `${uid}:${now}:${Math.random().toString(36).slice(2, 10)}`;
+    const chatRequestTimes = [...state.chatRequestTimes, now];
+    const tokenEvents = [...state.usage.tokenEvents, { id: reservationId, timestamp: now, tokens: reservationTokens }];
+    const tokenCount = tokenEvents.reduce((total, event) => total + event.tokens, 0);
+    const usage = {
+      ...state.usage,
+      chatRequestTimes,
+      chatCount: chatRequestTimes.length,
+      chatWindowStart: chatRequestTimes[0] || now,
+      chatResetAt: chatRequestTimes[0] + CHAT_WINDOW_MS,
+      tokenEvents,
+      tokenUsed: tokenCount,
+      tokenWindowStart: tokenEvents[0]?.timestamp || now
+    };
     const write = {
-      update: { name: firestoreDoc(uid), fields: { rateLimit: toFirestoreValue({ promptTimes: [...promptTimes, now], cooldownUntil: 0 }) } },
-      updateMask: { fieldPaths: ['rateLimit'] }
+      update: { name: firestoreDoc(uid), fields: { usage: toFirestoreValue(usage) } },
+      updateMask: { fieldPaths: ['usage'] }
     };
     const commit = await fetchWithTimeout(`${firestoreRoot()}:commit`, {
       method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction, writes: [write] })
     }, 8_000);
-    if (commit.ok) return { allowed: true, softCooldown: false, cooldownUntil: 0 };
+    if (commit.ok) return {
+      allowed: true, reservationId, chatCount: chatRequestTimes.length,
+      chatLimit: CHAT_REQUEST_LIMIT, chatRemaining: Math.max(0, CHAT_REQUEST_LIMIT - chatRequestTimes.length),
+      chatResetAt: new Date(chatRequestTimes[0] + CHAT_WINDOW_MS).toISOString(),
+      usedTokens: tokenCount, tokenLimit: state.limit,
+      resetAt: new Date(tokenEvents[0]?.timestamp + TOKEN_WINDOW_MS).toISOString(),
+      planTier: state.tier
+    };
     const details = await commit.text();
     if (attempt < 2 && (commit.status === 409 || details.includes('ABORTED'))) continue;
-    throw new Error('Firestore rejected the prompt rate-limit update.');
+    throw new Error('Firestore rejected the rolling chat usage update.');
   }
-  throw new Error('Firestore prompt rate-limit update could not be committed.');
+  throw new Error('Firestore rolling chat usage update could not be committed.');
 }
 
 export async function verifyRequestUser(req) { return verifyUser(req); }
@@ -359,8 +441,10 @@ export async function getTokenUsageStatus(uid) {
     tokenLimit: state.limit,
     resetAt: new Date(state.resetAt).toISOString(),
     blocked: !state.allowed,
-    softCooldown: state.softCooldown,
-    cooldownUntil: state.softCooldown ? new Date(state.cooldownUntil).toISOString() : null,
+    chatCount: state.chatRequestTimes.length,
+    chatLimit: CHAT_REQUEST_LIMIT,
+    chatRemaining: state.chatRemaining,
+    chatResetAt: state.chatRequestTimes.length ? new Date(state.chatResetAt).toISOString() : null,
     tier: state.tier
   };
 }
@@ -468,7 +552,7 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
         ...(options.stream ? { stream: true } : {}),
         ...(options.reasoning && provider === 'groq'
           ? { max_completion_tokens: options.maxTokens || 8192, reasoning_effort: 'high', reasoning_format: 'hidden' }
-          : { max_tokens: options.maxTokens || (options.coding ? 8192 : 4096) })
+          : { max_tokens: options.maxTokens || (options.coding ? 16_384 : 4096) })
       };
       if (provider === 'groq') {
         if (config.model === 'llama-3.3-70b-versatile') {
@@ -520,7 +604,9 @@ async function tryGemini(messages, options = {}) {
       ? parts.map(part => ({ inline_data: { mime_type: part.mimeType, data: part.data } })) : [])]
   }));
   if (!contents.length) contents.push({ role: 'user', parts: [{ text: 'Hello' }] });
-  const keys = apiKeyPool.candidates('gemini', { preferBest: Boolean(options.preferBestKey) });
+  const keys = options.recheckCoolingKeys
+    ? GEMINI_KEYS.slice(0, 3).map((key, index) => ({ key, index }))
+    : apiKeyPool.candidates('gemini', { preferBest: Boolean(options.preferBestKey) });
   for (const { key, index } of keys) {
     const startedAt = Date.now();
     try {
@@ -532,7 +618,7 @@ async function tryGemini(messages, options = {}) {
           contents,
           ...(systemPrompt ? { system_instruction: { parts: [{ text: systemPrompt }] } } : {}),
           ...(options.enableWebSearch ? { tools: [{ google_search: {} }] } : {}),
-          generationConfig: { temperature: 0.7, maxOutputTokens: options.coding || options.flagship ? 8192 : (options.model === 'gemini-2.5-pro' ? 8192 : 4096) }
+          generationConfig: { temperature: 0.7, maxOutputTokens: options.coding || options.flagship ? 16_384 : (options.model === 'gemini-2.5-pro' ? 16_384 : 4096) }
         })
       }, options.stream ? 12_000 : 16_000, 1);
       if (response.ok) {
@@ -557,7 +643,7 @@ async function tryGemini(messages, options = {}) {
         }
       }
       console.warn(`Google Gemini text request failed with HTTP ${response.status}.`);
-      if (response.status === 404) options.onModelUnavailable?.(model, response.status);
+      if ([403, 404, 408, 425, 429].includes(response.status) || response.status >= 500) options.onModelUnavailable?.(model, response.status);
       if ([401, 403, 429].includes(response.status)) apiKeyPool.failed('gemini', index, parseRetryAfter(response));
       else apiKeyPool.advance('gemini', index);
     } catch (error) {
@@ -580,12 +666,12 @@ async function tryGeminiWithModelFallback(messages, options = {}) {
     model: preferredModel,
     onModelUnavailable: () => { modelUnavailable = true; }
   });
-  if (result || !modelUnavailable) return result;
+  if (result) return result;
 
   const alternatives = [...new Set([...GEMINI_FLASH_VARIANTS, 'gemini-2.5-flash-lite'])]
     .filter(model => model !== preferredModel);
   for (const model of alternatives) {
-    const fallback = await tryGemini(messages, { ...options, model });
+    const fallback = await tryGemini(messages, { ...options, model, recheckCoolingKeys: true });
     if (fallback) return fallback;
   }
   return null;
@@ -597,7 +683,7 @@ async function tryPollinationsText(messages, options = {}) {
     ? await fetchWithTimeout('https://gen.pollinations.ai/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${providerKeys.pollinations}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'mistralai/mistral-small-3.2', messages, max_tokens: options.coding ? 8192 : 4096 })
+      body: JSON.stringify({ model: 'mistralai/mistral-small-3.2', messages, max_tokens: options.coding ? 16_384 : 4096 })
     }, 18_000)
     : await fetchWithTimeout(`https://text.pollinations.ai/${encodeURIComponent(prompt)}?model=mistral&seed=${Date.now() % 10000}`, {}, 18_000);
   if (!response.ok) throw new Error(`Pollinations text request failed (HTTP ${response.status}).`);
@@ -612,7 +698,8 @@ async function tryPollinationsText(messages, options = {}) {
 
 function normalizeModelPreference(value) {
   const raw = String(value || 'auto').trim().toLowerCase();
-  if (/^gemini-\d+(?:\.\d+)?-[a-z0-9.-]+$/.test(raw)) return raw;
+  const geminiModel = normalizeGeminiModelId(raw);
+  if (geminiModel) return geminiModel;
   const selected = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
   if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra')) return 'think';
   if (selected === 'llama' || (selected.includes('llama') && selected.includes('70b'))) return 'llama';
@@ -642,7 +729,7 @@ async function generateChat(body, streamOptions = {}) {
   if (body.attachments?.length && !attachments.length) throw new Error('The attached image format is unsupported. Use PNG, JPEG, WebP, or GIF.');
   const vision = attachments.length > 0;
   const latestUserPrompt = [...messages].reverse().find(message => message.role === 'user')?.content || '';
-  const coding = Boolean(body.coding) || /(?:\bcode\b|\bhtml\b|\bcss\b|\bjs\b|\bjavascript\b|\breact\b|\bfunction\b|\bbuild\s+(?:a\s+)?ui\b|\bwebsite\b|\bwebpage\b|\bweb\s+app\b|\blanding\s+page\b|\b(?:1000|\d{4,})\s*(?:\+\s*)?lines?\b|\bfull\s+(?:landing\s+page|website|web\s+app|application)\b|\binteractive\s+app\b|\bcomplete\s+(?:landing\s+page|website|web\s+app|application)\b)/i.test(latestUserPrompt);
+  const coding = isCodeGenerationRequest({ messages: [{ role: 'user', content: latestUserPrompt }] });
   const complex = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(requestedPreference) ||
     /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(latestUserPrompt);
   const preference = requestedPreference === 'auto' ? (coding ? 'pro' : complex ? 'pro' : 'flash') : requestedPreference;
@@ -657,14 +744,14 @@ async function generateChat(body, streamOptions = {}) {
   for (const provider of order) {
     try {
       const result = provider === 'gemini'
-        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: 8192, ...streamOptions })
+        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: 16_384, ...streamOptions })
         : await tryOpenAiProvider(provider, messages, {
           attachments: body.attachments,
           vision,
           coding,
           model: provider === 'groq' ? groqModel : undefined,
           reasoning: preference === 'think' && provider === 'groq',
-          maxTokens: coding || useProModel || flagship ? 8192 : 4096,
+          maxTokens: coding || useProModel || flagship ? 16_384 : 4096,
           ...streamOptions
         });
       if (result) return result;
@@ -893,16 +980,6 @@ async function replicateImage(prompt, aspectRatio) {
   const url = Array.isArray(data.output) ? data.output[0] : data.output;
   if (!url || data.status === 'failed') throw new Error('Replicate returned no image.');
   return url;
-}
-
-function buildImagePrompt(prompt, style, negativePrompt) {
-  const subject = String(prompt || '').trim();
-  return [
-    `User's requested image: ${subject}`,
-    'Subject fidelity is essential: make the requested subject and every named object the clear focus. Preserve the user\'s requested attributes and scene; do not replace them with a different subject or omit requested details.',
-    style ? `Visual style: ${String(style).trim()}. Apply this style without changing the requested subject.` : '',
-    negativePrompt ? `Avoid including: ${String(negativePrompt).trim()}.` : ''
-  ].filter(Boolean).join('\n\n');
 }
 
 async function generateImage(body) {
@@ -1156,6 +1233,20 @@ function estimateRequestTokens(type, body, output = {}) {
   return Math.max(1, Math.ceil((inputChars + outputChars) / 4) + Math.ceil(imageChars / 5_000));
 }
 
+function isCodeGenerationRequest(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  const latestPrompt = [...messages].reverse().find(message => message?.role === 'user')?.content || body?.prompt || '';
+  return isCodeGenerationPrompt(latestPrompt);
+}
+
+function estimatedReservationTokens(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  const textCharacters = messages.reduce((total, message) => total + String(message?.content || '').length, 0);
+  const imageCharacters = (Array.isArray(body?.attachments) ? body.attachments : [])
+    .reduce((total, attachment) => total + String(attachment?.base64 || '').length, 0);
+  return Math.min(40_000, Math.max(9_000, Math.ceil(textCharacters / 4) + Math.ceil(imageCharacters / 5_000) + 8_192));
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return safeError(res, 405, 'Method not allowed.');
   let body = req.body;
@@ -1178,7 +1269,9 @@ export default async function handler(req, res) {
   try { uid = await verifyUser(req); }
   catch { return safeError(res, 503, 'Could not verify sign-in. Please retry.'); }
   if (!uid) return safeError(res, 401, 'Your sign-in session has expired. Sign in again.');
-  const flagshipRequest = type === 'chat' && normalizeModelPreference(body.modelPreference || body.model) === 'think';
+  const preference = normalizeModelPreference(body.modelPreference || body.model);
+  const highTierRequest = preference === 'think' || preference === 'pro' || preference === 'gemini-3.1-pro-preview' || preference === 'gemini-2.5-pro';
+  const flagshipRequest = type === 'chat' && highTierRequest && isCodeGenerationRequest(body);
 
   try {
     if (allowanceOnly) {
@@ -1195,11 +1288,13 @@ export default async function handler(req, res) {
         usedPercent: Math.max(0, Math.min(100, Math.floor((bucket.current / bucket.limit) * 100))),
         usedTokens: bucket.current, tokenLimit: bucket.limit,
         resetAt: new Date(bucket.resetAt).toISOString(), tier: bucket.tier,
-        softCooldown: bucket.softCooldown,
-        cooldownUntil: bucket.softCooldown ? new Date(bucket.cooldownUntil).toISOString() : null
+        chatCount: bucket.chatRequestTimes.length,
+        chatLimit: CHAT_REQUEST_LIMIT,
+        chatRemaining: bucket.chatRemaining,
+        chatResetAt: bucket.chatRequestTimes.length ? new Date(bucket.chatResetAt).toISOString() : null
       };
-      if (!bucket.allowed && !flagshipRequest) return safeError(res, 429, 'Your daily AI token allocation is used. Upgrade or wait for the reset to continue.', { upgradeRequired: true, usage: { ...status, blocked: true } });
-      if (bucket.softCooldown && !flagshipRequest) return safeError(res, 429, 'Taking a 5-minute breather to maintain top performance...', { softCooldown: true, cooldownUntil: status.cooldownUntil, upgradeRequired: false, usage: { ...status, blocked: false } });
+      if (type === 'chat' && bucket.chatRemaining <= 0) return safeError(res, 429, 'You have used all 60 chat requests in this rolling 4-hour window.', { upgradeRequired: false, usage: { ...status, blocked: true } });
+      if (!bucket.allowed && !flagshipRequest) return safeError(res, 429, 'Your four-hour AI token allocation is used. It refreshes automatically as earlier requests expire.', { upgradeRequired: false, usage: { ...status, blocked: true } });
       return json(res, 200, { allowance: { type, allowed: true, planTier: before.planTier, usage: { ...status, blocked: false } } });
     }
 
@@ -1216,6 +1311,7 @@ export default async function handler(req, res) {
 
     let usageTrackingAvailable = false;
     let profileTier = null;
+    let chatReservationId = null;
     if (firestoreAdminCredentials()) {
       try {
         const before = await readPlan(uid);
@@ -1225,8 +1321,7 @@ export default async function handler(req, res) {
         } else {
           if (!flagshipRequest) {
             const tokenState = await readTokenUsageState(uid);
-            if (!tokenState.allowed) return safeError(res, 429, 'Your daily AI token allocation is used. Upgrade or wait for the reset to continue.', { upgradeRequired: true, usage: { blocked: true, usedPercent: 100, resetAt: new Date(tokenState.resetAt).toISOString() } });
-            if (tokenState.softCooldown) return safeError(res, 429, 'Taking a 5-minute breather to maintain top performance...', { softCooldown: true, cooldownUntil: new Date(tokenState.cooldownUntil).toISOString(), upgradeRequired: false });
+            if (!tokenState.allowed) return safeError(res, 429, 'Your four-hour AI token allocation is used. It refreshes automatically as earlier requests expire.', { upgradeRequired: false, usage: { blocked: true, usedPercent: 100, resetAt: new Date(tokenState.resetAt).toISOString() } });
           }
           usageTrackingAvailable = true;
         }
@@ -1235,25 +1330,24 @@ export default async function handler(req, res) {
       }
     }
 
-    if (type === 'chat' && normalizeModelPreference(body.modelPreference || body.model) === 'think') {
+    if (type === 'chat' && preference === 'think' && !flagshipRequest) {
       const normalizedTier = String(profileTier || '').toLowerCase().replace(/[ _-]/g, '');
       if (profileTier && !normalizedTier.includes('pro') && !normalizedTier.includes('ultra')) {
-        return safeError(res, 403, 'The Zulora 3.5 Pro Ultra model requires a Pro or Ultra subscription.', { upgradeRequired: true });
+        return safeError(res, 403, 'The Zulora 3.1 Pro Ultra model requires a Pro or Ultra subscription for non-code requests.', { upgradeRequired: true });
       }
     }
 
-    if (firestoreAdminCredentials() && !flagshipRequest) {
+    if (firestoreAdminCredentials() && type === 'chat') {
       try {
-        const promptRate = await registerPromptAttempt(uid);
+        const promptRate = await registerPromptAttempt(uid, estimatedReservationTokens(body), flagshipRequest);
         if (!promptRate.allowed) {
-          return safeError(res, 429, 'Taking a 5-minute breather to maintain top performance...', {
-            softCooldown: true,
-            cooldownUntil: new Date(promptRate.cooldownUntil).toISOString(),
-            upgradeRequired: false
-          });
+          if (promptRate.requestLimit) return safeError(res, 429, 'You have used all 60 chat requests in this rolling 4-hour window.', { upgradeRequired: false, usage: { blocked: true, ...promptRate } });
+          return safeError(res, 429, 'Your four-hour AI token allocation is used. It refreshes automatically as earlier requests expire.', { upgradeRequired: false, usage: { blocked: true, ...promptRate } });
         }
+        chatReservationId = promptRate.reservationId;
       } catch (error) {
-        console.warn('Firestore prompt cooldown check failed open:', error?.message || error);
+        console.warn('Firestore rolling chat limit could not be checked:', error?.message || error);
+        return safeError(res, 503, 'Usage limits are temporarily unavailable. Please retry in a moment.');
       }
     }
 
@@ -1296,7 +1390,7 @@ export default async function handler(req, res) {
         let usage = { type, tracked: false };
         if (usageTrackingAvailable) {
           try {
-            const tokenUpdate = await incrementTokenUsage(uid, estimateRequestTokens(type, body, output), flagshipRequest);
+            const tokenUpdate = await incrementTokenUsage(uid, estimateRequestTokens(type, body, output), flagshipRequest, chatReservationId);
             usage = { type, tracked: true, ...tokenUpdate };
           } catch (error) {
             console.warn('Firestore usage write fell back to the client store:', error?.message || 'Could not save usage.');
@@ -1326,7 +1420,7 @@ export default async function handler(req, res) {
         let usage = { type, tracked: false };
         if (usageTrackingAvailable) {
           try {
-            const tokenUpdate = await incrementTokenUsage(uid, estimateRequestTokens(type, body, output), flagshipRequest);
+            const tokenUpdate = await incrementTokenUsage(uid, estimateRequestTokens(type, body, output), flagshipRequest, chatReservationId);
             usage = { type, tracked: true, ...tokenUpdate };
           } catch (error) {
             console.warn('Firestore usage write fell back to the client store:', error?.message || 'Could not save usage.');
@@ -1347,7 +1441,7 @@ export default async function handler(req, res) {
     let usage = { type, tracked: false };
     if (usageTrackingAvailable) {
       try {
-        const tokenUpdate = await incrementTokenUsage(uid, estimateRequestTokens(type, body, output), flagshipRequest);
+        const tokenUpdate = await incrementTokenUsage(uid, estimateRequestTokens(type, body, output), flagshipRequest, chatReservationId);
         usage = { type, tracked: true, ...tokenUpdate };
       } catch (error) {
         console.warn('Server usage write fell back to the client store:', error?.message || 'Could not save usage.');

@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { firestoreService, TIERS } from '../services/firestoreService';
+import { requestLimits } from '../services/generationApi';
 
 export const Sidebar = ({ 
   currentChatId, 
@@ -48,6 +49,20 @@ export const Sidebar = ({
   const [editTitle, setEditTitle] = useState('');
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [resetCountdown, setResetCountdown] = useState('');
+  const [serverUsage, setServerUsage] = useState(null);
+  const [clockNow, setClockNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (!currentUser) return undefined;
+    let active = true;
+    const refresh = async () => {
+      const value = await requestLimits(currentUser);
+      if (active && value) setServerUsage(value);
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 30_000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, [currentUser]);
 
   // Load chat sessions from Firestore / LocalStorage
   const loadSessions = async () => {
@@ -67,15 +82,22 @@ export const Sidebar = ({
     return () => clearInterval(interval);
   }, [currentUser?.uid]);
 
-  // Dynamic countdown timer for Chat Window (2 hours rolling)
+  // Exact rolling-window countdown from the server, with local activity as fallback.
   useEffect(() => {
     const updateCountdown = () => {
-      const windowStart = safeUsage.chatWindowStart || Date.now();
-      const twoHours = 2 * 60 * 60 * 1000;
-      const msLeft = Math.max(0, (windowStart + twoHours) - Date.now());
+      const serverReset = Date.parse(serverUsage?.chatResetAt || '');
+      const localReset = Number(safeUsage.chatResetAt) || (Number(safeUsage.chatWindowStart) ? Number(safeUsage.chatWindowStart) + 4 * 60 * 60 * 1000 : 0);
+      const resetAt = Number.isFinite(serverReset) && serverReset > 0 ? serverReset : localReset;
+      const msLeft = Math.max(0, resetAt - Date.now());
+      const chatCount = Number(serverUsage?.chatCount ?? safeUsage.chatCount ?? safeUsage.textUsed) || 0;
+      const chatLimit = Number(serverUsage?.chatLimit ?? safeLimits.chat) || 60;
+      if (!resetAt || chatCount === 0) {
+        setResetCountdown(`${chatLimit} requests available`);
+        return;
+      }
 
       if (msLeft === 0) {
-        setResetCountdown('Reset available');
+        setResetCountdown('Refreshing now');
         return;
       }
 
@@ -83,17 +105,18 @@ export const Sidebar = ({
       const minutes = Math.floor((msLeft % (1000 * 60 * 60)) / (1000 * 60));
       const seconds = Math.floor((msLeft % (1000 * 60)) / 1000);
 
-      if (hours > 0) {
-        setResetCountdown(`${hours}h ${minutes}m`);
-      } else {
-        setResetCountdown(`${minutes}m ${seconds}s`);
-      }
+      setResetCountdown(hours > 0 ? `${hours}h ${minutes}m ${seconds}s` : `${minutes}m ${seconds}s`);
     };
 
     updateCountdown();
     const timer = setInterval(updateCountdown, 1000);
     return () => clearInterval(timer);
-  }, [safeUsage.chatWindowStart]);
+  }, [safeUsage.chatWindowStart, safeUsage.chatResetAt, safeUsage.chatCount, safeUsage.textUsed, safeLimits.chat, serverUsage?.chatResetAt, serverUsage?.chatCount, serverUsage?.chatLimit]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setClockNow(Date.now()), 30_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   const handleStartRename = (session, e) => {
     e.stopPropagation();
@@ -144,12 +167,15 @@ export const Sidebar = ({
     return diff >= oneDay && diff < sevenDays;
   });
   const olderSessions = sessions.filter(s => now - (s.updatedAt || 0) >= sevenDays);
-  const tokenCap = tier === TIERS.ULTRA ? 100_000 : tier === TIERS.PRO ? 50_000 : 10_000;
-  const tokenWindowStart = Number(safeUsage.tokenWindowStart) || Date.now();
-  const tokenWindowExpired = Date.now() - tokenWindowStart >= oneDay || tokenWindowStart > Date.now();
-  const tokenPercent = tokenWindowExpired ? 0 : Math.max(0, Math.min(100, Math.floor(((Number(safeUsage.tokenUsed) || 0) / tokenCap) * 100)));
-  const tokenResetAt = new Date((tokenWindowExpired ? Date.now() : tokenWindowStart) + oneDay)
-    .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const tokenCap = tier === TIERS.ULTRA ? 8_000_000 : tier === TIERS.PRO ? 4_000_000 : 2_000_000;
+  const tokenWindowStart = Number(safeUsage.tokenWindowStart) || clockNow;
+  const tokenWindowExpired = clockNow - tokenWindowStart >= 4 * 60 * 60 * 1000 || tokenWindowStart > clockNow;
+  const tokenPercent = Number.isFinite(Number(serverUsage?.usedPercent))
+    ? Math.max(0, Math.min(100, Number(serverUsage.usedPercent)))
+    : tokenWindowExpired ? 0 : Math.max(0, Math.min(100, Math.floor(((Number(safeUsage.tokenUsed) || 0) / tokenCap) * 100)));
+  const chatLimit = Number(serverUsage?.chatLimit ?? safeLimits.chat) || 60;
+  const chatCount = Number(serverUsage?.chatCount ?? safeUsage.chatCount ?? safeUsage.textUsed) || 0;
+  const chatRemaining = Math.max(0, Number(serverUsage?.chatRemaining ?? chatLimit - chatCount));
 
   const renderSessionItem = (session) => {
     const isSelected = currentChatId === session.id;
@@ -241,7 +267,7 @@ export const Sidebar = ({
   };
 
   const sidebarContent = (
-    <div className="flex flex-col h-full bg-white/70 dark:bg-slate-950/70 backdrop-blur-xl border-r border-slate-200/80 dark:border-slate-800/80">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white/70 dark:bg-slate-950/70 backdrop-blur-xl border-r border-slate-200/80 dark:border-slate-800/80">
       
       {/* Top action: New Chat Button */}
       <div className="p-3 border-b border-slate-200/80 dark:border-slate-800/80 flex items-center gap-2">
@@ -317,7 +343,7 @@ export const Sidebar = ({
       </div>
 
       {/* History List */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-4">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 space-y-4">
         {sessions.length === 0 ? (
           <div className="text-center py-10 px-4">
             <MessageSquare className="w-8 h-8 mx-auto text-slate-300 dark:text-slate-700 mb-2" />
@@ -374,13 +400,13 @@ export const Sidebar = ({
             </span>
             <span className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1">
               <Clock className="w-3 h-3 text-slate-400" />
-              <span>Resets {tokenResetAt}</span>
+              <span>Chat resets in {resetCountdown}</span>
             </span>
           </div>
 
           <div className="grid grid-cols-3 gap-1.5" aria-label="Usage counters">
             {[
-              { label: 'Chats', used: safeUsage.chatCount ?? safeUsage.textUsed ?? 0, limit: safeLimits.chat },
+              { label: 'Chats left', used: chatRemaining, limit: chatLimit },
               { label: 'Images', used: safeUsage.imageCount ?? safeUsage.imageUsed ?? 0, limit: safeLimits.image },
               { label: 'Videos', used: safeUsage.videoCount ?? safeUsage.videoUsed ?? 0, limit: safeLimits.video }
             ].map(counter => (
@@ -396,7 +422,7 @@ export const Sidebar = ({
           {/* Daily token allocation */}
           <div>
             <div className="flex justify-between text-[10px] text-slate-500 dark:text-slate-400 mb-1">
-              <span>Daily usage</span>
+              <span>4-hour token usage</span>
               <span>{tokenPercent}% used</span>
             </div>
             <div className="w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
@@ -457,12 +483,12 @@ export const Sidebar = ({
     <>
       {/* Desktop Sidebar Rail */}
       <aside 
-        className={`hidden md:block shrink-0 transition-all duration-300 h-[calc(100vh-4rem)] ${
+        className={`hidden md:block min-h-0 shrink-0 transition-all duration-300 h-full ${
           isCollapsed ? 'w-16' : 'w-72'
         }`}
       >
         {isCollapsed ? (
-          <div className="h-full flex flex-col items-center py-4 bg-white/70 dark:bg-slate-950/70 border-r border-slate-200 dark:border-slate-800 space-y-4">
+          <div className="flex h-full min-h-0 flex-col items-center space-y-4 overflow-y-auto py-4 bg-white/70 dark:bg-slate-950/70 border-r border-slate-200 dark:border-slate-800">
             <button
               onClick={() => setIsCollapsed(false)}
               className="p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400"
@@ -522,12 +548,12 @@ export const Sidebar = ({
 
       {/* Mobile Drawer Overlay */}
       {isMobileOpen && (
-        <div className="fixed inset-0 z-[70] md:hidden flex">
+        <div className="fixed inset-0 z-[70] flex md:hidden">
           <div 
             className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" 
             onClick={onCloseMobile}
           />
-          <div className="relative w-80 max-w-[85vw] h-dvh z-10 shadow-2xl animate-fade-in">
+          <div className="relative z-10 h-dvh max-h-dvh w-[min(20rem,88vw)] max-w-[calc(100vw-1rem)] shadow-2xl animate-slide-right">
             {sidebarContent}
           </div>
         </div>
