@@ -79,7 +79,15 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     if (!isOpen) return;
     checkConnection();
     const interval = setInterval(checkConnection, 8000);
-    return () => clearInterval(interval);
+    
+    // Immediate response to dynamic injection/handshake
+    const onReady = () => checkConnection();
+    window.addEventListener('ZULORA_EXTENSION_READY', onReady);
+    
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('ZULORA_EXTENSION_READY', onReady);
+    };
   }, [isOpen, checkConnection]);
 
   // ── Listen for status updates from extension ─────────────────────────────────

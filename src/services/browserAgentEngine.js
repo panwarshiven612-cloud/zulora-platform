@@ -7,7 +7,7 @@
 // ─── Extension ID ─────────────────────────────────────────────────────────────
 // Replace with your published extension ID after uploading to Chrome Web Store.
 // During development, find this at chrome://extensions after loading unpacked.
-const EXTENSION_ID = 'YOUR_EXTENSION_ID_HERE'; // e.g. "abcdefghijklmnopqrstuvwxyz012345"
+const EXTENSION_ID = 'emimeingkoocmgljpjkpdnlnbkpkfbff';
 
 // ─── Action type constants ────────────────────────────────────────────────────
 export const ACTION_TYPES = {
@@ -45,6 +45,32 @@ function _emit(status) {
  * @returns {Promise<boolean>}
  */
 export async function checkExtensionConnected() {
+  // 1. Fast DOM Check (Content script injected attribute)
+  if (typeof document !== 'undefined' && document.documentElement.getAttribute('data-zulora-extension-installed') === 'true') {
+    return true;
+  }
+  if (typeof window !== 'undefined' && window.__ZULORA_EXTENSION_INSTALLED__) {
+    return true;
+  }
+
+  // 2. Custom Event Handshake (Wait for content script to respond)
+  if (typeof window !== 'undefined') {
+    const eventCheck = await new Promise((resolve) => {
+      const handler = () => {
+        window.removeEventListener('ZULORA_EXTENSION_READY', handler);
+        resolve(true);
+      };
+      window.addEventListener('ZULORA_EXTENSION_READY', handler);
+      window.dispatchEvent(new Event('ZULORA_CHECK_EXTENSION'));
+      setTimeout(() => {
+        window.removeEventListener('ZULORA_EXTENSION_READY', handler);
+        resolve(false);
+      }, 300);
+    });
+    if (eventCheck) return true;
+  }
+
+  // 3. Fallback to chrome.runtime.sendMessage with hardcoded ID
   return new Promise((resolve) => {
     if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
       resolve(false);
@@ -69,21 +95,23 @@ export async function checkExtensionConnected() {
 export async function runTask(steps) {
   return new Promise((resolve) => {
     if (!steps?.length) { resolve({ ok: false, error: 'No steps provided' }); return; }
-    try {
-      chrome.runtime.sendMessage(
-        EXTENSION_ID,
-        { type: 'ZULORA_RUN_TASK', steps },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            resolve({ ok: false, error: chrome.runtime.lastError.message });
-            return;
-          }
-          resolve(response || { ok: false, error: 'No response from extension' });
-        }
-      );
-    } catch (err) {
-      resolve({ ok: false, error: err.message });
-    }
+    
+    const listener = (event) => {
+      if (event.data?.source === 'ZULORA_EXTENSION' && typeof event.data.ok !== 'undefined') {
+        window.removeEventListener('message', listener);
+        resolve(event.data);
+      }
+    };
+    window.addEventListener('message', listener);
+    
+    // Send via DOM bridge to content.js
+    window.postMessage({ source: 'ZULORA_WEBAPP', type: 'ZULORA_RUN_TASK', steps }, '*');
+    
+    // Timeout fallback
+    setTimeout(() => {
+      window.removeEventListener('message', listener);
+      resolve({ ok: false, error: 'No response from extension bridge' });
+    }, 2000);
   });
 }
 
@@ -105,12 +133,20 @@ export async function getTaskStatus() {
 
 function _sendControl(type) {
   return new Promise((resolve) => {
-    try {
-      chrome.runtime.sendMessage(EXTENSION_ID, { type }, (response) => {
-        if (chrome.runtime.lastError) { resolve({ ok: false }); return; }
-        resolve(response || { ok: false });
-      });
-    } catch { resolve({ ok: false }); }
+    const listener = (event) => {
+      if (event.data?.source === 'ZULORA_EXTENSION' && typeof event.data.ok !== 'undefined') {
+        window.removeEventListener('message', listener);
+        resolve(event.data);
+      }
+    };
+    window.addEventListener('message', listener);
+    
+    window.postMessage({ source: 'ZULORA_WEBAPP', type }, '*');
+    
+    setTimeout(() => {
+      window.removeEventListener('message', listener);
+      resolve({ ok: false });
+    }, 1500);
   });
 }
 
