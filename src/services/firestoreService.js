@@ -581,6 +581,64 @@ export const firestoreService = {
     return TOKEN_LIMITS[getTier(profile)];
   },
 
+  /** Read plugin-specific token usage and optional limits configured in Firestore. */
+  async getComputerPluginTokenUsage(uid, profile = {}) {
+    if (!uid) return { usedTokens: 0, maxTokenLimit: this.getProfileTokenLimit(profile) };
+    const usageRef = doc(db, 'users', uid, 'tokenUsage', 'computerPlugin');
+    let usage = {};
+    let config = {};
+    try {
+      const snapshot = await getDoc(usageRef);
+      if (snapshot.exists()) usage = snapshot.data() || {};
+    } catch (error) {
+      console.warn('Firestore plugin token read fell back to LocalStorage:', error.message);
+    }
+    try {
+      const configSnapshot = await getDoc(doc(db, 'config', 'usageLimits'));
+      if (configSnapshot.exists()) config = configSnapshot.data() || {};
+    } catch { /* The tier limit remains the fallback when config is not readable. */ }
+
+    const tier = getTier(profile);
+    const configuredLimit = config.computerPluginTokenLimits?.[tier] ??
+      config.computerPluginTokenLimit ?? usage.maxTokenLimit;
+    return {
+      ...usage,
+      usedTokens: Math.max(0, Number(usage.usedTokens ?? usage.tokenUsed) || 0),
+      maxTokenLimit: Math.max(1, Number(configuredLimit) || this.getProfileTokenLimit(profile))
+    };
+  },
+
+  /** Persist the rolling Computer Plugin token total at users/{uid}/tokenUsage/computerPlugin. */
+  async saveComputerPluginTokenUsage(uid, usedTokens, maxTokenLimit, resetAt = 0) {
+    if (!uid) return null;
+    const usageRef = doc(db, 'users', uid, 'tokenUsage', 'computerPlugin');
+    const incomingCount = Math.max(0, Math.ceil(Number(usedTokens) || 0));
+    const incomingLimit = Math.max(1, Math.ceil(Number(maxTokenLimit) || TOKEN_LIMITS.free));
+    const incomingResetAt = Math.max(0, Number(resetAt) || 0);
+    try {
+      return await runTransaction(db, async transaction => {
+        const snapshot = await transaction.get(usageRef);
+        const current = snapshot.exists() ? snapshot.data() : {};
+        const currentResetAt = Math.max(0, Number(current.resetAt) || 0);
+        const sameWindow = currentResetAt === incomingResetAt;
+        const nextCount = sameWindow
+          ? Math.max(incomingCount, Math.max(0, Number(current.usedTokens) || 0))
+          : incomingCount;
+        const next = {
+          usedTokens: nextCount,
+          maxTokenLimit: incomingLimit,
+          resetAt: incomingResetAt,
+          updatedAt: serverTimestamp()
+        };
+        transaction.set(usageRef, next, { merge: true });
+        return { ...next, usedTokens: nextCount };
+      });
+    } catch (error) {
+      console.warn('Firestore plugin token write fell back to LocalStorage:', error.message);
+      return null;
+    }
+  },
+
   /**
    * Get or create User Profile with usage and tier tracking
    * Sends EmailJS welcome email on first registration

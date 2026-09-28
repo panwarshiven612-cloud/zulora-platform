@@ -822,7 +822,9 @@ export const apiRouter = {
         currentUser: arg1.currentUser,
         contextMemory: arg1.contextMemory || [],
         aiBrain: arg1.aiBrain || null,
-        attachments: arg1.attachments || []
+        attachments: arg1.attachments || [],
+        computerAgent: Boolean(arg1.computerAgent),
+        computerVision: Boolean(arg1.computerVision)
       };
     } else {
       prompt = String(arg1 || '');
@@ -845,7 +847,9 @@ export const apiRouter = {
     options = { ...options, coding, flagship: highTierCodeRequest, preferBestKey: flagship || highTierCodeRequest, streamState: options.streamState || { sent: false } };
     const errors = [];
     const messages = [...buildHistory(contextMessages), { role: 'user', content: prompt }];
-    const geminiModel = directGeminiModel ? requestedTier : geminiSelected ? intentGeminiModel : flagship ? MODEL_TIERS.think.geminiModel : (MODEL_TIERS[tier]?.geminiModel || MODEL_TIERS.flash.geminiModel);
+    const geminiModel = options.computerAgent && options.computerVision
+      ? GEMINI_FLASH_MODEL
+      : directGeminiModel ? requestedTier : geminiSelected ? intentGeminiModel : flagship ? MODEL_TIERS.think.geminiModel : (MODEL_TIERS[tier]?.geminiModel || MODEL_TIERS.flash.geminiModel);
 
     await ensureGenerationAllowance('chat', options.currentUser, {
       modelPreference: requestedTier,
@@ -855,43 +859,47 @@ export const apiRouter = {
     });
 
     let emittedStreamTokens = false;
-    try {
-      const chatPayload = {
-        messages,
-        contextMemory: options.contextMemory,
-        aiBrain: options.aiBrain || null,
-        userVault: options.userVault || null,
-        studioMode: Boolean(options.studioMode),
-        modelPreference: requestedTier,
-        enableWebSearch: Boolean(options.webSearch),
-        attachments: options.attachments || [],
-        coding,
-        flagship
-      };
-      const serverResult = options.onToken
-        ? await requestGenerationStream(chatPayload, options.currentUser, token => {
-          if (token) emittedStreamTokens = true;
-          options.onToken(token);
-        }, () => {
-          emittedStreamTokens = false;
+    if (!options.computerAgent) {
+      try {
+        const chatPayload = {
+          messages,
+          contextMemory: options.contextMemory,
+          aiBrain: options.aiBrain || null,
+          userVault: options.userVault || null,
+          studioMode: Boolean(options.studioMode),
+          modelPreference: requestedTier,
+          enableWebSearch: Boolean(options.webSearch),
+          attachments: options.attachments || [],
+          coding,
+          flagship
+        };
+        const serverResult = options.onToken
+          ? await requestGenerationStream(chatPayload, options.currentUser, token => {
+            if (token) emittedStreamTokens = true;
+            options.onToken(token);
+          }, () => {
+            emittedStreamTokens = false;
+            options.onReset?.();
+          }, route => options.onProvider?.(route), options.signal)
+          : await requestGeneration('chat', chatPayload, options.currentUser, '/api/ai', options.signal);
+        if (serverResult?.text) return await syncUsage(serverResult, 'chat', options.currentUser);
+      } catch (error) {
+        if (options.signal?.aborted) throw error;
+        if (isQuotaAuthorityError(error)) throw error;
+        if (options.onToken && emittedStreamTokens) {
           options.onReset?.();
-        }, route => options.onProvider?.(route), options.signal)
-        : await requestGeneration('chat', chatPayload, options.currentUser, '/api/ai', options.signal);
-      if (serverResult?.text) return await syncUsage(serverResult, 'chat', options.currentUser);
-    } catch (error) {
-      if (options.signal?.aborted) throw error;
-      if (isQuotaAuthorityError(error)) throw error;
-      if (options.onToken && emittedStreamTokens) {
-        options.onReset?.();
-        emittedStreamTokens = false;
+          emittedStreamTokens = false;
+        }
+        if (options.onToken && error instanceof GenerationApiError && (error.status === 401 || error.status === 403)) throw error;
+        console.warn('[Chat] Server generation route unavailable; trying browser providers:', error.message);
       }
-      if (options.onToken && error instanceof GenerationApiError && (error.status === 401 || error.status === 403)) throw error;
-      console.warn('[Chat] Server generation route unavailable; trying browser providers:', error.message);
     }
 
     const hasGeminiAttachments = (options.attachments || []).some(item => toGeminiInlineData(item));
     const providerOrder = hasGeminiAttachments
       ? ['gemini']
+      : options.computerAgent
+        ? options.computerVision ? ['gemini', 'mistral', 'openrouter'] : ['cerebras', 'groq', 'mistral', 'openrouter']
       : requestedTier === 'groq' || requestedTier === 'llama'
       ? ['groq', 'gemini', 'cerebras', 'mistral', 'openrouter']
       : ['gemini', 'cerebras', 'groq', 'mistral', 'openrouter'];
@@ -906,7 +914,7 @@ export const apiRouter = {
         const result = provider === 'groq'
           ? await withProviderRetry(() => tryGroq(prompt, contextMessages, 'auto', options), 2, options.signal)
           : provider === 'cerebras'
-            ? await withProviderRetry(() => tryCerebras(prompt, contextMessages, 'auto', options), 2, options.signal)
+            ? await withProviderRetry(() => tryCerebras(prompt, contextMessages, options.computerAgent ? 'flash' : 'auto', options), 2, options.signal)
             : provider === 'mistral'
               ? await withProviderRetry(() => tryMistral(prompt, contextMessages, 'auto', options), 2, options.signal)
               : await (async () => {

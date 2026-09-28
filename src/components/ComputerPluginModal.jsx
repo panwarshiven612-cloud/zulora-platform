@@ -13,9 +13,11 @@ import {
   resumeTask,
   cancelTask,
   onStatusUpdate,
-  parseCommandToSteps
+  parseCommandToSteps,
+  parseLocalComputerAction
 } from '../services/browserAgentEngine';
 import { useAuth } from '../context/AuthContext';
+import { firestoreService } from '../services/firestoreService';
 
 // ─── Status Badge Config ──────────────────────────────────────────────────────
 const STATUS_CONFIG = {
@@ -95,42 +97,77 @@ function tokenStorageKey(userId) {
   return `zulora_plugin_token_usage_${userId || 'anonymous'}`;
 }
 
+function timestampValue(value) {
+  if (value === null || value === undefined || value === '' || value === 0 || value === '0') return 0;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  const parsed = Date.parse(String(value || ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function readTokenUsage(userId) {
+  const counts = [];
   try {
     const stored = JSON.parse(localStorage.getItem(tokenStorageKey(userId)) || 'null');
-    if (stored && Number(stored.resetAt) > 0 && Date.now() >= Number(stored.resetAt)) return 0;
-    if (stored && Number.isFinite(Number(stored.count))) return Math.max(0, Number(stored.count));
+    if (stored && (!timestampValue(stored.resetAt) || Date.now() < timestampValue(stored.resetAt)) && Number.isFinite(Number(stored.count))) {
+      counts.push(Math.max(0, Number(stored.count)));
+    }
   } catch {}
-  return Math.max(0, Number(sessionStorage.getItem('zulora_plugin_session_tokens')) || 0);
+  try {
+    const scoped = JSON.parse(localStorage.getItem(`zulora_used_tokens_${userId || 'anonymous'}`) || 'null');
+    if (scoped && (!timestampValue(scoped.resetAt) || Date.now() < timestampValue(scoped.resetAt)) && Number.isFinite(Number(scoped.count))) {
+      counts.push(Math.max(0, Number(scoped.count)));
+    }
+  } catch {}
+  if (!userId) {
+    counts.push(Math.max(0, Number(localStorage.getItem('zulora_used_tokens')) || 0));
+    counts.push(Math.max(0, Number(sessionStorage.getItem('zulora_plugin_session_tokens')) || 0));
+  }
+  return Math.max(0, ...counts);
 }
 
 function persistTokenUsage(userId, count, resetAt = 0) {
   const safeCount = Math.max(0, Number(count) || 0);
   try {
-    localStorage.setItem(tokenStorageKey(userId), JSON.stringify({ count: safeCount, resetAt: Number(resetAt) || 0 }));
+    const safeResetAt = timestampValue(resetAt);
+    const record = { count: safeCount, resetAt: safeResetAt };
+    localStorage.setItem(tokenStorageKey(userId), JSON.stringify(record));
+    localStorage.setItem(`zulora_used_tokens_${userId || 'anonymous'}`, JSON.stringify(record));
+    localStorage.setItem('zulora_used_tokens', String(safeCount));
     sessionStorage.setItem('zulora_plugin_session_tokens', String(safeCount));
   } catch {}
 }
 
-function getYoutubeSearchQuery(command) {
+function getYoutubeRequest(command) {
   const text = String(command || '').trim();
+  const channelSearch = text.match(/\b(?:search|find)\s+(?:for\s+)?(channel\s+.+)$/i);
+  if (channelSearch && !/\bgoogle\b/i.test(text)) {
+    return {
+      query: channelSearch[1].replace(/\s+(?:and\s+)?(?:play|watch)\b.*$/i, '').replace(/\s+(?:on|in)\s+youtube\s*$/i, '').trim(),
+      play: /\b(play|watch)\b/i.test(text) && !/\b(?:don't|do not)\s+(?:play|watch)\b/i.test(text)
+    };
+  }
   const patterns = [
-    /(?:search|find)\s+(?:for\s+)?(.+?)\s+on\s+youtube\b/i,
+    /(?:search|find)\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+youtube\b/i,
     /\byoutube\b.*?\b(?:search|for)\s+(.+)$/i,
     /\b(?:youtube|search\s+youtube)\s+(?:search\s+)?(?:for\s+)?(.+)$/i,
-    /\bplay(?:\s+(?:the\s+)?(?:top|first)?\s*video)?\s+(?:on\s+youtube\s+)?(?:about\s+)?(.+)$/i
+    /\b(?:play|watch)\s+(?:the\s+)?(?:(?:top|first)\s+)?(?:video\s+)?(?:about\s+)?(.+?)(?:\s+on\s+youtube)?$/i
   ];
-  for (const pattern of patterns) {
+  for (const [index, pattern] of patterns.entries()) {
+    if (index === patterns.length - 1 && !/\byoutube\b/i.test(text)) continue;
     const match = text.match(pattern);
     const query = match?.[1]?.replace(/\s+on\s+youtube.*$/i, '').trim();
-    if (query) return query;
+    if (query) return {
+      query: query.replace(/^(?:play|watch)\s+(?:the\s+)?(?:(?:top|first)\s+)?(?:video\s+)?(?:about\s+)?/i, '').replace(/^(?:video|videos)\s+(?:about|for)\s+/i, '').trim(),
+      play: /\b(play|watch)\b/i.test(text) && !/\b(?:don't|do not)\s+(?:play|watch)\b/i.test(text)
+    };
   }
-  return '';
+  return null;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 const ComputerPluginModal = ({ isOpen, onClose }) => {
-  const { isPro, setIsPricingModalOpen, currentUser, usage = {} } = useAuth();
+  const { isPro, setIsPricingModalOpen, currentUser, usage = {}, userProfile } = useAuth();
 
   const [isConnected, setIsConnected] = useState(false);
   const [checkingConnection, setCheckingConnection] = useState(false);
@@ -145,6 +182,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   const [showPreview, setShowPreview] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [tokenClock, setTokenClock] = useState(Date.now());
+  const [tokenLimit, setTokenLimit] = useState(() => firestoreService.getProfileTokenLimit(userProfile || {}));
 
   // Token Tracking & Gatekeeper state
   const [sessionTokens, setSessionTokens] = useState(() => {
@@ -163,8 +201,35 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   const handleRunRef = useRef(null);
   const appliedTokenResetRef = useRef(0);
   const isRunningRef = useRef(false);
+  const tokenSyncTimerRef = useRef(null);
+  const pendingTokenSyncRef = useRef(null);
+  const actionLogRef = useRef([]);
+  const commandRef = useRef('');
   const taskLimit = isPro ? PRO_TASK_LIMIT : FREE_TASK_LIMIT;
-  const tokenResetAt = Number(usage?.tokenResetAt) || 0;
+  const tokenResetAt = timestampValue(usage?.tokenResetAt);
+
+  const persistComputerTokens = useCallback((count, resetAt = tokenResetAt, immediate = false) => {
+    const safeCount = Math.max(0, Math.ceil(Number(count) || 0));
+    const safeResetAt = timestampValue(resetAt);
+    persistTokenUsage(currentUser?.uid, safeCount, safeResetAt);
+    if (!currentUser?.uid) return;
+    pendingTokenSyncRef.current = {
+      uid: currentUser.uid,
+      count: safeCount,
+      resetAt: safeResetAt,
+      maxTokenLimit: tokenLimit
+    };
+    const flush = () => {
+      const pending = pendingTokenSyncRef.current;
+      pendingTokenSyncRef.current = null;
+      if (pending) void firestoreService.saveComputerPluginTokenUsage(
+        pending.uid, pending.count, pending.maxTokenLimit, pending.resetAt
+      );
+    };
+    clearTimeout(tokenSyncTimerRef.current);
+    if (immediate) flush();
+    else tokenSyncTimerRef.current = setTimeout(flush, 350);
+  }, [currentUser?.uid, tokenLimit, tokenResetAt]);
 
   useEffect(() => {
     setTaskCount(readDailyTaskCount(currentUser?.uid));
@@ -181,8 +246,29 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   }, []);
 
   useEffect(() => {
-    setSessionTokens(readTokenUsage(currentUser?.uid));
-  }, [currentUser?.uid, tokenResetAt]);
+    let mounted = true;
+    const uid = currentUser?.uid;
+    setSessionTokens(readTokenUsage(uid));
+    setTokenLimit(firestoreService.getProfileTokenLimit(userProfile || {}));
+    if (!uid) return () => { mounted = false; };
+    firestoreService.getComputerPluginTokenUsage(uid, userProfile || {}).then(remote => {
+      if (!mounted) return;
+      const localCount = readTokenUsage(uid);
+      const remoteResetAt = timestampValue(remote?.resetAt);
+      const remoteCount = remoteResetAt > 0 && Date.now() >= remoteResetAt
+        ? 0 : Math.max(0, Number(remote?.usedTokens) || 0);
+      const usedTokens = Math.max(localCount, remoteCount);
+      const activeResetAt = remoteResetAt > Date.now() ? remoteResetAt : tokenResetAt > Date.now() ? tokenResetAt : 0;
+      const resolvedLimit = Math.max(1, Number(remote?.maxTokenLimit) || firestoreService.getProfileTokenLimit(userProfile || {}));
+      setSessionTokens(usedTokens);
+      setTokenLimit(resolvedLimit);
+      persistTokenUsage(uid, usedTokens, activeResetAt);
+      if (localCount > remoteCount) {
+        void firestoreService.saveComputerPluginTokenUsage(uid, usedTokens, resolvedLimit, activeResetAt);
+      }
+    }).catch(error => console.warn('Could not load Computer Plugin token history:', error.message));
+    return () => { mounted = false; };
+  }, [currentUser?.uid, userProfile?.planTier, userProfile?.tier, tokenResetAt]);
 
   useEffect(() => {
     if (!tokenResetAt) return;
@@ -193,8 +279,17 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     if (appliedTokenResetRef.current === tokenResetAt) return;
     appliedTokenResetRef.current = tokenResetAt;
     setSessionTokens(0);
-    persistTokenUsage(currentUser?.uid, 0, 0);
-  }, [tokenResetAt, tokenClock, currentUser?.uid]);
+    persistComputerTokens(0, 0, true);
+  }, [tokenResetAt, tokenClock, currentUser?.uid, persistComputerTokens]);
+
+  useEffect(() => () => {
+    clearTimeout(tokenSyncTimerRef.current);
+    const pending = pendingTokenSyncRef.current;
+    pendingTokenSyncRef.current = null;
+    if (pending) void firestoreService.saveComputerPluginTokenUsage(
+      pending.uid, pending.count, pending.maxTokenLimit, pending.resetAt
+    );
+  }, []);
 
   // ── Extension Connection Check ──────────────────────────────────────────────
   const checkConnection = useCallback(async () => {
@@ -225,6 +320,20 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   useEffect(() => {
     const unsubscribe = onStatusUpdate((data) => {
       if (data.type === 'ZULORA_STATUS_UPDATE') {
+        if (data.nextTask) {
+          const archived = { command: commandRef.current, actionLog: actionLogRef.current, status: 'done', savedAt: Date.now() };
+          if (archived.command.trim() || archived.actionLog.length) {
+            try {
+              const history = JSON.parse(localStorage.getItem(TASK_HISTORY_KEY) || '[]');
+              localStorage.setItem(TASK_HISTORY_KEY, JSON.stringify([...history, archived].slice(-30)));
+            } catch { localStorage.setItem(TASK_HISTORY_KEY, JSON.stringify([archived])); }
+          }
+          setCommand('');
+          setParsedPreview([]);
+          setShowPreview(false);
+          actionLogRef.current = [];
+          commandRef.current = '';
+        }
         setTaskStatus(data.taskStatus);
         setActionLog(data.actionLog || []);
         if (data.taskStatus === 'done' || data.taskStatus === 'error') {
@@ -246,6 +355,9 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     return unsubscribe;
   }, []);
 
+  useEffect(() => { actionLogRef.current = actionLog; }, [actionLog]);
+  useEffect(() => { commandRef.current = command; }, [command]);
+
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [actionLog]);
@@ -257,10 +369,10 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
       setShowPreview(false);
       return;
     }
-    const youtubeQuery = getYoutubeSearchQuery(command);
-    const steps = youtubeQuery
-      ? [{ action: 'youtube_search', app: 'YouTube', params: { query: youtubeQuery } }]
-      : parseCommandToSteps(command);
+    const youtubeRequest = getYoutubeRequest(command);
+    const steps = youtubeRequest
+      ? [{ action: 'youtube_search', app: 'YouTube', params: youtubeRequest }]
+      : parseLocalComputerAction(command) || parseCommandToSteps(command);
     setParsedPreview(steps);
     setShowPreview(steps.length > 0);
   }, [command]);
@@ -353,22 +465,22 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
 
     const tokenStart = sessionTokens;
     const onTokens = (tokens) => {
-      const liveTotal = tokenStart + tokens;
+      const liveTotal = Math.max(tokenStart + tokens, readTokenUsage(currentUser?.uid));
       setSessionTokens(liveTotal);
-      persistTokenUsage(currentUser?.uid, liveTotal, tokenResetAt > tokenClock ? tokenResetAt : 0);
+      persistComputerTokens(liveTotal, tokenResetAt > tokenClock ? tokenResetAt : 0);
     };
-    const youtubeQuery = getYoutubeSearchQuery(commandText);
-    const result = youtubeQuery
-      ? await runTask([{ action: 'youtube_search', app: 'YouTube', params: { query: youtubeQuery } }])
+    const youtubeRequest = getYoutubeRequest(commandText);
+    const result = youtubeRequest
+      ? await runTask([{ action: 'youtube_search', app: 'YouTube', params: youtubeRequest }])
       : await executeCommand(commandText, (entry) => {
         setActionLog(prev => [...prev, entry]);
       }, currentUser, onTokens);
 
     if (result.tokensUsed) {
-      const finalTotal = tokenStart + result.tokensUsed;
+      const finalTotal = Math.max(tokenStart + result.tokensUsed, readTokenUsage(currentUser?.uid));
       setSessionTokens(finalTotal);
-      persistTokenUsage(currentUser?.uid, finalTotal, tokenResetAt > tokenClock ? tokenResetAt : 0);
-    }
+      persistComputerTokens(finalTotal, tokenResetAt > tokenClock ? tokenResetAt : 0, true);
+    } else persistComputerTokens(readTokenUsage(currentUser?.uid), tokenResetAt > tokenClock ? tokenResetAt : 0, true);
 
     if (result.error === 'Task stopped.') return;
 
@@ -404,7 +516,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
         timestamp: Date.now()
       }]);
     }
-  }, [command, isRunning, taskCount, taskLimit, checkConnection, currentUser, sessionTokens, tokenResetAt, tokenClock]);
+  }, [command, isRunning, taskCount, taskLimit, checkConnection, currentUser, sessionTokens, tokenResetAt, tokenClock, persistComputerTokens]);
 
   handleRunRef.current = handleRun;
 
@@ -539,7 +651,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
         <div className="flex items-center justify-between px-5 py-2.5 bg-slate-50 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800 text-[11px]">
           <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300 font-medium">
             <Zap className="w-3.5 h-3.5 text-sky-500 animate-pulse" />
-            <span>Tokens Used: <strong className="font-bold text-sky-600 dark:text-sky-400">{sessionTokens.toLocaleString()}</strong> Tokens</span>
+            <span>Tokens Used: <strong className="font-bold text-sky-600 dark:text-sky-400">{sessionTokens.toLocaleString()}</strong> / {tokenLimit.toLocaleString()} Tokens</span>
           </div>
           <span className="text-[9px] text-slate-400 dark:text-slate-500 font-semibold text-right">
             {tokenResetAt ? formatTokenReset(tokenResetAt, tokenClock) : 'Local DOM actions use no planner tokens'}

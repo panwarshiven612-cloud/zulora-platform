@@ -81,14 +81,15 @@ function log(stepLabel, status = 'done', detail = '') {
   return entry;
 }
 
-function broadcastStatus() {
+function broadcastStatus(extra = {}) {
   const payload = {
     type: 'ZULORA_STATUS_UPDATE',
     taskStatus,
     actionLog: [...actionLog],
     currentStep: currentStepIndex,
     totalSteps: taskQueue.length,
-    cancelled: taskCancelledByUser
+    cancelled: taskCancelledByUser,
+    ...extra
   };
   const targetIds = new Set([...overlayTabIds, ...activeStepTabIds]);
 
@@ -171,7 +172,7 @@ async function ensureContentScript(tabId) {
   }
 }
 
-async function executeYoutubeSearch(query, generation = taskGeneration) {
+async function executeYoutubeSearch(query, generation = taskGeneration, play = false) {
   const tab = await createAgentTab({ url: 'https://www.youtube.com', active: true });
   markActiveStepTab(tab);
   await waitForTabLoad(tab.id);
@@ -180,13 +181,13 @@ async function executeYoutubeSearch(query, generation = taskGeneration) {
   broadcastStatus();
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
-    func: searchTerm => window.__ZULORA_CONTENT__?.searchAndOpenTopYoutubeVideo(searchTerm),
-    args: [query]
+    func: (searchTerm, shouldPlay) => window.__ZULORA_CONTENT__?.searchAndOpenTopYoutubeVideo(searchTerm, { play: shouldPlay }),
+    args: [query, play]
   });
   assertTaskActive(generation);
   const details = result?.result;
-  if (!details?.success) throw new Error(details?.error || 'YouTube could not open the first matching video.');
-  log(`Opened and played the top YouTube result for: "${query}"`, 'done', details.title || details.url);
+  if (!details?.success) throw new Error(details?.error || 'YouTube could not complete the search.');
+  log(play ? `Played the top YouTube result for: "${query}"` : `Searched YouTube for: "${query}"`, 'done', details.title || details.url);
   return { tabId: tab.id, result: details };
 }
 
@@ -195,12 +196,31 @@ function parseOverlayVoiceTask(transcript, tabId) {
   if (!text) return [];
   const urlMatch = text.match(/(?:open|go to|navigate to|visit)\s+(https?:\/\/\S+|[\w-]+\.[\w.-]+\S*)/i);
   if (urlMatch) return [{ action: 'open_url', params: { url: /^https?:\/\//i.test(urlMatch[1]) ? urlMatch[1] : `https://${urlMatch[1]}` } }];
-  const youtubeMatch = text.match(/(?:youtube|play)\s+(?:search\s+(?:for\s+)?)?(.+)/i);
-  if (youtubeMatch) return [{ action: 'youtube_search', params: { query: youtubeMatch[1].trim() } }];
+  const channelSearchMatch = text.match(/\b(?:search|find)\s+(?:for\s+)?(channel\s+.+)$/i);
+  if (channelSearchMatch && !/\bgoogle\b/i.test(text)) return [{ action: 'youtube_search', params: {
+    query: channelSearchMatch[1].replace(/\s+(?:and\s+)?(?:play|watch)\b.*$/i, '').replace(/\s+(?:on|in)\s+youtube\s*$/i, '').trim(),
+    play: /\b(play|watch)\b/i.test(text) && !/\b(?:don't|do not)\s+(?:play|watch)\b/i.test(text)
+  } }];
+  const youtubeSearchMatch = text.match(/\b(?:search|find)\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+youtube\b/i);
+  const youtubeMatch = text.match(/^youtube\s+(?:search\s+(?:for\s+)?)?(.+)/i) ||
+    text.match(/\b(?:play|watch)\s+(?:the\s+)?(?:(?:top|first)\s+)?(?:video\s+)?(?:about\s+)?(.+?)\s+(?:on|in)\s+youtube\b/i);
+  if (youtubeSearchMatch || youtubeMatch) {
+    return [{ action: 'youtube_search', params: {
+      query: (youtubeSearchMatch?.[1] || youtubeMatch?.[1] || '').replace(/\s+on\s+youtube.*$/i, '').replace(/^(?:play|watch)\s+(?:the\s+)?(?:(?:top|first)\s+)?(?:video\s+)?(?:about\s+)?/i, '').trim(),
+      play: /\b(play|watch)\b/i.test(text)
+    } }];
+  }
   const googleMatch = text.match(/(?:search|google)\s+(?:google\s+)?(?:for\s+)?(.+)/i);
   if (googleMatch) return [{ action: 'search_google', params: { query: googleMatch[1].trim(), openTopResult: /\b(?:open|click|go to)\b/i.test(text) } }];
   if (/\b(read|summari[sz]e|analy[sz]e)\b.*\b(page|screen|website)\b/i.test(text)) return [{ action: 'read_page_dom', params: { tabId } }];
   if (/\b(scroll)\b/i.test(text)) return [{ action: 'automate_page', params: { operation: 'scroll', direction: /\bup\b/i.test(text) ? 'up' : 'down', tabId } }];
+  if (/\bfill\s+(?:in\s+)?(?:the\s+)?form\b/i.test(text)) {
+    const fields = {};
+    const pattern = /\b(full\s*name|name|email|e-mail|password|address|phone|mobile)\b\s*(?:is|as|:|=|to)?\s*([^,;]+?)(?=\s*(?:,|;|\band\s+(?:full\s*name|name|email|e-mail|password|address|phone|mobile)\b)|$)/gi;
+    let match;
+    while ((match = pattern.exec(text))) fields[match[1].toLowerCase().replace(/\s/g, '')] = match[2].trim().replace(/^['"]|['"]$/g, '');
+    if (Object.keys(fields).length) return [{ action: 'automate_page', params: { operation: 'fill_form', fields, tabId } }];
+  }
   const clickMatch = text.match(/\bclick\s+(?:on\s+)?(.+)/i);
   if (clickMatch) return [{ action: 'automate_page', params: { operation: 'click', target: clickMatch[1].trim(), tabId } }];
   const fillMatch = text.match(/(?:type|write|enter|fill)\s+(.+)/i);
@@ -229,6 +249,22 @@ async function handleOverlayVoice(transcript, tab) {
   broadcastStatus();
   void runQueue();
   return { ok: true, success: true, queued: taskQueue.length };
+}
+
+async function handleOverlayNextTask() {
+  await stateReady;
+  if (taskStatus === 'running' || taskStatus === 'paused') {
+    return { ok: false, success: false, error: 'Stop the current task before starting a new task.' };
+  }
+  taskQueue = [];
+  actionLog = [];
+  currentStepIndex = 0;
+  taskStatus = 'done';
+  taskCancelledByUser = false;
+  pausedAfterAction = false;
+  await persistTaskState();
+  broadcastStatus({ nextTask: true });
+  return { ok: true, success: true };
 }
 
 async function getActiveTab(preferredTabId = null) {
@@ -344,7 +380,7 @@ async function executeStep(step, generation = taskGeneration) {
       }
 
       case 'youtube_search': {
-        return executeYoutubeSearch(params.query || params.searchTerm || '', generation);
+        return executeYoutubeSearch(params.query || params.searchTerm || '', generation, params.play === true);
       }
 
       case 'switch_tab': {
@@ -565,7 +601,9 @@ async function executeStep(step, generation = taskGeneration) {
       }
 
       // ── WhatsApp Web Automation ──
+      case 'whatsapp_call':
       case 'whatsapp_send': {
+        const isCall = action === 'whatsapp_call' || params.call === true;
         const tabs = await chrome.tabs.query({});
         let waTab = tabs.find(t => t.url && t.url.includes('web.whatsapp.com'));
         if (!waTab) {
@@ -583,18 +621,18 @@ async function executeStep(step, generation = taskGeneration) {
 
         const [res] = await chrome.scripting.executeScript({
           target: { tabId: waTab.id },
-          func: async (recipient, message) => {
+          func: async (recipient, message, options) => {
             if (window.__ZULORA_CONTENT__?.injectWhatsAppMessage) {
-              return await window.__ZULORA_CONTENT__.injectWhatsAppMessage(recipient, message);
+              return await window.__ZULORA_CONTENT__.injectWhatsAppMessage(recipient, message, options);
             }
             return { error: 'WhatsApp handler not ready' };
           },
-          args: [params.recipient || '', params.message || '']
+          args: [params.recipient || '', params.message || '', { call: isCall }]
         });
 
         assertTaskActive(generation);
-        if (!res?.result?.success) throw new Error(res?.result?.error || 'WhatsApp could not confirm the message input.');
-        log(`WhatsApp: Message sent to "${params.recipient || 'recipient'}"`, 'done');
+        if (!res?.result?.success) throw new Error(res?.result?.error || `WhatsApp could not ${isCall ? 'start the call' : 'confirm the message input'}.`);
+        log(isCall ? `WhatsApp: Calling "${params.recipient || 'contact'}"` : `WhatsApp: Message sent to "${params.recipient || 'recipient'}"`, 'done');
         return { tabId: waTab.id, result: res?.result };
       }
 
@@ -736,7 +774,7 @@ function humanLabel(action, params) {
     switch_tab:      `Switch Tab (${params.urlContains})`,
     close_tab:       `Close Tab`,
     search_google:   `Google: "${params.query}"`,
-    youtube_search:  `YouTube: Search and play "${params.query || params.searchTerm}"`,
+    youtube_search:  params.play === true ? `YouTube: Search and play "${params.query || params.searchTerm}"` : `YouTube: Search "${params.query || params.searchTerm}"`,
     type_text:       `Type into ${params.selector}`,
     click_element:   `Click ${params.selector}`,
     extract_content: `Extract page text`,
@@ -747,6 +785,7 @@ function humanLabel(action, params) {
     gmail_read_inbox:`Gmail: Read Inbox`,
     send_email:      `Email to ${params.to}`,
     whatsapp_send:   `WhatsApp: Send message to "${params.recipient || 'recipient'}"`,
+    whatsapp_call:   `WhatsApp: Call "${params.recipient || 'contact'}"`,
     chatgpt_prompt:  `ChatGPT: Submit prompt`,
     gemini_prompt:   `Gemini: Submit prompt`,
     export_code:     `Export code file (${params.filename || 'file'})`,
@@ -937,6 +976,13 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
 
 // ─── Internal Message Handler (from content scripts & bridge) ─────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'ZULORA_OVERLAY_NEXT_TASK') {
+    handleOverlayNextTask()
+      .then((result) => sendResponse({ success: true, ok: true, data: result, ...(result && typeof result === 'object' ? result : {}) }))
+      .catch((err) => sendResponse({ success: false, ok: false, error: err.message }));
+    return true;
+  }
+
   if (message?.type === 'ZULORA_OVERLAY_VOICE') {
     handleOverlayVoice(message.transcript, sender?.tab)
       .then((result) => sendResponse({ success: true, ok: true, data: result, ...(result && typeof result === 'object' ? result : {}) }))

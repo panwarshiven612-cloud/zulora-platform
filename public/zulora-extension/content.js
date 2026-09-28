@@ -112,7 +112,7 @@
           <button data-pause>Pause</button>
           <button class="stop" data-stop>Stop</button>
         </div>
-        <div class="donebox" data-done><strong>Task Completed!</strong><br/><button data-new>Start New Task</button></div>
+        <div class="donebox" data-done><strong>Task Completed!</strong><br/><button data-new>Next Task</button></div>
         <div class="newtask" data-newtask><input data-command placeholder="Open a site, search, read, click…"/><button data-submit>Go</button></div>
       </section>`;
     document.documentElement.appendChild(overlayRoot);
@@ -127,19 +127,40 @@
       const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SpeechRec) { setOverlayLabel('Voice input is not supported here'); return; }
       const rec = new SpeechRec();
-      rec.continuous = false;
-      rec.interimResults = false;
+      let transcriptBuffer = '';
+      let silenceTimer = null;
+      rec.continuous = true;
+      rec.interimResults = true;
       rec.lang = 'en-US';
       rec.onresult = event => {
-        const transcript = event.results?.[0]?.[0]?.transcript?.trim();
-        if (transcript) sendOverlayCommand('ZULORA_OVERLAY_VOICE', { transcript });
+        const resultStart = Number(event.resultIndex) || 0;
+        let interim = '';
+        for (let index = resultStart; index < event.results.length; index += 1) {
+          const result = event.results[index];
+          const phrase = result?.[0]?.transcript || '';
+          if (result?.isFinal) transcriptBuffer += `${phrase} `;
+          else interim += phrase;
+        }
+        setOverlayLabel(interim || 'Listening…');
+        clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => {
+          const transcript = transcriptBuffer.trim();
+          transcriptBuffer = '';
+          if (transcript) sendOverlayCommand('ZULORA_OVERLAY_VOICE', { transcript });
+          setOverlayLabel('Listening…');
+        }, 1100);
       };
       rec.onerror = () => setOverlayLabel('Voice input stopped');
-      rec.onend = () => { overlayRecognition = null; };
+      rec.onend = () => {
+        if (overlayRecognition === rec) {
+          try { rec.start(); } catch { overlayRecognition = null; }
+        }
+      };
       overlayRecognition = rec;
       try { rec.start(); setOverlayLabel('Listening…'); } catch { overlayRecognition = null; }
     });
     root.querySelector('[data-new]').addEventListener('click', () => {
+      sendOverlayCommand('ZULORA_OVERLAY_NEXT_TASK');
       root.querySelector('[data-newtask]').setAttribute('data-visible', 'true');
       root.querySelector('[data-command]').focus();
     });
@@ -323,7 +344,9 @@
       document.execCommand('selectAll', false, null);
       document.execCommand('insertText', false, value);
     } else if ('value' in el) {
-      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
+        : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype
+          : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
       if (setter) setter.call(el, value); else el.value = value;
     } else {
@@ -393,6 +416,41 @@
     if (operation === 'read' || operation === 'extract' || operation === 'analyze') {
       return { title: document.title, url: location.href, text: extractText(selector || null), dom: extractDomStructure() };
     }
+    if (operation === 'fill_form') {
+      const fields = params.fields && typeof params.fields === 'object' ? params.fields : {};
+      const aliases = {
+        fullname: /\b(full.?name|name|given.?name|first.?name|last.?name)\b/i,
+        name: /\b(full.?name|name|given.?name|first.?name|last.?name)\b/i,
+        firstname: /\b(first.?name|given.?name)\b/i,
+        lastname: /\b(last.?name|family.?name)\b/i,
+        givenname: /\b(given.?name|first.?name)\b/i,
+        email: /\b(email|e.?mail|username)\b/i,
+        password: /\b(password|passcode)\b/i,
+        address: /\b(address|street|city|state|zip|postal)\b/i,
+        phone: /\b(phone|mobile|telephone|tel)\b/i
+      };
+      const controls = Array.from(document.querySelectorAll('input, textarea, select, [contenteditable="true"], [role="textbox"]')).filter(isVisible);
+      const filledFields = [];
+      for (const [rawName, value] of Object.entries(fields)) {
+        const normalizedName = String(rawName).toLowerCase().replace(/[^a-z]/g, '');
+        const escapedName = String(rawName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const matcher = aliases[normalizedName] || new RegExp(`\\b${escapedName}\\b`, 'i');
+        const target = controls.find(el => {
+          const labels = [
+            el.name, el.id, el.type, el.getAttribute('autocomplete'), el.getAttribute('placeholder'),
+            el.getAttribute('aria-label'), el.getAttribute('data-placeholder'),
+            ...Array.from(el.labels || []).map(label => label.innerText),
+            el.closest('label')?.innerText
+          ].filter(Boolean).join(' ');
+          return matcher.test(labels);
+        });
+        if (!target) continue;
+        await typeIntoElement(target, value, runId);
+        filledFields.push(rawName);
+      }
+      if (!filledFields.length) throw new Error('Could not match the supplied form fields to visible inputs.');
+      return { success: true, verified: true, filledFields };
+    }
     if (operation === 'click' || operation === 'submit') {
       let target = null;
       try { target = selector ? document.querySelector(selector) : findTextTarget(params.target || text); } catch {}
@@ -411,7 +469,10 @@
       let target = null;
       try { target = selector ? document.querySelector(selector) : null; } catch {}
       if (!target) {
-        const kinds = operation === 'search' ? DOM_SELECTOR_DICTIONARIES.search : DOM_SELECTOR_DICTIONARIES.prompt;
+        const kinds = operation === 'search' ? DOM_SELECTOR_DICTIONARIES.search
+          : /email|password|name|phone|address|recipient|subject/i.test(String(params.target || params.label || ''))
+            ? ['input', 'textarea', 'select', '[contenteditable="true"]', '[role="textbox"]']
+            : DOM_SELECTOR_DICTIONARIES.prompt;
         const hint = String(params.target || params.label || '').toLowerCase();
         const candidates = Array.from(document.querySelectorAll(kinds.join(','))).filter(isVisible);
         target = candidates.find(el => [el.getAttribute('placeholder'), el.getAttribute('aria-label'), el.getAttribute('name')]
@@ -446,17 +507,31 @@
     throw new Error(`Unsupported browser automation operation: ${operation}`);
   }
 
-  async function searchAndOpenTopYoutubeVideo(query) {
+  async function searchAndOpenTopYoutubeVideo(query, options = {}) {
     const runId = startAutomation();
     if (!/youtube\.com$/i.test(location.hostname)) throw new Error('Open YouTube before running a YouTube search.');
     const searchBox = await waitForElement('input#search, input[name="search_query"]', 12000, runId);
     if (!searchBox) throw new Error('YouTube search field is not ready.');
     await typeIntoElement(searchBox, query, runId);
-    searchBox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-    searchBox.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-    const resultLink = await waitForElement('ytd-video-renderer a#thumbnail, ytd-video-renderer a[href*="/watch"]', 15000, runId);
+    const beforeUrl = location.href;
+    const beforeText = document.body?.innerText?.slice(0, 2500) || '';
+    const searchButton = document.querySelector('button#search-icon-legacy, form#search-form button[type="submit"]');
+    if (searchButton) searchButton.click();
+    else {
+      searchBox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+      searchBox.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+    }
+    await waitForDomChange(beforeUrl, beforeText, 600, runId);
+    await sleep(400, runId);
     assertAutomationActive(runId);
-    if (!resultLink) throw new Error('No YouTube video result appeared for this search.');
+    const resultContainer = await waitForElement('ytd-video-renderer, ytd-channel-renderer, ytd-playlist-renderer', 10000, runId);
+    if (!resultContainer) throw new Error('No YouTube results appeared for this search.');
+    if (options?.play !== true) {
+      const firstResult = document.querySelector('ytd-video-renderer a#thumbnail, ytd-channel-renderer a#main-link');
+      return { success: true, searched: true, played: false, title: document.title, url: location.href, firstResult: firstResult?.getAttribute('title') || firstResult?.getAttribute('aria-label') || '' };
+    }
+    const resultLink = await waitForElement('ytd-video-renderer a#thumbnail, ytd-video-renderer a[href*="/watch"]', 10000, runId);
+    if (!resultLink) throw new Error('No YouTube video result appeared to play.');
     resultLink.click();
     const video = await waitForElement('video.html5-main-video, ytd-player video', 12000, runId);
     assertAutomationActive(runId);
@@ -532,6 +607,16 @@
     return el ? el.innerText.slice(0, 15000) : '';
   }
 
+  function extractVisibleTextChunks(chunkSize = 3000, maxChunks = 12) {
+    const text = String(document.body?.innerText || '').replace(/\n{3,}/g, '\n\n').trim();
+    const safeSize = Math.max(500, Math.min(6000, Number(chunkSize) || 3000));
+    const chunks = [];
+    for (let offset = 0; offset < text.length && chunks.length < maxChunks; offset += safeSize) {
+      chunks.push(text.slice(offset, offset + safeSize));
+    }
+    return chunks;
+  }
+
   function extractDomStructure() {
     const headings = Array.from(document.querySelectorAll('h1, h2, h3'))
       .map(h => h.innerText.trim())
@@ -542,7 +627,8 @@
       title: document.title,
       url: window.location.href,
       headings,
-      contentSnippet: mainText
+      contentSnippet: mainText,
+      contentChunks: extractVisibleTextChunks()
     };
   }
 
@@ -601,7 +687,7 @@
 
   // ─── WhatsApp Web Automation Helpers ────────────────────────────────────────
 
-  async function injectWhatsAppMessage(recipient, message) {
+  async function injectWhatsAppMessage(recipient, message, options = {}) {
     const runId = startAutomation();
     // Search contact if recipient specified
     if (recipient) {
@@ -626,6 +712,13 @@
     const msgBox = await waitForElement((DOM_SELECTOR_DICTIONARIES.message || ['footer div[contenteditable="true"]']).join(','), 8000, runId);
     if (!msgBox) throw new Error('WhatsApp chat message input not found. Ensure WhatsApp is logged in.');
 
+    if (options.call) {
+      const callButton = await waitForElement('button[aria-label*="voice call" i], button[aria-label*="audio call" i], [data-testid*="voice-call" i]', 5000, runId);
+      if (!callButton) throw new Error('Could not find WhatsApp voice call control for this chat.');
+      callButton.click();
+      return { success: true, called: true, recipient };
+    }
+    if (!message) throw new Error('Provide a message before sending a WhatsApp text.');
     msgBox.focus();
     await typeIntoElement(msgBox, message, runId);
     await sleep(350, runId);
@@ -713,6 +806,7 @@
     typeIntoElement,
     clickElement,
     extractText,
+    extractVisibleTextChunks,
     extractDomStructure,
     injectGmailCompose,
     readGmailInbox,

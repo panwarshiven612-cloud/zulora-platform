@@ -270,6 +270,8 @@ ${isHtml ? 'Format the email in clean, well-spaced HTML paragraphs (<p style="ma
     options.onTokensProgress?.(lastReportedTokens);
     const res = await apiRouter.generateChat(prompt, [], {
       currentUser: options.currentUser,
+      computerAgent: true,
+      computerVision: options.computerVision === true,
       temperature: 0.7,
       signal: options.signal,
       onToken: (chunk) => {
@@ -509,7 +511,7 @@ export function parseCommandToSteps(command) {
 const PLANNER_ACTIONS = new Set([
   'open_url', 'search_google', 'switch_tab', 'close_tab', 'type_text', 'click_element',
   'extract_content', 'read_page_dom', 'automate_page', 'capture_screen', 'ocr_screen',
-  'gmail_compose', 'whatsapp_send', 'chatgpt_prompt', 'gemini_prompt', 'export_pdf',
+  'gmail_compose', 'whatsapp_send', 'whatsapp_call', 'chatgpt_prompt', 'gemini_prompt', 'export_pdf',
   'export_code', 'download_file', 'wait'
 ]);
 
@@ -521,14 +523,69 @@ function parsePlannerJson(value) {
   return JSON.parse(clean.slice(first, last + 1));
 }
 
+export function parseLocalComputerAction(command) {
+  const text = String(command || '').trim();
+  if (!text) return null;
+  const channelSearch = text.match(/\b(?:search|find)\s+(?:for\s+)?(channel\s+.+)$/i);
+  if (channelSearch && !/\bgoogle\b/i.test(text)) {
+    return [{ action: 'youtube_search', app: 'YouTube', params: {
+      query: channelSearch[1].replace(/\s+(?:and\s+)?(?:play|watch)\b.*$/i, '').replace(/\s+(?:on|in)\s+youtube\s*$/i, '').trim(),
+      play: /\b(play|watch)\b/i.test(text) && !/\b(?:don't|do not)\s+(?:play|watch)\b/i.test(text)
+    } }];
+  }
+  const youtubeSearch = text.match(/\b(?:search|find)\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+youtube\b/i) ||
+    text.match(/\byoutube\b.*?\b(?:search|for)\s+(.+)$/i) ||
+    text.match(/^youtube\s+(?:(?:search)\s+(?:for\s+)?)?(.+)$/i) ||
+    text.match(/\b(?:play|watch)\s+(?:the\s+)?(?:(?:top|first)\s+)?(?:video\s+)?(?:about\s+)?(.+?)\s+(?:on|in)\s+youtube\b/i);
+  if (youtubeSearch) {
+    const query = String(youtubeSearch[1] || '').replace(/\s+on\s+youtube.*$/i, '').replace(/^(?:play|watch)\s+(?:the\s+)?(?:(?:top|first)\s+)?(?:video\s+)?(?:about\s+)?/i, '').trim();
+    if (query) return [{ action: 'youtube_search', app: 'YouTube', params: { query, play: /\b(play|watch)\b/i.test(text) && !/\b(don't|do not)\s+(?:play|watch)\b/i.test(text) } }];
+  }
+  if (/\bscroll\s+(down|up)\b/i.test(text)) {
+    const direction = text.match(/\bscroll\s+(down|up)\b/i)?.[1]?.toLowerCase() || 'down';
+    return [{ action: 'automate_page', app: 'Browser', params: { operation: 'scroll', direction, amount: 500 } }];
+  }
+  if (/\b(read|summari[sz]e|analy[sz]e)\b.*\b(this\s+)?(page|screen|website)\b/i.test(text) || /\bwhat is on this page\b/i.test(text)) {
+    return [{ action: 'read_page_dom', app: 'Screen Reader', params: {} }];
+  }
+  const formAssignments = /\b(?:fill|complete)\s+(?:in\s+)?(?:the\s+)?form\b/i.test(text);
+  if (formAssignments) {
+    const labelPattern = /\b(full\s*name|first\s*name|last\s*name|name|email|e-mail|password|address|phone|mobile)\b\s*(?:(?:is|as|to)\s+|[:=]\s*)?/gi;
+    const matches = [...text.matchAll(labelPattern)];
+    const fields = {};
+    matches.forEach((match, index) => {
+      const start = match.index + match[0].length;
+      const end = matches[index + 1]?.index ?? text.length;
+      const value = text.slice(start, end).replace(/[\s,;]+(?:and\s*)?$/, '').replace(/^['"]|['"]$/g, '').trim();
+      if (!value) return;
+      const label = match[1].toLowerCase().replace(/\s+/g, '');
+      const key = label === 'e-mail' ? 'email' : label === 'mobile' ? 'phone' : label;
+      fields[key] = value;
+    });
+    if (Object.keys(fields).length) return [{ action: 'automate_page', app: 'Browser', params: { operation: 'fill_form', fields } }];
+  }
+  const directInput = text.match(/\b(?:type|enter|write|search)\s+["']?(.+?)["']?\s+(?:in|into)\s+(?:the\s+)?(search|email|password|name|phone|address|message|prompt)(?:\s+(?:field|box|input))?\b/i);
+  if (directInput) {
+    const target = directInput[2].toLowerCase();
+    return [{ action: 'automate_page', app: 'Browser', params: {
+      operation: target === 'search' ? 'search' : 'fill', target, text: directInput[1].trim(), submit: target === 'search'
+    } }];
+  }
+  const click = text.match(/\bclick\s+(?:on\s+)?(?:the\s+)?(.+)/i);
+  if (click) return [{ action: 'automate_page', app: 'Browser', params: { operation: 'click', target: click[1].trim() } }];
+  return null;
+}
+
 async function planUnknownCommand(command, currentUser, onTokensProgress, signal) {
   const actions = [...PLANNER_ACTIONS].join(', ');
-  const prompt = `Convert the user's browser task into a short JSON action plan. Return only {"steps":[{"action":"...","params":{...}}]}. Allowed actions: ${actions}. For general page work use automate_page with operation fill, type, search, click, submit, read, extract, analyze, or wait_for. Use HTTPS URLs. Do not send messages, submit emails, delete data, purchase, or make other external changes unless the user explicitly asked for that exact action. Do not invent recipients, message text, selectors, or facts. If the request is ambiguous, return {"steps":[]}.\nUser task: ${command}`;
+  const prompt = `Convert the user's browser task into a short JSON action plan. Return only {"steps":[{"action":"...","params":{...}}]}. Allowed actions: ${actions}. For general page work use automate_page with operation fill, fill_form, type, search, click, submit, read, extract, analyze, scroll, or wait_for. Use HTTPS URLs. Do not send messages, submit emails, delete data, purchase, or make other external changes unless the user explicitly asked for that exact action. Do not invent recipients, message text, selectors, or facts. If the request is ambiguous, return {"steps":[]}.\nUser task: ${command}`;
   let streamedChars = 0;
   const baseline = Math.ceil(prompt.length / 4);
   onTokensProgress?.(baseline);
   const result = await apiRouter.generateChat(prompt, [], {
     currentUser,
+    computerAgent: true,
+    computerVision: false,
     temperature: 0.1,
     signal,
     onToken: chunk => {
@@ -545,8 +602,9 @@ async function planUnknownCommand(command, currentUser, onTokensProgress, signal
     steps: steps.filter(step => {
       if (!PLANNER_ACTIONS.has(step?.action) || !step.params || typeof step.params !== 'object') return false;
       if (step.action === 'whatsapp_send' && !/\b(send|message|text)\b/i.test(command)) return false;
+      if (step.action === 'whatsapp_call' && !/\b(call|phone)\b/i.test(command)) return false;
       if (step.action === 'close_tab' && !/\b(close|shut)\b/i.test(command)) return false;
-      if (step.action === 'automate_page' && !['fill', 'type', 'search', 'click', 'submit', 'read', 'extract', 'analyze', 'wait_for'].includes(String(step.params.operation || '').toLowerCase())) return false;
+      if (step.action === 'automate_page' && !['fill', 'fill_form', 'type', 'search', 'click', 'submit', 'read', 'extract', 'analyze', 'scroll', 'wait_for'].includes(String(step.params.operation || '').toLowerCase())) return false;
       if (step.action === 'open_url' && !/^https:\/\//i.test(String(step.params.url || ''))) return false;
       return true;
     })
@@ -569,7 +627,7 @@ export async function executeCommand(command, onLog, currentUser = null, onToken
     return { ok: false, success: false, error: 'Extension not connected. Please install the Zulora Computer Plugin.' };
   }
 
-  let steps = parseCommandToSteps(command);
+  let steps = parseLocalComputerAction(command) || parseCommandToSteps(command);
   if (!steps.length) {
     return { ok: false, success: false, error: 'Could not parse command into executable steps.' };
   }
