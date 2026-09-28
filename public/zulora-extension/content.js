@@ -17,16 +17,30 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'ZULORA_STATUS_UPDATE') {
       window.postMessage({ ...message, source: 'ZULORA_EXTENSION' }, '*');
-      sendResponse({ ok: true });
+      sendResponse({ ok: true, success: true });
     }
     return true;
   });
 
   // ─── Bridge: receive commands from Zulora web app page ──────────────────────
-  window.addEventListener('ZULORA_EXECUTE_AGENT_TASK', (event) => {
-    chrome.runtime.sendMessage(event.detail, (response) => {
-      window.dispatchEvent(new CustomEvent('ZULORA_AGENT_RESPONSE', { detail: response }));
-    });
+  window.addEventListener("ZULORA_EXECUTE_AGENT_TASK", async (event) => {
+    try {
+      chrome.runtime.sendMessage({ type: "EXECUTE_ACTION", payload: event.detail }, (response) => {
+        if (chrome.runtime.lastError) {
+          window.dispatchEvent(new CustomEvent("ZULORA_AGENT_RESPONSE", {
+            detail: { success: false, ok: false, error: chrome.runtime.lastError.message }
+          }));
+          return;
+        }
+        window.dispatchEvent(new CustomEvent("ZULORA_AGENT_RESPONSE", {
+          detail: response || { success: true, ok: true }
+        }));
+      });
+    } catch (err) {
+      window.dispatchEvent(new CustomEvent("ZULORA_AGENT_RESPONSE", {
+        detail: { success: false, ok: false, error: err.message }
+      }));
+    }
   });
 
   // ─── Auth / Login Detection ─────────────────────────────────────────────────

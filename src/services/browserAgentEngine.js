@@ -38,7 +38,7 @@ function _emit(status) {
   _statusListeners.forEach(fn => { try { fn(status); } catch {} });
 }
 
-// ─── Extension Bridge ─────────────────────────────────────────────────────────
+// ─── Extension Bridge with Retry Mechanism ───────────────────────────────────
 
 /**
  * Check if the Zulora Chrome Extension is installed and responding.
@@ -52,66 +52,95 @@ export async function checkExtensionConnected() {
 }
 
 /**
+ * Send a message across the extension DOM bridge with robust retry mechanism.
+ * Attempts up to maxAttempts (default 3) with a 1.5s delay between attempts
+ * before falling back to error state.
+ *
+ * @param {object} detail - Payload to send in ZULORA_EXECUTE_AGENT_TASK
+ * @param {number} maxAttempts - Number of attempts before failure (default 3)
+ * @param {number} delayMs - Delay between attempts in milliseconds (default 1500)
+ * @param {number} timeoutMs - Timeout per attempt in milliseconds (default 2500)
+ * @returns {Promise<{ok: boolean, success?: boolean, error?: string, [key: string]: any}>}
+ */
+async function sendBridgeMessageWithRetry(detail, maxAttempts = 3, delayMs = 1500, timeoutMs = 2500) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const result = await new Promise((resolve) => {
+      let settled = false;
+
+      const listener = (event) => {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('ZULORA_AGENT_RESPONSE', listener);
+        clearTimeout(timer);
+        const res = event.detail || { ok: false, success: false, error: 'Empty response' };
+        if (res.ok === undefined && res.success !== undefined) res.ok = !!res.success;
+        if (res.success === undefined && res.ok !== undefined) res.success = !!res.ok;
+        resolve(res);
+      };
+
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('ZULORA_AGENT_RESPONSE', listener);
+        resolve(null); // Timed out on this attempt
+      }, timeoutMs);
+
+      window.addEventListener('ZULORA_AGENT_RESPONSE', listener);
+
+      try {
+        window.dispatchEvent(new CustomEvent('ZULORA_EXECUTE_AGENT_TASK', { detail }));
+      } catch (err) {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('ZULORA_AGENT_RESPONSE', listener);
+        clearTimeout(timer);
+        resolve({ ok: false, success: false, error: err.message });
+      }
+    });
+
+    if (result && (result.ok || result.success)) {
+      return result;
+    }
+
+    lastError = result?.error || 'No response from extension bridge';
+
+    if (attempt < maxAttempts) {
+      console.warn(`[Zulora Bridge] Attempt ${attempt}/${maxAttempts} failed (${lastError}). Retrying in ${delayMs}ms...`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+
+  return { ok: false, success: false, error: lastError || 'No response from extension bridge' };
+}
+
+/**
  * Send a task queue to the extension and start execution.
  * @param {Array<{action: string, params: object}>} steps
- * @returns {Promise<{ok: boolean, queued?: number, error?: string}>}
+ * @returns {Promise<{ok: boolean, success?: boolean, queued?: number, error?: string}>}
  */
 export async function runTask(steps) {
-  return new Promise((resolve) => {
-    if (!steps?.length) { resolve({ ok: false, error: 'No steps provided' }); return; }
-    
-    const listener = (event) => {
-      window.removeEventListener('ZULORA_AGENT_RESPONSE', listener);
-      resolve(event.detail || { ok: false, error: 'Empty response' });
-    };
-    window.addEventListener('ZULORA_AGENT_RESPONSE', listener);
-    
-    // Dispatch execution event to content script
-    window.dispatchEvent(new CustomEvent('ZULORA_EXECUTE_AGENT_TASK', {
-      detail: { type: 'ZULORA_RUN_TASK', steps }
-    }));
-    
-    // Timeout fallback
-    setTimeout(() => {
-      window.removeEventListener('ZULORA_AGENT_RESPONSE', listener);
-      resolve({ ok: false, error: 'No response from extension bridge' });
-    }, 2000);
-  });
+  if (!steps?.length) {
+    return { ok: false, success: false, error: 'No steps provided' };
+  }
+  return sendBridgeMessageWithRetry({ type: 'ZULORA_RUN_TASK', steps }, 3, 1500, 2500);
 }
 
 export async function pauseTask() {
-  return _sendControl('ZULORA_PAUSE');
+  return sendBridgeMessageWithRetry({ type: 'ZULORA_PAUSE' }, 3, 1500, 2000);
 }
 
 export async function resumeTask() {
-  return _sendControl('ZULORA_RESUME');
+  return sendBridgeMessageWithRetry({ type: 'ZULORA_RESUME' }, 3, 1500, 2000);
 }
 
 export async function cancelTask() {
-  return _sendControl('ZULORA_CANCEL');
+  return sendBridgeMessageWithRetry({ type: 'ZULORA_CANCEL' }, 3, 1500, 2000);
 }
 
 export async function getTaskStatus() {
-  return _sendControl('ZULORA_STATUS');
-}
-
-function _sendControl(type) {
-  return new Promise((resolve) => {
-    const listener = (event) => {
-      window.removeEventListener('ZULORA_AGENT_RESPONSE', listener);
-      resolve(event.detail || { ok: false });
-    };
-    window.addEventListener('ZULORA_AGENT_RESPONSE', listener);
-    
-    window.dispatchEvent(new CustomEvent('ZULORA_EXECUTE_AGENT_TASK', {
-      detail: { type }
-    }));
-    
-    setTimeout(() => {
-      window.removeEventListener('ZULORA_AGENT_RESPONSE', listener);
-      resolve({ ok: false });
-    }, 1500);
-  });
+  return sendBridgeMessageWithRetry({ type: 'ZULORA_STATUS' }, 3, 1500, 2000);
 }
 
 // Listen for status updates posted by the content script
@@ -217,17 +246,17 @@ export function parseCommandToSteps(command) {
  * Full pipeline: parse command → send to extension → return run result.
  * @param {string} command
  * @param {function} onLog - callback(log entry) for real-time updates
- * @returns {Promise<{ok: boolean, steps: Array, error?: string}>}
+ * @returns {Promise<{ok: boolean, success?: boolean, steps: Array, error?: string}>}
  */
 export async function executeCommand(command, onLog) {
   const connected = await checkExtensionConnected();
   if (!connected) {
-    return { ok: false, error: 'Extension not connected. Please install the Zulora Computer Plugin.' };
+    return { ok: false, success: false, error: 'Extension not connected. Please install the Zulora Computer Plugin.' };
   }
 
   const steps = parseCommandToSteps(command);
   if (!steps.length) {
-    return { ok: false, error: 'Could not parse command into executable steps.' };
+    return { ok: false, success: false, error: 'Could not parse command into executable steps.' };
   }
 
   if (onLog) {

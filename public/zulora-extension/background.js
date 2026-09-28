@@ -66,9 +66,13 @@ async function executeStep(step) {
   try {
     switch (action) {
       case 'open_url': {
-        const tab = await chrome.tabs.create({ url: params.url, active: params.active !== false });
+        let url = params.url || 'https://google.com';
+        if (!url.startsWith('http://') && !url.startsWith('https://')) {
+          url = 'https://' + url;
+        }
+        const tab = await chrome.tabs.create({ url, active: params.active !== false });
         await waitForTabLoad(tab.id);
-        log(`Opened → ${params.url}`, 'done');
+        log(`Opened → ${url}`, 'done');
         return { tabId: tab.id };
       }
 
@@ -92,38 +96,65 @@ async function executeStep(step) {
       }
 
       case 'search_google': {
-        const url = `https://www.google.com/search?q=${encodeURIComponent(params.query)}`;
+        const query = params.query || '';
+        const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
         const tab = await chrome.tabs.create({ url, active: true });
         await waitForTabLoad(tab.id);
-        log(`Searched Google: "${params.query}"`, 'done');
+        log(`Searched Google: "${query}"`, 'done');
         return { tabId: tab.id };
       }
 
       case 'type_text': {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        let tabId = params.tabId;
+        if (!tabId) {
+          const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          tabId = activeTab?.id;
+        }
+        if (!tabId) {
+          const tabs = await chrome.tabs.query({ active: true });
+          tabId = tabs[0]?.id;
+        }
+        if (!tabId) throw new Error('No active browser tab found for type_text');
+
         await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
+          target: { tabId },
           func: (selector, text) => {
             const el = document.querySelector(selector);
             if (!el) throw new Error('Element not found: ' + selector);
             el.focus();
-            el.value = text;
+            if ('value' in el) {
+              el.value = text;
+            } else if (el.isContentEditable) {
+              el.innerText = text;
+            }
             el.dispatchEvent(new Event('input', { bubbles: true }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
           },
-          args: [params.selector, params.text]
+          args: [params.selector, params.text || '']
         });
         log(`Typed text into ${params.selector}`, 'done');
         return {};
       }
 
       case 'click_element': {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        let tabId = params.tabId;
+        if (!tabId) {
+          const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          tabId = activeTab?.id;
+        }
+        if (!tabId) {
+          const tabs = await chrome.tabs.query({ active: true });
+          tabId = tabs[0]?.id;
+        }
+        if (!tabId) throw new Error('No active browser tab found for click_element');
+
         await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
+          target: { tabId },
           func: (selector) => {
             const el = document.querySelector(selector);
             if (!el) throw new Error('Element not found: ' + selector);
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.focus();
             el.click();
           },
           args: [params.selector]
@@ -133,9 +164,19 @@ async function executeStep(step) {
       }
 
       case 'extract_content': {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        let tabId = params.tabId;
+        if (!tabId) {
+          const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          tabId = activeTab?.id;
+        }
+        if (!tabId) {
+          const tabs = await chrome.tabs.query({ active: true });
+          tabId = tabs[0]?.id;
+        }
+        if (!tabId) throw new Error('No active browser tab found for extract_content');
+
         const [result] = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
+          target: { tabId },
           func: (selector) => {
             const el = selector ? document.querySelector(selector) : document.body;
             return el ? el.innerText.slice(0, 5000) : '';
@@ -147,7 +188,6 @@ async function executeStep(step) {
       }
 
       case 'send_email': {
-        // Open Gmail compose window via URL scheme
         const gmailUrl = `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(params.to || '')}&su=${encodeURIComponent(params.subject || '')}&body=${encodeURIComponent(params.body || '')}`;
         const tab = await chrome.tabs.create({ url: gmailUrl, active: true });
         await waitForTabLoad(tab.id);
@@ -209,20 +249,40 @@ function humanLabel(action, params) {
 }
 
 function waitForTabLoad(tabId, timeout = 15000) {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve) => {
+    try {
+      const tabInfo = await chrome.tabs.get(tabId);
+      if (tabInfo && tabInfo.status === 'complete') {
+        resolve();
+        return;
+      }
+    } catch {}
+
+    let resolved = false;
     const timer = setTimeout(() => {
-      chrome.webNavigation.onCompleted.removeListener(listener);
-      resolve(); // resolve anyway after timeout
+      if (!resolved) {
+        resolved = true;
+        try { chrome.webNavigation.onCompleted.removeListener(listener); } catch {}
+        resolve(); // resolve anyway after timeout
+      }
     }, timeout);
 
     const listener = (details) => {
       if (details.tabId === tabId && details.frameId === 0) {
-        clearTimeout(timer);
-        chrome.webNavigation.onCompleted.removeListener(listener);
-        resolve();
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          try { chrome.webNavigation.onCompleted.removeListener(listener); } catch {}
+          resolve();
+        }
       }
     };
-    chrome.webNavigation.onCompleted.addListener(listener);
+    try {
+      chrome.webNavigation.onCompleted.addListener(listener);
+    } catch {
+      clearTimeout(timer);
+      resolve();
+    }
   });
 }
 
@@ -260,66 +320,116 @@ async function runQueue() {
   }
 }
 
-// ─── External Message Handler (from Zulora web app) ───────────────────────────
-chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
-  const { type, steps, stepIndex } = message;
+// ─── Agent Task Handler ───────────────────────────────────────────────────────
+async function handleAgentTask(payload) {
+  if (!payload) return { queued: 0 };
 
-  switch (type) {
-    case 'ZULORA_PING':
-      sendResponse({ ok: true, version: '1.0.0', status: taskStatus });
-      break;
-
-    case 'ZULORA_RUN_TASK':
-      taskQueue        = Array.isArray(steps) ? steps : [];
-      actionLog        = [];
-      currentStepIndex = 0;
-      taskStatus       = 'idle';
-      zuloraOrigin     = sender.origin;
-      runQueue();
-      sendResponse({ ok: true, queued: taskQueue.length });
-      break;
-
-    case 'ZULORA_RESUME':
-      if (taskStatus === 'paused') {
-        currentStepIndex++;
-        taskStatus = 'running';
-        runQueue();
-      }
-      sendResponse({ ok: true });
-      break;
-
-    case 'ZULORA_PAUSE':
-      taskStatus = 'paused';
-      broadcastStatus();
-      sendResponse({ ok: true });
-      break;
-
-    case 'ZULORA_CANCEL':
-      taskQueue        = [];
-      actionLog        = [];
-      currentStepIndex = 0;
-      taskStatus       = 'idle';
-      broadcastStatus();
-      sendResponse({ ok: true });
-      break;
-
-    case 'ZULORA_STATUS':
-      sendResponse({ taskStatus, actionLog, currentStep: currentStepIndex, totalSteps: taskQueue.length });
-      break;
-
-    default:
-      sendResponse({ ok: false, error: 'Unknown message type' });
+  // Case 1: If payload contains steps (e.g. ZULORA_RUN_TASK, EXECUTE_ACTION with steps, or array)
+  if (payload.type === 'ZULORA_RUN_TASK' || payload.steps) {
+    const steps = payload.steps || (Array.isArray(payload) ? payload : []);
+    taskQueue        = Array.isArray(steps) ? steps : [];
+    actionLog        = [];
+    currentStepIndex = 0;
+    taskStatus       = 'idle';
+    // Run queue in background
+    runQueue();
+    return { ok: true, queued: taskQueue.length };
   }
 
+  // Case 2: Control signals
+  if (payload.type === 'ZULORA_PAUSE') {
+    taskStatus = 'paused';
+    broadcastStatus();
+    return { ok: true, status: 'paused' };
+  }
+
+  if (payload.type === 'ZULORA_RESUME') {
+    if (taskStatus === 'paused') {
+      currentStepIndex++;
+      taskStatus = 'running';
+      runQueue();
+    }
+    return { ok: true, status: 'running' };
+  }
+
+  if (payload.type === 'ZULORA_CANCEL') {
+    taskQueue        = [];
+    actionLog        = [];
+    currentStepIndex = 0;
+    taskStatus       = 'idle';
+    broadcastStatus();
+    return { ok: true, status: 'idle' };
+  }
+
+  if (payload.type === 'ZULORA_STATUS') {
+    return {
+      ok: true,
+      taskStatus,
+      actionLog: [...actionLog],
+      currentStep: currentStepIndex,
+      totalSteps: taskQueue.length
+    };
+  }
+
+  if (payload.type === 'PING') {
+    return { ok: true, status: 'PONG' };
+  }
+
+  // Case 3: Direct single step execution (e.g. EXECUTE_STEP or action)
+  const step = payload.step || (payload.action ? payload : null);
+  if (step && step.action) {
+    const result = await executeStep(step);
+    return { ok: true, ...result };
+  }
+
+  const action = payload.action || (payload.type !== 'EXECUTE_ACTION' && payload.type !== 'EXECUTE_STEP' ? payload.type : null);
+  if (action && typeof executeStep === 'function') {
+    const result = await executeStep(payload);
+    return { ok: true, ...result };
+  }
+
+  return { ok: true, status: taskStatus };
+}
+
+// ─── External Message Handler (from Zulora web app) ───────────────────────────
+chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  handleAgentTask(message)
+    .then((result) => sendResponse({ success: true, ok: true, data: result, ...(result && typeof result === 'object' ? result : {}) }))
+    .catch((err) => sendResponse({ success: false, ok: false, error: err.message }));
   return true; // keep channel open for async sendResponse
 });
 
-// ─── Internal message from content scripts ────────────────────────────────────
+// ─── Internal message from content scripts & DOM bridge ───────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'ZULORA_CONTENT_READY') {
-    sendResponse({ ok: true, taskStatus });
+  if (message.type === 'EXECUTE_ACTION' || message.type === 'EXECUTE_STEP') {
+    handleAgentTask(message.payload)
+      .then((result) => sendResponse({ success: true, ok: true, data: result, ...(result && typeof result === 'object' ? result : {}) }))
+      .catch((err) => sendResponse({ success: false, ok: false, error: err.message }));
+    return true; // CRITICAL: Keeps channel open for async response
   }
-  return true;
+
+  if (message.type === 'PING') {
+    sendResponse({ status: 'PONG', ok: true, success: true });
+    return true;
+  }
+
+  if (message.type === 'ZULORA_CONTENT_READY') {
+    sendResponse({ ok: true, success: true, taskStatus });
+    return true;
+  }
+
+  if (message.type === 'ZULORA_RUN_TASK' || message.steps) {
+    handleAgentTask(message)
+      .then((result) => sendResponse({ success: true, ok: true, data: result, ...(result && typeof result === 'object' ? result : {}) }))
+      .catch((err) => sendResponse({ success: false, ok: false, error: err.message }));
+    return true;
+  }
+
+  // Fallback for any other action message
+  handleAgentTask(message.payload || message)
+    .then((result) => sendResponse({ success: true, ok: true, data: result, ...(result && typeof result === 'object' ? result : {}) }))
+    .catch((err) => sendResponse({ success: false, ok: false, error: err.message }));
+  return true; // CRITICAL: Keeps channel open for async response
 });
 
 console.log('[Zulora Computer Plugin] Background service worker started.');
