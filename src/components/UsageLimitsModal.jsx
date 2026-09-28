@@ -3,12 +3,14 @@ import { BarChart3, Check, Clock3, Crown, Sparkles, X, Zap } from 'lucide-react'
 import { useAuth } from '../context/AuthContext';
 import { requestLimits } from '../services/generationApi';
 
+const TOKEN_WINDOW_MS = 6 * 60 * 60 * 1000;
+
 function localStatus(usage, tier) {
-  const tokenLimit = tier === 'ultra' ? 8_000_000 : tier === 'pro' ? 4_000_000 : 2_000_000;
+  const tokenLimit = tier === 'ultra' ? 8_000_000 : tier === 'pro' ? 200_000 : 50_000;
   const chatLimit = tier === 'ultra' ? 300 : tier === 'pro' ? 120 : 60;
   const now = Date.now();
   const start = Number(usage?.tokenWindowStart) || now;
-  const expired = now - start >= 4 * 60 * 60 * 1000 || start > now;
+  const expired = now - start >= TOKEN_WINDOW_MS || start > now;
   const usedTokens = expired ? 0 : Math.max(0, Number(usage?.tokenUsed) || 0);
   const chatCount = Math.max(0, Number(usage?.chatCount ?? usage?.textUsed) || 0);
   const chatStart = Number(usage?.chatWindowStart) || 0;
@@ -16,7 +18,7 @@ function localStatus(usage, tier) {
     usedTokens,
     tokenLimit,
     usedPercent: Math.max(0, Math.min(100, Math.floor((usedTokens / tokenLimit) * 100))),
-    resetAt: new Date(expired ? now : start + 4 * 60 * 60 * 1000).toISOString(),
+    resetAt: new Date(expired ? now : Number(usage?.tokenResetAt) || start + TOKEN_WINDOW_MS).toISOString(),
     chatCount,
     chatLimit,
     chatRemaining: Math.max(0, chatLimit - chatCount),
@@ -27,7 +29,7 @@ function localStatus(usage, tier) {
 
 function formatRemaining(value, now) {
   const resetAt = Date.parse(value || '');
-  if (!Number.isFinite(resetAt) || resetAt <= now) return 'No requests waiting to refresh';
+  if (!Number.isFinite(resetAt) || resetAt <= now) return 'All tokens available';
   const total = Math.ceil((resetAt - now) / 1000);
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
@@ -54,11 +56,11 @@ export default function UsageLimitsModal({ isOpen, onClose }) {
     return () => { active = false; window.clearInterval(refreshTimer); window.clearInterval(clockTimer); };
   }, [isOpen, currentUser, usage, tier]);
 
-  const nextRefresh = useMemo(() => formatRemaining(status?.chatResetAt, now), [status?.chatResetAt, now]);
+  const nextRefresh = useMemo(() => formatRemaining(status?.resetAt, now), [status?.resetAt, now]);
   if (!isOpen) return null;
 
   const percent = Math.max(0, Math.min(100, Number(status?.usedPercent) || 0));
-  const tokenLimit = Number(status?.tokenLimit) || 2_000_000;
+  const tokenLimit = Number(status?.tokenLimit) || (tier === 'ultra' ? 8_000_000 : tier === 'pro' ? 200_000 : 50_000);
   const usedTokens = Math.max(0, Number(status?.usedTokens) || 0);
   const chatLimit = Number(status?.chatLimit) || (tier === 'ultra' ? 300 : tier === 'pro' ? 120 : 60);
   const chatRemaining = Math.max(0, Number(status?.chatRemaining ?? chatLimit - (Number(status?.chatCount) || 0)));
@@ -75,7 +77,7 @@ export default function UsageLimitsModal({ isOpen, onClose }) {
           <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl border border-cyan-300/20 bg-cyan-300/10 text-cyan-200"><BarChart3 size={22} /></div>
           <div>
             <p className="text-xs font-semibold uppercase tracking-[.2em] text-cyan-200/70">Zulora capacity</p>
-            <h2 className="text-xl font-bold">Rolling 4-hour usage</h2>
+            <h2 className="text-xl font-bold">Rolling 6-hour token usage</h2>
           </div>
           <span className="ml-auto rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs capitalize text-slate-300">{tier} plan</span>
         </div>
@@ -88,7 +90,7 @@ export default function UsageLimitsModal({ isOpen, onClose }) {
           <div className="h-3 overflow-hidden rounded-full bg-slate-800"><div className={`h-full rounded-full transition-[width] duration-700 ease-out ${blocked ? 'bg-gradient-to-r from-rose-500 to-orange-400' : 'bg-gradient-to-r from-cyan-400 via-blue-400 to-violet-500'}`} style={{ width: `${percent}%` }} /></div>
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
             <span>{usedTokens.toLocaleString()} / {tokenLimit.toLocaleString()} tokens</span>
-            <span className="flex items-center gap-1.5"><Clock3 size={14} /> Refreshes as requests age out</span>
+            <span className="flex items-center gap-1.5"><Clock3 size={14} /> Resets in {nextRefresh}</span>
           </div>
         </div>
 
@@ -97,7 +99,7 @@ export default function UsageLimitsModal({ isOpen, onClose }) {
             <span className="text-sm text-slate-300">Chat requests remaining</span>
             <span className="text-sm font-semibold text-cyan-200">{chatRemaining} / {chatLimit}</span>
           </div>
-          <div className="mt-2 flex items-center gap-2 text-xs text-slate-400"><Clock3 size={14} /> Next request returns in {nextRefresh}</div>
+          <div className="mt-2 text-xs text-slate-400">Chat request limits refresh on their separate four-hour window.</div>
         </div>
 
         <div className={`relative mt-4 rounded-2xl border p-4 ${blocked ? 'border-violet-300/40 bg-violet-400/10' : 'border-white/10 bg-white/[.025]'}`}>
@@ -105,14 +107,14 @@ export default function UsageLimitsModal({ isOpen, onClose }) {
             <div className="mt-0.5 text-violet-200">{blocked ? <Sparkles size={19} /> : <Zap size={19} />}</div>
             <div>
               <h3 className="font-semibold">{blocked ? 'A usage limit has been reached' : 'Usage refreshes automatically'}</h3>
-              <p className="mt-1 text-sm leading-6 text-slate-400">Earlier requests return to your balance as they age out of the rolling four-hour window.</p>
+              <p className="mt-1 text-sm leading-6 text-slate-400">Earlier token usage returns to your balance as it ages out of the rolling six-hour window.</p>
             </div>
           </div>
         </div>
 
         <div className="relative mt-4 grid grid-cols-2 gap-3">
           <div className="rounded-2xl border border-white/10 bg-white/[.025] p-4"><Crown className="mb-2 text-violet-200" size={18} /><p className="text-sm font-semibold">Pro</p><p className="mt-1 text-xs text-slate-400">More room for daily work</p></div>
-          <div className="rounded-2xl border border-white/10 bg-white/[.025] p-4"><Check className="mb-2 text-cyan-200" size={18} /><p className="text-sm font-semibold">Rolling refresh</p><p className="mt-1 text-xs text-slate-400">Each request returns after four hours</p></div>
+          <div className="rounded-2xl border border-white/10 bg-white/[.025] p-4"><Check className="mb-2 text-cyan-200" size={18} /><p className="text-sm font-semibold">Rolling refresh</p><p className="mt-1 text-xs text-slate-400">Token usage returns after six hours</p></div>
         </div>
         <button onClick={openPricing} className="relative mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 via-blue-500 to-cyan-400 px-4 py-3 text-sm font-bold shadow-lg shadow-violet-900/30 transition hover:brightness-110"><Sparkles size={16} /> {blocked ? 'Explore upgrade options' : 'View plans'}</button>
       </section>

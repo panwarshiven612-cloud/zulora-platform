@@ -52,7 +52,7 @@ import { useAuth } from '../context/AuthContext';
 import { apiRouter } from '../services/apiRouter';
 import { isCodeGenerationPrompt } from '../services/aiModels';
 import { firestoreService, deriveChatTitle } from '../services/firestoreService';
-import { imageFileToDataUrl } from '../services/imageUtils';
+import { imageFileToDataUrl, readFileAsDataUrl } from '../services/imageUtils';
 import CodeArtifactRunner from './CodeArtifactRunner';
 import ModelSelector from './ModelSelector';
 
@@ -60,6 +60,25 @@ import ModelSelector from './ModelSelector';
    CONSTANTS
    ============================================================ */
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
+const ATTACHMENT_MIME_BY_EXTENSION = {
+  bmp: 'image/bmp', gif: 'image/gif', jpeg: 'image/jpeg', jpg: 'image/jpeg', png: 'image/png', svg: 'image/svg+xml', webp: 'image/webp',
+  csv: 'text/csv', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  json: 'application/json', md: 'text/markdown', pdf: 'application/pdf', txt: 'text/plain'
+};
+const attachmentMimeType = file => {
+  const declared = String(file?.type || '').toLowerCase();
+  const extension = String(file?.name || '').split('.').pop().toLowerCase();
+  if (declared && declared !== 'application/octet-stream' && !(extension === 'pdf' && declared === 'application/x-pdf')) return declared;
+  return ATTACHMENT_MIME_BY_EXTENSION[extension] || declared;
+};
+const normalizeAttachmentFile = file => {
+  const mimeType = attachmentMimeType(file);
+  return mimeType && mimeType !== file.type
+    ? new File([file], file.name, { type: mimeType, lastModified: Number(file.lastModified) || Date.now() })
+    : file;
+};
+const isImageAttachment = file => attachmentMimeType(file).startsWith('image/');
+const isPdfAttachment = file => attachmentMimeType(file) === 'application/pdf';
 
 [
   ['clike', clike], ['markup', markup], ['javascript', javascript], ['jsx', jsx],
@@ -478,6 +497,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const messagesContainerRef = useRef(null);
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
+  const preparedAttachmentDataRef = useRef(new Map());
   const recognitionRef = useRef(null);
   const textareaRef = useRef(null);
   const speechRef = useRef(null);
@@ -489,7 +509,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   useEffect(() => {
     const previews = new Map();
     attachments.forEach(file => {
-      if (file.type?.startsWith('image/')) previews.set(file, URL.createObjectURL(file));
+      if (isImageAttachment(file)) previews.set(file, URL.createObjectURL(file));
     });
     setAttachmentPreviewUrls(previews);
     return () => previews.forEach(url => URL.revokeObjectURL(url));
@@ -598,12 +618,37 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   }, [isSpeakingIndex]);
 
   const addAttachments = useCallback(files => {
-    setAttachments(previous => [...previous, ...Array.from(files || []).filter(Boolean).slice(0, Math.max(0, 5 - previous.length))]);
+    const incoming = Array.from(files || []).filter(Boolean).map(normalizeAttachmentFile);
+    setAttachments(previous => [...previous, ...incoming.slice(0, Math.max(0, 5 - previous.length))]);
   }, []);
 
-  const handleFileAttach = (e) => {
-    addAttachments(e.target.files || []);
-    e.target.value = '';
+  const getAttachmentDataUrl = useCallback(file => {
+    let pending = preparedAttachmentDataRef.current.get(file);
+    if (!pending) {
+      if (isPdfAttachment(file) && file.size > 3 * 1024 * 1024) {
+        pending = Promise.reject(new Error('PDFs must be 3 MB or smaller to attach. Save a smaller copy and try again.'));
+      } else {
+        pending = isImageAttachment(file)
+          ? imageFileToDataUrl(file, { maxDimension: 1536, maxBytes: 1_200_000 })
+          : readFileAsDataUrl(file);
+      }
+      preparedAttachmentDataRef.current.set(file, pending);
+      pending.catch(() => preparedAttachmentDataRef.current.delete(file));
+    }
+    return pending;
+  }, []);
+
+  const handleFileSelect = event => {
+    const selectedFiles = Array.from(event.currentTarget.files || []).map(normalizeAttachmentFile)
+      .slice(0, Math.max(0, 5 - attachments.length));
+    try {
+      addAttachments(selectedFiles);
+      selectedFiles.filter(file => isImageAttachment(file) || isPdfAttachment(file)).forEach(file => {
+        getAttachmentDataUrl(file).catch(error => console.warn('Could not prepare selected attachment:', error.message));
+      });
+    } finally {
+      event.currentTarget.value = null;
+    }
   };
 
   const handlePaste = useCallback(event => {
@@ -623,6 +668,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   }, [addAttachments]);
 
   const removeAttachment = (idx) => {
+    if (attachments[idx]) preparedAttachmentDataRef.current.delete(attachments[idx]);
     setAttachments(prev => prev.filter((_, i) => i !== idx));
   };
 
@@ -631,8 +677,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   }, [messages]);
 
   const sendMessage = useCallback(async (promptOverride = null) => {
-    const hasImageAttachment = attachments.some(file => file.type?.startsWith('image/'));
-    const basePrompt = String(promptOverride ?? inputPrompt).trim() || (hasImageAttachment ? 'Please analyze the attached image.' : '');
+    const hasAttachments = attachments.length > 0;
+    const basePrompt = String(promptOverride ?? inputPrompt).trim() || (hasAttachments ? 'Please analyze the attached image or document.' : '');
     if (!basePrompt || loading || sendingRef.current) return;
 
     const codeGenerationRequest = isCodeGenerationPrompt(basePrompt);
@@ -658,29 +704,32 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 
     // Keep image data separate from prompt text; only text document contents are appended.
     let fullPrompt = basePrompt;
-    let imagePayloads = [];
+    let attachmentPayloads = [];
     try {
-      const imageFiles = attachments.filter(file => file.type?.startsWith('image/'));
-      const textFiles = attachments.filter(file => !file.type?.startsWith('image/'));
-      imagePayloads = await Promise.all(imageFiles.map(async file => {
-        const base64 = await imageFileToDataUrl(file, { maxDimension: 1536, maxBytes: 1_200_000 });
-        const mimeType = base64.match(/^data:(image\/[^;]+);base64,/)?.[1] || 'image/jpeg';
+      const imageFiles = attachments.filter(isImageAttachment);
+      const pdfFiles = attachments.filter(isPdfAttachment);
+      const textFiles = attachments.filter(file => !isImageAttachment(file) && !isPdfAttachment(file));
+      attachmentPayloads = await Promise.all([...imageFiles, ...pdfFiles].map(async file => {
+        if (isPdfAttachment(file) && file.size > 3 * 1024 * 1024) {
+          throw new Error('PDFs must be 3 MB or smaller to attach. Save a smaller copy and try again.');
+        }
+        const base64 = await getAttachmentDataUrl(file);
+        const mimeType = base64.match(/^data:([^;]+);base64,/)?.[1] || attachmentMimeType(file);
         return { name: file.name, mimeType, base64 };
       }));
+      if (pdfFiles.length) {
+        fullPrompt += `\n\nAttached PDF document${pdfFiles.length === 1 ? '' : 's'}: ${pdfFiles.map(file => file.name).join(', ')}. Use the document content to answer the user's question.`;
+      }
       if (textFiles.length > 0) {
         const fileContents = await Promise.all(textFiles.map(async file => {
-          try {
-            const content = await apiRouter.readFileContent(file);
-            return `\n\n**File: ${file.name}**\n\`\`\`\n${content}\n\`\`\``;
-          } catch (err) {
-            return `\n\n[Could not read ${file.name}: ${err.message}]`;
-          }
+          const content = await apiRouter.readFileContent(file);
+          return `\n\n**File: ${file.name}**\n\`\`\`\n${content}\n\`\`\``;
         }));
         fullPrompt = basePrompt + fileContents.join('');
       }
     } catch (error) {
       sendingRef.current = false;
-      alert(error.message || 'Could not read the attached image. Please choose another file.');
+      alert(error.message || 'Could not read the attached file. Please choose another file.');
       return;
     }
 
@@ -709,6 +758,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     };
     setMessages(newMessages);
     setInputPrompt('');
+    attachments.forEach(file => preparedAttachmentDataRef.current.delete(file));
     setAttachments([]);
     setLoading(true);
     setShowThinking(true);
@@ -752,7 +802,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           contextMemory,
           aiBrain,
           userVault,
-          attachments: imagePayloads,
+          attachments: attachmentPayloads,
           onToken: token => {
             if (!token) return;
             streamedText += token;
@@ -872,7 +922,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       setLoading(false);
       sendingRef.current = false;
     }
-  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, buildContextMessages, isPro, checkUsage, recordUsage, setIsUsageModalOpen, setIsPricingModalOpen, onUpdateSession]);
+  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, buildContextMessages, getAttachmentDataUrl, isPro, checkUsage, recordUsage, setIsUsageModalOpen, setIsPricingModalOpen, onUpdateSession]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -935,7 +985,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 px-3 pt-3" aria-label="Attached files">
               {attachments.map((file, i) => {
-                const previewUrl = attachmentPreviewUrls.get(file);
+                const previewUrl = isImageAttachment(file) ? attachmentPreviewUrls.get(file) : null;
                 return (
                   <div key={`${file.name}-${file.lastModified}-${i}`} className="group relative flex h-14 max-w-[13rem] items-center gap-2 overflow-hidden rounded-xl border border-sky-200/60 bg-sky-50/80 pr-8 text-xs text-sky-800 dark:border-sky-800/50 dark:bg-sky-950/30 dark:text-sky-300">
                     {previewUrl ? (
@@ -1020,8 +1070,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
               >
                 <Camera className="w-3.5 h-3.5" />
               </button>
-              <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileAttach} accept="image/*,.txt,.md,.csv,.json,.pdf" />
-              <input ref={cameraInputRef} type="file" className="hidden" onChange={handleFileAttach} accept="image/*" capture="environment" />
+              <input ref={fileInputRef} type="file" multiple className="hidden" style={{ display: 'none' }} onChange={handleFileSelect} accept="image/*,.pdf,.txt,.doc,.docx,.csv,.md,.json" />
+              <input ref={cameraInputRef} type="file" className="hidden" style={{ display: 'none' }} onChange={handleFileSelect} accept="image/*" capture="environment" />
 
               {/* Mic */}
               <button
@@ -1053,9 +1103,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             {/* Right: Send Button */}
             <button
               onClick={() => sendMessage()}
-              disabled={(!inputPrompt.trim() && !attachments.some(file => file.type?.startsWith('image/'))) || loading}
+              disabled={(!inputPrompt.trim() && !attachments.length) || loading}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-semibold transition-all duration-200 ${
-                (inputPrompt.trim() || attachments.some(file => file.type?.startsWith('image/'))) && !loading
+                (inputPrompt.trim() || attachments.length > 0) && !loading
                   ? 'azure-gradient-btn text-white shadow-md'
                   : 'bg-slate-100 dark:bg-slate-800/60 text-slate-400 cursor-not-allowed'
               }`}

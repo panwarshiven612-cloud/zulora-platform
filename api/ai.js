@@ -2,7 +2,7 @@ import { createPublicKey, createSign, verify as verifySignature } from 'node:cry
 import { GEMINI_KEYS, apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from '../src/services/systemPrompt.js';
 import { AI_STUDIO_SYSTEM_PROMPT } from '../src/services/aiStudioPrompt.js';
-import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_FLASH_MODEL_ID, GEMINI_MODEL_FALLBACKS, GEMINI_PRO_MODEL_FALLBACKS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId } from '../src/services/aiModels.js';
+import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_FLASH_MODEL_ID, GEMINI_MODEL_FALLBACKS, GEMINI_PRO_MODEL_FALLBACKS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from '../src/services/aiModels.js';
 import { buildImagePrompt } from '../src/services/imageGen.js';
 
 export const maxDuration = 60;
@@ -15,8 +15,8 @@ const GEMINI_HIGH_CAPACITY_MODEL = process.env.GEMINI_HIGH_CAPACITY_MODEL || GEM
 const GEMINI_FLASH_VARIANTS = [...new Set([GEMINI_HIGH_CAPACITY_MODEL, ...GEMINI_MODEL_FALLBACKS])];
 const CHAT_WINDOW_MS = 4 * 60 * 60 * 1000;
 const CHAT_REQUEST_LIMIT = 60;
-const TOKEN_LIMITS = { free: 2_000_000, pro: 4_000_000, ultra: 8_000_000 };
-const TOKEN_WINDOW_MS = CHAT_WINDOW_MS;
+const TOKEN_LIMITS = { free: 50_000, pro: 200_000, ultra: 8_000_000 };
+const TOKEN_WINDOW_MS = 6 * 60 * 60 * 1000;
 let cachedFirestoreToken = null;
 let cachedFirebaseCertificates = null;
 
@@ -456,12 +456,7 @@ const parseRetryAfter = response => {
 };
 
 function attachmentParts(attachments = []) {
-  return attachments.filter(item => /^image\/(png|jpe?g|webp|gif)$/i.test(item.mimeType || '') && item.base64)
-    .map(item => {
-      const match = String(item.base64).match(/^data:([^;]+);base64,(.+)$/);
-      if (!match) return null;
-      return { mimeType: match[1], data: match[2] };
-    }).filter(Boolean);
+  return attachments.map(toGeminiInlineData).filter(Boolean);
 }
 
 function plainMessages(messages, systemPrompt) {
@@ -602,7 +597,7 @@ async function tryGemini(messages, options = {}) {
   const contents = messages.filter(message => message.role !== 'system').map(message => ({
     role: message.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: message.content }, ...(message.role === 'user' && parts.length && message === messages.filter(item => item.role !== 'system').at(-1)
-      ? parts.map(part => ({ inline_data: { mime_type: part.mimeType, data: part.data } })) : [])]
+      ? parts.map(part => ({ inlineData: { mimeType: part.mimeType, data: part.data } })) : [])]
   }));
   if (!contents.length) contents.push({ role: 'user', parts: [{ text: 'Hello' }] });
   const keys = options.recheckCoolingKeys
@@ -728,7 +723,7 @@ async function generateChat(body, streamOptions = {}) {
   ].filter(Boolean).join('\n\n');
   const messages = plainMessages(body.messages, systemPrompt);
   const attachments = attachmentParts(body.attachments);
-  if (body.attachments?.length && !attachments.length) throw new Error('The attached image format is unsupported. Use PNG, JPEG, WebP, or GIF.');
+  if (body.attachments?.length && !attachments.length) throw new Error('The attached image or PDF format is unsupported. Use PNG, JPEG, WebP, GIF, or PDF.');
   const vision = attachments.length > 0;
   const latestUserPrompt = [...messages].reverse().find(message => message.role === 'user')?.content || '';
   const coding = isCodeGenerationRequest({ messages: [{ role: 'user', content: latestUserPrompt }] });
@@ -741,7 +736,9 @@ async function generateChat(body, streamOptions = {}) {
     : requestedPreference === 'gemini' ? (coding || complex ? GEMINI_PRO_MODEL_ID : GEMINI_FLASH_MODEL)
       : flagship || useProModel ? GEMINI_PRO_MODEL_ID : GEMINI_FAST_MODEL;
   const groqModel = 'llama-3.3-70b-versatile';
-  const order = chooseChatOrder(preference, requestedPreference === 'auto');
+  const order = attachments.length
+    ? ['gemini']
+    : chooseChatOrder(preference, requestedPreference === 'auto');
   for (const provider of order) {
     try {
       const result = provider === 'gemini'
@@ -780,7 +777,7 @@ async function generateChat(body, streamOptions = {}) {
     }
   }
   if (!availableProviders().length) throw new Error('No text-generation providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.');
-  throw new Error(vision ? 'Image analysis providers are unavailable. Please retry shortly.' : 'All configured AI providers are unavailable. Check the server provider keys and retry.');
+  throw new Error(vision ? 'Image and PDF analysis require an available Gemini provider. Please retry shortly.' : 'All configured AI providers are unavailable. Check the server provider keys and retry.');
 }
 
 function parseDataImage(dataUrl) {
@@ -1295,7 +1292,7 @@ export default async function handler(req, res) {
         chatResetAt: bucket.chatRequestTimes.length ? new Date(bucket.chatResetAt).toISOString() : null
       };
       if (type === 'chat' && bucket.chatRemaining <= 0) return safeError(res, 429, 'You have used all 60 chat requests in this rolling 4-hour window.', { upgradeRequired: false, usage: { ...status, blocked: true } });
-      if (!bucket.allowed && !flagshipRequest) return safeError(res, 429, 'Your four-hour AI token allocation is used. It refreshes automatically as earlier requests expire.', { upgradeRequired: false, usage: { ...status, blocked: true } });
+      if (!bucket.allowed && !flagshipRequest) return safeError(res, 429, 'Your six-hour AI token allocation is used. It refreshes automatically as earlier usage expires.', { upgradeRequired: false, usage: { ...status, blocked: true } });
       return json(res, 200, { allowance: { type, allowed: true, planTier: before.planTier, usage: { ...status, blocked: false } } });
     }
 
@@ -1322,7 +1319,7 @@ export default async function handler(req, res) {
         } else {
           if (!flagshipRequest) {
             const tokenState = await readTokenUsageState(uid);
-            if (!tokenState.allowed) return safeError(res, 429, 'Your four-hour AI token allocation is used. It refreshes automatically as earlier requests expire.', { upgradeRequired: false, usage: { blocked: true, usedPercent: 100, resetAt: new Date(tokenState.resetAt).toISOString() } });
+            if (!tokenState.allowed) return safeError(res, 429, 'Your six-hour AI token allocation is used. It refreshes automatically as earlier usage expires.', { upgradeRequired: false, usage: { blocked: true, usedPercent: 100, resetAt: new Date(tokenState.resetAt).toISOString() } });
           }
           usageTrackingAvailable = true;
         }
@@ -1343,7 +1340,7 @@ export default async function handler(req, res) {
         const promptRate = await registerPromptAttempt(uid, estimatedReservationTokens(body), flagshipRequest);
         if (!promptRate.allowed) {
           if (promptRate.requestLimit) return safeError(res, 429, 'You have used all 60 chat requests in this rolling 4-hour window.', { upgradeRequired: false, usage: { blocked: true, ...promptRate } });
-          return safeError(res, 429, 'Your four-hour AI token allocation is used. It refreshes automatically as earlier requests expire.', { upgradeRequired: false, usage: { blocked: true, ...promptRate } });
+          return safeError(res, 429, 'Your six-hour AI token allocation is used. It refreshes automatically as earlier usage expires.', { upgradeRequired: false, usage: { blocked: true, ...promptRate } });
         }
         chatReservationId = promptRate.reservationId;
       } catch (error) {

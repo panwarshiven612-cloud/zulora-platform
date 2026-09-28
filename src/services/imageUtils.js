@@ -1,4 +1,4 @@
-function readAsDataUrl(file) {
+export function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => typeof reader.result === 'string'
@@ -13,7 +13,7 @@ function readAsDataUrl(file) {
 export async function imageFileToDataUrl(file, { maxDimension = 1280, maxBytes = 900_000 } = {}) {
   if (!file?.type?.startsWith('image/')) throw new Error('Choose an image file.');
 
-  const originalDataUrl = await readAsDataUrl(file);
+  const originalDataUrl = await readFileAsDataUrl(file);
   const supportedInlineImage = /^image\/(?:png|jpe?g|webp|gif)$/i.test(file.type);
   if (supportedInlineImage && file.size <= maxBytes) return originalDataUrl;
 

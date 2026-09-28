@@ -78,7 +78,7 @@ export async function generateVideo(arg1, arg2 = {}) {
   const allowance = await checkGenerationAllowance('video', options.currentUser);
   if (allowance && !allowance.allowed) {
     throw new GenerationApiError(
-      allowance.usage?.blocked ? 'Your rolling four-hour usage limit is reached. Earlier requests will return to your balance automatically.' : 'Video generation is currently unavailable.',
+      allowance.usage?.blocked ? 'Your rolling usage limit is reached. Capacity returns automatically as earlier usage expires.' : 'Video generation is currently unavailable.',
       allowance.usage?.blocked ? 429 : 403,
       { ...allowance, upgradeRequired: Boolean(allowance.usage?.blocked || allowance.upgradeRequired) }
     );

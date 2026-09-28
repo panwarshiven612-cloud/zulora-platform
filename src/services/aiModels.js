@@ -36,6 +36,14 @@ export const GEMINI_MODEL_FALLBACKS = Object.freeze([
 
 const GEMINI_MODEL_IDS = new Set(GEMINI_MODELS.map(model => model.id));
 
+export function toGeminiInlineData(attachment) {
+  const source = String(attachment?.base64 || '');
+  const match = source.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=\r\n]+)$/i);
+  const mimeType = String(attachment?.mimeType || match?.[1] || '').toLowerCase();
+  if (!match || !(/^(?:image\/(?:png|jpe?g|webp|gif)|application\/pdf)$/i.test(mimeType))) return null;
+  return { mimeType, data: match[2].replace(/\s/g, '') };
+}
+
 export function normalizeGeminiModelId(value) {
   const id = String(value || '').trim().toLowerCase();
   return GEMINI_MODEL_IDS.has(id) ? id : null;

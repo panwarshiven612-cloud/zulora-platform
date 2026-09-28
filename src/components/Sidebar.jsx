@@ -82,17 +82,16 @@ export const Sidebar = ({
     return () => clearInterval(interval);
   }, [currentUser?.uid]);
 
-  // Exact rolling-window countdown from the server, with local activity as fallback.
+  // Token balance reset uses the earliest active event in the rolling six-hour window.
   useEffect(() => {
     const updateCountdown = () => {
-      const serverReset = Date.parse(serverUsage?.chatResetAt || '');
-      const localReset = Number(safeUsage.chatResetAt) || (Number(safeUsage.chatWindowStart) ? Number(safeUsage.chatWindowStart) + 4 * 60 * 60 * 1000 : 0);
+      const serverReset = Date.parse(serverUsage?.resetAt || '');
+      const localReset = Number(safeUsage.tokenResetAt) || (Number(safeUsage.tokenWindowStart) ? Number(safeUsage.tokenWindowStart) + 6 * 60 * 60 * 1000 : 0);
       const resetAt = Number.isFinite(serverReset) && serverReset > 0 ? serverReset : localReset;
       const msLeft = Math.max(0, resetAt - Date.now());
-      const chatCount = Number(serverUsage?.chatCount ?? safeUsage.chatCount ?? safeUsage.textUsed) || 0;
-      const chatLimit = Number(serverUsage?.chatLimit ?? safeLimits.chat) || 60;
-      if (!resetAt || chatCount === 0) {
-        setResetCountdown(`${chatLimit} requests available`);
+      const tokenCount = Math.max(0, Number(serverUsage?.usedTokens ?? safeUsage.tokenUsed) || 0);
+      if (!resetAt || tokenCount === 0) {
+        setResetCountdown('');
         return;
       }
 
@@ -111,7 +110,7 @@ export const Sidebar = ({
     updateCountdown();
     const timer = setInterval(updateCountdown, 1000);
     return () => clearInterval(timer);
-  }, [safeUsage.chatWindowStart, safeUsage.chatResetAt, safeUsage.chatCount, safeUsage.textUsed, safeLimits.chat, serverUsage?.chatResetAt, serverUsage?.chatCount, serverUsage?.chatLimit]);
+  }, [safeUsage.tokenResetAt, safeUsage.tokenWindowStart, safeUsage.tokenUsed, serverUsage?.resetAt, serverUsage?.usedTokens]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setClockNow(Date.now()), 30_000);
@@ -167,9 +166,12 @@ export const Sidebar = ({
     return diff >= oneDay && diff < sevenDays;
   });
   const olderSessions = sessions.filter(s => now - (s.updatedAt || 0) >= sevenDays);
-  const tokenCap = tier === TIERS.ULTRA ? 8_000_000 : tier === TIERS.PRO ? 4_000_000 : 2_000_000;
+  const defaultTokenCap = tier === TIERS.ULTRA ? 8_000_000 : tier === TIERS.PRO ? 200_000 : 50_000;
+  const tokenCap = Number(serverUsage?.tokenLimit) || defaultTokenCap;
   const tokenWindowStart = Number(safeUsage.tokenWindowStart) || clockNow;
-  const tokenWindowExpired = clockNow - tokenWindowStart >= 4 * 60 * 60 * 1000 || tokenWindowStart > clockNow;
+  const tokenWindowExpired = clockNow - tokenWindowStart >= 6 * 60 * 60 * 1000 || tokenWindowStart > clockNow;
+  const tokenUsed = Math.max(0, Number(serverUsage?.usedTokens ?? (tokenWindowExpired ? 0 : safeUsage.tokenUsed)) || 0);
+  const tokensRemaining = Math.max(0, tokenCap - tokenUsed);
   const tokenPercent = Number.isFinite(Number(serverUsage?.usedPercent))
     ? Math.max(0, Math.min(100, Number(serverUsage.usedPercent)))
     : tokenWindowExpired ? 0 : Math.max(0, Math.min(100, Math.floor(((Number(safeUsage.tokenUsed) || 0) / tokenCap) * 100)));
@@ -400,7 +402,7 @@ export const Sidebar = ({
             </span>
             <span className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1">
               <Clock className="w-3 h-3 text-slate-400" />
-              <span>Chat resets in {resetCountdown}</span>
+              <span>{tokenUsed > 0 ? `Tokens reset in ${resetCountdown}` : '6-hour token window'}</span>
             </span>
           </div>
 
@@ -419,10 +421,10 @@ export const Sidebar = ({
             ))}
           </div>
 
-          {/* Daily token allocation */}
+          {/* Rolling six-hour token allocation */}
           <div>
             <div className="flex justify-between text-[10px] text-slate-500 dark:text-slate-400 mb-1">
-              <span>4-hour token usage</span>
+              <span>{tokenCap.toLocaleString()} Tokens / 6 Hours</span>
               <span>{tokenPercent}% used</span>
             </div>
             <div className="w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
@@ -431,6 +433,7 @@ export const Sidebar = ({
                 style={{ width: `${tokenPercent}%` }}
               />
             </div>
+            <p className="mt-1 text-right text-[9px] text-slate-500 dark:text-slate-400">{tokensRemaining.toLocaleString()} tokens remaining</p>
           </div>
 
           {/* Action buttons */}

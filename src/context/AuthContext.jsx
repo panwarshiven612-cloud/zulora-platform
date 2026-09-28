@@ -29,6 +29,7 @@ const SAFE_AUTH_CONTEXT = {
 const AuthContext = createContext(SAFE_AUTH_CONTEXT);
 const PROFILE_TIMEOUT_MS = 8_000;
 const AUTH_BOOTSTRAP_TIMEOUT_MS = 12_000;
+const TOKEN_WINDOW_MS = 6 * 60 * 60 * 1000;
 const LIGHT_THEME_MIGRATION_KEY = 'zulora_light_workspace_migrated_v1';
 const FALLBACK_AVATAR = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#38bdf8"/><stop offset="1" stop-color="#6366f1"/></linearGradient></defs><rect width="64" height="64" rx="18" fill="url(#g)"/><circle cx="32" cy="25" r="11" fill="#eaf7ff"/><path d="M12 58c2-13 9-20 20-20s18 7 20 20" fill="#eaf7ff"/></svg>')}`;
 
@@ -78,11 +79,14 @@ async function hydratePersistentUsage(uid, profile) {
   const now = Date.now();
   const localTokens = states.reduce((total, state) => total + state.tokenCount, 0);
   const storedStart = Number(usage.tokenWindowStart) || 0;
-  const storedIsCurrent = storedStart > 0 && storedStart <= now && now - storedStart < 24 * 60 * 60 * 1000;
+  const storedIsCurrent = storedStart > 0 && storedStart <= now && now - storedStart < TOKEN_WINDOW_MS;
   const storedTokens = storedIsCurrent ? Math.max(0, Number(usage.tokenUsed) || 0) : 0;
   const consumedTokens = Math.max(storedTokens, localTokens);
   const tokenStarts = states.map(state => state.tokenCount ? state.tokenWindowStart : 0).filter(Boolean);
   const tokenWindowStart = Math.min(...[storedIsCurrent ? storedStart : 0, ...tokenStarts].filter(Boolean)) || now;
+  const tokenResetTimes = states.map(state => state.tokenCount ? state.tokenResetAt : 0).filter(Boolean);
+  if (storedIsCurrent && storedStart) tokenResetTimes.push(storedStart + TOKEN_WINDOW_MS);
+  const tokenResetAt = Math.min(...tokenResetTimes) || now;
   types.forEach((type, index) => {
     const state = states[index];
     usage[`${type}Count`] = state.count;
@@ -93,6 +97,7 @@ async function hydratePersistentUsage(uid, profile) {
   });
   usage.tokenUsed = consumedTokens;
   usage.tokenWindowStart = tokenWindowStart;
+  usage.tokenResetAt = tokenResetAt;
   usage.tokenUsedPercent = Math.min(100, Math.floor((consumedTokens / tokenLimit) * 100));
   const hydrated = {
     ...profile,

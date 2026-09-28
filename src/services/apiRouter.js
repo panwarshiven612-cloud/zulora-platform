@@ -17,7 +17,7 @@ import { requestGeneration, requestGenerationStream, trackSuccessfulUsage, check
 import { generateVideo as generateVideoWithProviders } from './videoService';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from './systemPrompt';
 import { AI_STUDIO_SYSTEM_PROMPT } from './aiStudioPrompt';
-import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_FLASH_MODEL_ID, GEMINI_MODELS, GEMINI_MODEL_FALLBACKS, GEMINI_PRO_MODEL_FALLBACKS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId } from './aiModels';
+import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_FLASH_MODEL_ID, GEMINI_MODELS, GEMINI_MODEL_FALLBACKS, GEMINI_PRO_MODEL_FALLBACKS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from './aiModels';
 import { buildImagePrompt } from './imageGen';
 
 // ─── SAFE ENVIRONMENT EXTRACTOR ──────────────────────────────────────────────
@@ -352,7 +352,7 @@ const ensureGenerationAllowance = async (type, currentUser, requestContext = {})
   if (allowance && !allowance.allowed) {
     const hardLimit = Boolean(allowance.usage?.blocked || allowance.upgradeRequired);
     throw new GenerationApiError(
-      hardLimit ? 'Your rolling four-hour usage limit is reached. Earlier requests will return to your balance automatically.' : `${type} request is currently unavailable.`,
+      hardLimit ? 'Your rolling usage limit is reached. Capacity returns automatically as earlier usage expires.' : `${type} request is currently unavailable.`,
       hardLimit ? 429 : 403,
       { ...allowance, upgradeRequired: hardLimit }
     );
@@ -374,13 +374,11 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
     ...buildHistory(contextMessages),
     { role: 'user', content: prompt },
   ];
-  const imageParts = (options.attachments || []).map(item => {
-    const match = String(item.base64 || '').match(/^data:(image\/(?:png|jpe?g|webp|gif));base64,([A-Za-z0-9+/=]+)$/i);
-    return match ? { inline_data: { mime_type: match[1], data: match[2] } } : null;
-  }).filter(Boolean);
+  const inlineParts = (options.attachments || []).map(toGeminiInlineData).filter(Boolean)
+    .map(({ mimeType, data }) => ({ inlineData: { mimeType, data } }));
 
-  // Multimodal requests use Google's native endpoint so image bytes are sent as inline_data.
-  if (!imageParts.length) try {
+  // Multimodal requests use Google's native endpoint so image/PDF bytes are sent inline.
+  if (!inlineParts.length) try {
     const res = await fetchWithTimeout(
       'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
       {
@@ -437,7 +435,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
             role: m.role === 'assistant' ? 'model' : 'user',
             parts: [{ text: m.content }]
           })),
-          { role: 'user', parts: [{ text: prompt }, ...imageParts] }
+          { role: 'user', parts: [{ text: prompt }, ...inlineParts] }
         ],
         system_instruction: { parts: [{ text: providerSystemPrompt(options) }] },
         generationConfig: {
@@ -736,6 +734,57 @@ const tryPollinationsText = async (prompt, options = {}, contextMessages = []) =
 };
 
 // ─── MASTER UNIFIED ROUTER ───────────────────────────────────────────────────
+async function readDocxText(file) {
+  if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot unpack DOCX files. Save the document as PDF or plain text and attach that instead.');
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let endRecord = -1;
+  for (let offset = bytes.length - 22; offset >= Math.max(0, bytes.length - 65_557); offset -= 1) {
+    if (view.getUint32(offset, true) === 0x06054b50 && offset + 22 + view.getUint16(offset + 20, true) === bytes.length) {
+      endRecord = offset;
+      break;
+    }
+  }
+  if (endRecord < 0) throw new Error('This DOCX file is not a valid Word document.');
+
+  const entryCount = view.getUint16(endRecord + 10, true);
+  let cursor = view.getUint32(endRecord + 16, true);
+  const decoder = new TextDecoder();
+  for (let index = 0; index < entryCount && cursor + 46 <= bytes.length; index += 1) {
+    if (view.getUint32(cursor, true) !== 0x02014b50) break;
+    const method = view.getUint16(cursor + 10, true);
+    const compressedSize = view.getUint32(cursor + 20, true);
+    const nameLength = view.getUint16(cursor + 28, true);
+    const extraLength = view.getUint16(cursor + 30, true);
+    const commentLength = view.getUint16(cursor + 32, true);
+    const localOffset = view.getUint32(cursor + 42, true);
+    const entryName = decoder.decode(bytes.subarray(cursor + 46, cursor + 46 + nameLength));
+    cursor += 46 + nameLength + extraLength + commentLength;
+    if (entryName !== 'word/document.xml') continue;
+
+    if (view.getUint32(localOffset, true) !== 0x04034b50) throw new Error('Could not read the main text in this DOCX file.');
+    const localNameLength = view.getUint16(localOffset + 26, true);
+    const localExtraLength = view.getUint16(localOffset + 28, true);
+    const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+    const compressed = bytes.slice(dataStart, dataStart + compressedSize);
+    let xml;
+    if (method === 0) xml = decoder.decode(compressed);
+    else if (method === 8) {
+      const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      xml = await new Response(stream).text();
+    } else throw new Error('This DOCX compression format is not supported.');
+
+    const documentXml = new DOMParser().parseFromString(xml, 'application/xml');
+    if (documentXml.querySelector('parsererror')) throw new Error('Could not read the text in this DOCX file.');
+    const paragraphs = Array.from(documentXml.getElementsByTagNameNS('*', 'p')).map(paragraph =>
+      Array.from(paragraph.getElementsByTagNameNS('*', 't')).map(node => node.textContent || '').join('')
+    ).filter(Boolean);
+    if (!paragraphs.length) throw new Error('This DOCX file does not contain readable text.');
+    return paragraphs.join('\n');
+  }
+  throw new Error('Could not find readable document text in this DOCX file.');
+}
+
 export const apiRouter = {
   /**
    * Flexible generateChat supporting both:
@@ -823,7 +872,10 @@ export const apiRouter = {
       console.warn('[Chat] Server generation route unavailable; trying browser providers:', error.message);
     }
 
-    const providerOrder = requestedTier === 'groq' || requestedTier === 'llama'
+    const hasGeminiAttachments = (options.attachments || []).some(item => toGeminiInlineData(item));
+    const providerOrder = hasGeminiAttachments
+      ? ['gemini']
+      : requestedTier === 'groq' || requestedTier === 'llama'
       ? ['groq', 'gemini', 'cerebras', 'mistral', 'openrouter']
       : ['gemini', 'cerebras', 'groq', 'mistral', 'openrouter'];
     for (const provider of providerOrder) {
@@ -1104,8 +1156,17 @@ export const apiRouter = {
       throw new Error(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 8 MB.`);
     }
 
+    const mimeType = String(file.type || '').toLowerCase();
+    const extension = String(file.name || '').split('.').pop().toLowerCase();
+    if (extension === 'docx' || mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+      return readDocxText(file);
+    }
+    if (extension === 'doc' || mimeType === 'application/msword') {
+      throw new Error('Legacy .doc files cannot be reliably extracted in the browser. Save this document as PDF or DOCX and attach it again.');
+    }
+
     const textTypes = ['text/', 'application/json', 'application/xml', 'application/javascript', 'application/typescript'];
-    const isText = textTypes.some((t) => file.type.startsWith(t)) ||
+    const isText = textTypes.some((type) => mimeType.startsWith(type)) ||
       /\.(txt|md|csv|json|js|jsx|ts|tsx|py|java|cpp|c|cs|go|rs|php|rb|sh|yaml|yml|html|css|sql|xml)$/i.test(file.name);
 
     if (isText) {
@@ -1117,7 +1178,7 @@ export const apiRouter = {
       });
     }
 
-    if (file.type.startsWith('image/')) {
+    if (mimeType.startsWith('image/')) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (e) => resolve(`[Attached image: ${file.name}]\n${e.target.result}`);
@@ -1126,7 +1187,7 @@ export const apiRouter = {
       });
     }
 
-    if (file.type === 'application/pdf') {
+    if (mimeType === 'application/pdf' || extension === 'pdf') {
       return `[Attached PDF: ${file.name} (${(file.size / 1024).toFixed(0)} KB). You may ask questions regarding its structure or contents.]`;
     }
 
