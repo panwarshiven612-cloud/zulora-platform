@@ -11,9 +11,11 @@ let currentStepIndex = 0;
 let zuloraOrigin = null;
 let agentTabIds = new Set();
 let activeStepTabIds = new Set();
+let overlayTabIds = new Set();
 let activeTimers = new Map();
 let taskGeneration = 0;
 let cancelRequested = false;
+let taskCancelledByUser = false;
 let pausedAfterAction = false;
 let queueRunnerActive = false;
 const HEARTBEAT_ALARM = 'zulora-task-recovery-heartbeat';
@@ -37,6 +39,7 @@ async function restoreTaskState() {
     actionLog = Array.isArray(stored.actionLog) ? stored.actionLog : [];
     currentStepIndex = Math.max(0, Number(stored.currentStepIndex) || 0);
     agentTabIds = new Set(Array.isArray(stored.agentTabIds) ? stored.agentTabIds : []);
+    overlayTabIds = new Set([...agentTabIds]);
     pausedAfterAction = !!stored.pausedAfterAction;
     if (taskStatus === 'running') {
       taskStatus = 'paused';
@@ -84,16 +87,24 @@ function broadcastStatus() {
     taskStatus,
     actionLog: [...actionLog],
     currentStep: currentStepIndex,
-    totalSteps: taskQueue.length
+    totalSteps: taskQueue.length,
+    cancelled: taskCancelledByUser
   };
+  const targetIds = new Set([...overlayTabIds, ...activeStepTabIds]);
 
   chrome.tabs.query({}, (tabs) => {
     tabs.forEach(tab => {
-      if (tab.id && tab.url && isZuloraOrigin(tab.url)) {
+      if (tab.id && tab.url && (isZuloraOrigin(tab.url) || targetIds.has(tab.id))) {
         chrome.tabs.sendMessage(tab.id, payload).catch(() => {});
       }
     });
   });
+}
+
+function clearFloatingOverlays() {
+  const payload = { type: 'ZULORA_STATUS_UPDATE', taskStatus: 'idle', actionLog: [], currentStep: 0, totalSteps: 0 };
+  for (const tabId of overlayTabIds) chrome.tabs.sendMessage(tabId, payload).catch(() => {});
+  overlayTabIds.clear();
 }
 
 function isZuloraOrigin(url) {
@@ -126,6 +137,7 @@ function assertTaskActive(generation = taskGeneration) {
 function trackAgentTab(tab) {
   if (!tab?.id) return tab;
   agentTabIds.add(tab.id);
+  overlayTabIds.add(tab.id);
   void persistTaskState();
   if (cancelRequested) {
     chrome.tabs.remove(tab.id).catch(() => {});
@@ -143,16 +155,80 @@ async function createAgentTab(options) {
 }
 
 function markActiveStepTab(tab) {
-  if (tab?.id) activeStepTabIds.add(tab.id);
+  if (tab?.id) {
+    activeStepTabIds.add(tab.id);
+    overlayTabIds.add(tab.id);
+  }
   return tab;
 }
 
 async function ensureContentScript(tabId) {
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['lib/dom-selectors.js', 'content.js'] });
+    broadcastStatus();
   } catch (error) {
     throw new Error(`Could not load browser automation on this page: ${error.message}`);
   }
+}
+
+async function executeYoutubeSearch(query, generation = taskGeneration) {
+  const tab = await createAgentTab({ url: 'https://www.youtube.com', active: true });
+  markActiveStepTab(tab);
+  await waitForTabLoad(tab.id);
+  assertTaskActive(generation);
+  await ensureContentScript(tab.id);
+  broadcastStatus();
+  const [result] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: searchTerm => window.__ZULORA_CONTENT__?.searchAndOpenTopYoutubeVideo(searchTerm),
+    args: [query]
+  });
+  assertTaskActive(generation);
+  const details = result?.result;
+  if (!details?.success) throw new Error(details?.error || 'YouTube could not open the first matching video.');
+  log(`Opened and played the top YouTube result for: "${query}"`, 'done', details.title || details.url);
+  return { tabId: tab.id, result: details };
+}
+
+function parseOverlayVoiceTask(transcript, tabId) {
+  const text = String(transcript || '').trim();
+  if (!text) return [];
+  const urlMatch = text.match(/(?:open|go to|navigate to|visit)\s+(https?:\/\/\S+|[\w-]+\.[\w.-]+\S*)/i);
+  if (urlMatch) return [{ action: 'open_url', params: { url: /^https?:\/\//i.test(urlMatch[1]) ? urlMatch[1] : `https://${urlMatch[1]}` } }];
+  const youtubeMatch = text.match(/(?:youtube|play)\s+(?:search\s+(?:for\s+)?)?(.+)/i);
+  if (youtubeMatch) return [{ action: 'youtube_search', params: { query: youtubeMatch[1].trim() } }];
+  const googleMatch = text.match(/(?:search|google)\s+(?:google\s+)?(?:for\s+)?(.+)/i);
+  if (googleMatch) return [{ action: 'search_google', params: { query: googleMatch[1].trim(), openTopResult: /\b(?:open|click|go to)\b/i.test(text) } }];
+  if (/\b(read|summari[sz]e|analy[sz]e)\b.*\b(page|screen|website)\b/i.test(text)) return [{ action: 'read_page_dom', params: { tabId } }];
+  if (/\b(scroll)\b/i.test(text)) return [{ action: 'automate_page', params: { operation: 'scroll', direction: /\bup\b/i.test(text) ? 'up' : 'down', tabId } }];
+  const clickMatch = text.match(/\bclick\s+(?:on\s+)?(.+)/i);
+  if (clickMatch) return [{ action: 'automate_page', params: { operation: 'click', target: clickMatch[1].trim(), tabId } }];
+  const fillMatch = text.match(/(?:type|write|enter|fill)\s+(.+)/i);
+  if (fillMatch) return [{ action: 'automate_page', params: { operation: 'fill', text: fillMatch[1].trim(), tabId } }];
+  return [{ action: 'read_page_dom', params: { tabId } }];
+}
+
+async function handleOverlayVoice(transcript, tab) {
+  await stateReady;
+  const normalized = String(transcript || '').trim().toLowerCase();
+  if (/^(pause|pause task|hold on)$/.test(normalized)) return handleAgentTask({ type: 'ZULORA_PAUSE' });
+  if (/^(resume|continue|continue task)$/.test(normalized)) return handleAgentTask({ type: 'ZULORA_RESUME' });
+  if (/^(stop|stop task|cancel|cancel task|quit)$/.test(normalized)) return handleAgentTask({ type: 'ZULORA_CANCEL' });
+  if (taskStatus === 'running' || taskStatus === 'paused') return { ok: false, success: false, error: 'Stop the current task before starting a new voice command.' };
+  taskGeneration++;
+  cancelRequested = false;
+  taskCancelledByUser = false;
+  pausedAfterAction = false;
+  taskQueue = parseOverlayVoiceTask(transcript, tab?.id);
+  actionLog = [];
+  currentStepIndex = 0;
+  clearFloatingOverlays();
+  if (tab?.id) { overlayTabIds.add(tab.id); activeStepTabIds.add(tab.id); }
+  taskStatus = 'running';
+  void persistTaskState();
+  broadcastStatus();
+  void runQueue();
+  return { ok: true, success: true, queued: taskQueue.length };
 }
 
 async function getActiveTab(preferredTabId = null) {
@@ -222,6 +298,7 @@ async function executeStep(step, generation = taskGeneration) {
           url = 'https://' + url;
         }
         const tab = await createAgentTab({ url, active: params.active !== false });
+        markActiveStepTab(tab);
         await waitForTabLoad(tab.id);
         assertTaskActive(generation);
         await ensureContentScript(tab.id);
@@ -231,13 +308,43 @@ async function executeStep(step, generation = taskGeneration) {
 
       case 'search_google': {
         const query = params.query || '';
+        if (params.site === 'youtube' || params.platform === 'youtube' || /^\s*(?:youtube|on youtube)\s*:/i.test(query)) {
+          const youtubeQuery = query.replace(/^\s*(?:youtube|on youtube)\s*:\s*/i, '').replace(/^search\s+(?:for\s+)?/i, '').trim();
+          return executeYoutubeSearch(youtubeQuery || query, generation);
+        }
         const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
         const tab = await createAgentTab({ url, active: true });
+        markActiveStepTab(tab);
         await waitForTabLoad(tab.id);
         assertTaskActive(generation);
         await ensureContentScript(tab.id);
-        log(`Searched Google: "${query}"`, 'done');
-        return { tabId: tab.id };
+        let opened = null;
+        if (params.openTopResult !== false && params.stayOnResultsPage !== true) {
+          const [result] = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => window.__ZULORA_CONTENT__?.openTopGoogleResult()
+          });
+          opened = result?.result;
+          if (opened?.success && opened.url) {
+            await chrome.tabs.update(tab.id, { url: opened.url, active: true });
+            await waitForTabLoad(tab.id, 20000).catch(() => {});
+            assertTaskActive(generation);
+            await ensureContentScript(tab.id);
+          } else {
+            opened = null;
+          }
+        }
+        const [page] = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => ({ title: document.title, url: location.href, contentSnippet: document.body?.innerText?.slice(0, 3500) || '' })
+        });
+        const dom = page?.result;
+        log(opened ? `Opened top Google result for: "${query}"` : `Searched Google: "${query}"`, 'done', dom?.contentSnippet?.slice(0, 350) || opened?.url || 'Search results are ready.');
+        return { tabId: tab.id, dom };
+      }
+
+      case 'youtube_search': {
+        return executeYoutubeSearch(params.query || params.searchTerm || '', generation);
       }
 
       case 'switch_tab': {
@@ -271,7 +378,10 @@ async function executeStep(step, generation = taskGeneration) {
         });
         assertTaskActive(generation);
         const payload = result?.result;
-        log(`Browser action completed: ${params.operation || params.intent || 'read'}`, 'done', payload?.text?.slice(0, 350) || payload?.target || 'Page updated.');
+        if (!payload?.success && !['read', 'extract', 'analyze'].includes(String(params.operation || params.intent || '').toLowerCase())) {
+          throw new Error('The browser action could not be verified on the page.');
+        }
+        log(`Browser action completed: ${params.operation || params.intent || 'read'}`, 'done', payload?.text?.slice(0, 350) || payload?.target || (payload?.verified ? 'Page change verified.' : 'Page was observed; no visible change was detected.'));
         return { result: payload };
       }
 
@@ -396,7 +506,7 @@ async function executeStep(step, generation = taskGeneration) {
         const tab = await createAgentTab({ url: composeUrl, active: true });
         markActiveStepTab(tab);
         await waitForTabLoad(tab.id);
-        await taskSleep(1800, generation); // Give the Gmail SPA time to hydrate
+        await taskSleep(400, generation);
         assertTaskActive(generation);
         await ensureContentScript(tab.id);
 
@@ -420,6 +530,7 @@ async function executeStep(step, generation = taskGeneration) {
         });
 
         assertTaskActive(generation);
+        if (!res?.result?.success) throw new Error(res?.result?.error || 'Gmail compose fields were not ready.');
         log(`Gmail Draft Prepared (${params.template || 'Rich HTML'}) → ${params.to || 'recipient'}`, 'done');
         return { tabId: tab.id, details: res?.result };
       }
@@ -430,7 +541,7 @@ async function executeStep(step, generation = taskGeneration) {
         if (!gmailTab) {
           gmailTab = await createAgentTab({ url: 'https://mail.google.com/mail/u/0/#inbox', active: true });
           await waitForTabLoad(gmailTab.id);
-          await taskSleep(1800, generation);
+          await taskSleep(400, generation);
           assertTaskActive(generation);
         }
         markActiveStepTab(gmailTab);
@@ -460,11 +571,11 @@ async function executeStep(step, generation = taskGeneration) {
         if (!waTab) {
           waTab = await createAgentTab({ url: 'https://web.whatsapp.com', active: true });
           await waitForTabLoad(waTab.id);
-          await taskSleep(2500, generation);
+          await taskSleep(400, generation);
           assertTaskActive(generation);
         } else {
           await chrome.tabs.update(waTab.id, { active: true });
-          await taskSleep(700, generation);
+          await taskSleep(400, generation);
           assertTaskActive(generation);
         }
         markActiveStepTab(waTab);
@@ -482,6 +593,7 @@ async function executeStep(step, generation = taskGeneration) {
         });
 
         assertTaskActive(generation);
+        if (!res?.result?.success) throw new Error(res?.result?.error || 'WhatsApp could not confirm the message input.');
         log(`WhatsApp: Message sent to "${params.recipient || 'recipient'}"`, 'done');
         return { tabId: waTab.id, result: res?.result };
       }
@@ -491,7 +603,7 @@ async function executeStep(step, generation = taskGeneration) {
         const tab = await createAgentTab({ url: 'https://chatgpt.com', active: true });
         markActiveStepTab(tab);
         await waitForTabLoad(tab.id);
-        await taskSleep(1800, generation);
+        await taskSleep(400, generation);
         assertTaskActive(generation);
         await ensureContentScript(tab.id);
 
@@ -515,7 +627,7 @@ async function executeStep(step, generation = taskGeneration) {
         const tab = await createAgentTab({ url: 'https://gemini.google.com/app', active: true });
         markActiveStepTab(tab);
         await waitForTabLoad(tab.id);
-        await taskSleep(1800, generation);
+        await taskSleep(400, generation);
         assertTaskActive(generation);
         await ensureContentScript(tab.id);
 
@@ -624,6 +736,7 @@ function humanLabel(action, params) {
     switch_tab:      `Switch Tab (${params.urlContains})`,
     close_tab:       `Close Tab`,
     search_google:   `Google: "${params.query}"`,
+    youtube_search:  `YouTube: Search and play "${params.query || params.searchTerm}"`,
     type_text:       `Type into ${params.selector}`,
     click_element:   `Click ${params.selector}`,
     extract_content: `Extract page text`,
@@ -647,6 +760,11 @@ function humanLabel(action, params) {
 
 // ─── Queue Runner ─────────────────────────────────────────────────────────────
 async function runQueue() {
+  if (queueRunnerActive) {
+    taskStatus = 'running';
+    broadcastStatus();
+    return;
+  }
   taskStatus = 'running';
   queueRunnerActive = true;
   void persistTaskState();
@@ -704,13 +822,20 @@ async function handleAgentTask(payload) {
 
   // Task queue execution
   if (payload.type === 'ZULORA_RUN_TASK' || payload.steps) {
+    if (queueRunnerActive) {
+      return { ok: false, success: false, error: 'A browser task is already running. Stop or pause it before starting another.' };
+    }
     const steps = payload.steps || (Array.isArray(payload) ? payload : []);
     taskGeneration++;
     cancelRequested = false;
+    taskCancelledByUser = false;
     pausedAfterAction = false;
     taskQueue        = Array.isArray(steps) ? steps : [];
     actionLog        = [];
     currentStepIndex = 0;
+    clearFloatingOverlays();
+    activeStepTabIds.clear();
+    agentTabIds.clear();
     taskStatus       = 'running';
     void persistTaskState();
     runQueue();
@@ -740,6 +865,7 @@ async function handleAgentTask(payload) {
   if (payload.type === 'ZULORA_CANCEL') {
     taskGeneration++;
     cancelRequested = true;
+    taskCancelledByUser = true;
     for (const [timer, resolve] of activeTimers) {
       clearTimeout(timer);
       resolve(true);
@@ -757,6 +883,7 @@ async function handleAgentTask(payload) {
     queueRunnerActive = false;
     void persistTaskState();
     broadcastStatus();
+    overlayTabIds.clear();
     return { ok: true, success: true, status: 'idle' };
   }
 
@@ -782,6 +909,7 @@ async function handleAgentTask(payload) {
   const step = payload.step || (payload.action ? payload : null);
   if (step && step.action) {
     cancelRequested = false;
+    taskCancelledByUser = false;
     taskGeneration++;
     const result = await executeStep(step, taskGeneration);
     return { ok: true, success: true, ...result };
@@ -790,6 +918,7 @@ async function handleAgentTask(payload) {
   const action = payload.action || (payload.type !== 'EXECUTE_ACTION' && payload.type !== 'EXECUTE_STEP' ? payload.type : null);
   if (action && typeof executeStep === 'function') {
     cancelRequested = false;
+    taskCancelledByUser = false;
     taskGeneration++;
     const result = await executeStep(payload, taskGeneration);
     return { ok: true, success: true, ...result };
@@ -808,6 +937,13 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
 
 // ─── Internal Message Handler (from content scripts & bridge) ─────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'ZULORA_OVERLAY_VOICE') {
+    handleOverlayVoice(message.transcript, sender?.tab)
+      .then((result) => sendResponse({ success: true, ok: true, data: result, ...(result && typeof result === 'object' ? result : {}) }))
+      .catch((err) => sendResponse({ success: false, ok: false, error: err.message }));
+    return true;
+  }
+
   if (message.type === 'EXECUTE_ACTION' || message.type === 'EXECUTE_STEP') {
     handleAgentTask(message.payload)
       .then((result) => sendResponse({ success: true, ok: true, data: result, ...(result && typeof result === 'object' ? result : {}) }))

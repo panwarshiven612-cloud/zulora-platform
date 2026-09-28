@@ -8,6 +8,7 @@ import {
 import {
   checkExtensionConnected,
   executeCommand,
+  runTask,
   pauseTask,
   resumeTask,
   cancelTask,
@@ -63,10 +64,73 @@ const INSTALL_STEPS = [
 ];
 
 const FREE_TASK_LIMIT = 5;
+const PRO_TASK_LIMIT = 50;
+const TASK_HISTORY_KEY = 'zulora_plugin_task_history';
+
+function localDayKey() {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function dailyTaskStorageKey(userId) {
+  return `zulora_plugin_daily_tasks_${userId || 'anonymous'}`;
+}
+
+function readDailyTaskCount(userId) {
+  try {
+    const record = JSON.parse(localStorage.getItem(dailyTaskStorageKey(userId)) || '{}');
+    return record.day === localDayKey() ? Math.max(0, Number(record.count) || 0) : 0;
+  } catch { return 0; }
+}
+
+function formatTokenReset(resetAt, now) {
+  const remaining = Number(resetAt) - now;
+  if (!Number.isFinite(remaining) || remaining <= 0) return 'refreshing soon';
+  const hours = Math.floor(remaining / 3600000);
+  const minutes = Math.floor((remaining % 3600000) / 60000);
+  return hours ? `resets in ${hours}h ${minutes}m` : `resets in ${minutes}m`;
+}
+
+function tokenStorageKey(userId) {
+  return `zulora_plugin_token_usage_${userId || 'anonymous'}`;
+}
+
+function readTokenUsage(userId) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(tokenStorageKey(userId)) || 'null');
+    if (stored && Number(stored.resetAt) > 0 && Date.now() >= Number(stored.resetAt)) return 0;
+    if (stored && Number.isFinite(Number(stored.count))) return Math.max(0, Number(stored.count));
+  } catch {}
+  return Math.max(0, Number(sessionStorage.getItem('zulora_plugin_session_tokens')) || 0);
+}
+
+function persistTokenUsage(userId, count, resetAt = 0) {
+  const safeCount = Math.max(0, Number(count) || 0);
+  try {
+    localStorage.setItem(tokenStorageKey(userId), JSON.stringify({ count: safeCount, resetAt: Number(resetAt) || 0 }));
+    sessionStorage.setItem('zulora_plugin_session_tokens', String(safeCount));
+  } catch {}
+}
+
+function getYoutubeSearchQuery(command) {
+  const text = String(command || '').trim();
+  const patterns = [
+    /(?:search|find)\s+(?:for\s+)?(.+?)\s+on\s+youtube\b/i,
+    /\byoutube\b.*?\b(?:search|for)\s+(.+)$/i,
+    /\b(?:youtube|search\s+youtube)\s+(?:search\s+)?(?:for\s+)?(.+)$/i,
+    /\bplay(?:\s+(?:the\s+)?(?:top|first)?\s*video)?\s+(?:on\s+youtube\s+)?(?:about\s+)?(.+)$/i
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const query = match?.[1]?.replace(/\s+on\s+youtube.*$/i, '').trim();
+    if (query) return query;
+  }
+  return '';
+}
 
 // ─── Component ────────────────────────────────────────────────────────────────
 const ComputerPluginModal = ({ isOpen, onClose }) => {
-  const { isPro, setIsPricingModalOpen, currentUser } = useAuth();
+  const { isPro, setIsPricingModalOpen, currentUser, usage = {} } = useAuth();
 
   const [isConnected, setIsConnected] = useState(false);
   const [checkingConnection, setCheckingConnection] = useState(false);
@@ -80,19 +144,57 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   const [parsedPreview, setParsedPreview] = useState([]);
   const [showPreview, setShowPreview] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [tokenClock, setTokenClock] = useState(Date.now());
 
   // Token Tracking & Gatekeeper state
   const [sessionTokens, setSessionTokens] = useState(() => {
-    return parseInt(sessionStorage.getItem('zulora_plugin_session_tokens') || '0', 10);
+    return readTokenUsage(currentUser?.uid);
   });
   const [taskCount, setTaskCount] = useState(() => {
-    return parseInt(localStorage.getItem('zulora_plugin_task_count') || '0', 10);
+    return readDailyTaskCount(currentUser?.uid);
   });
   const [showUpgradeGate, setShowUpgradeGate] = useState(false);
 
   const logEndRef = useRef(null);
   const inputRef  = useRef(null);
   const recognitionRef = useRef(null);
+  const voiceSilenceTimerRef = useRef(null);
+  const voiceTranscriptRef = useRef('');
+  const handleRunRef = useRef(null);
+  const appliedTokenResetRef = useRef(0);
+  const isRunningRef = useRef(false);
+  const taskLimit = isPro ? PRO_TASK_LIMIT : FREE_TASK_LIMIT;
+  const tokenResetAt = Number(usage?.tokenResetAt) || 0;
+
+  useEffect(() => {
+    setTaskCount(readDailyTaskCount(currentUser?.uid));
+    const interval = setInterval(() => {
+      const nextCount = readDailyTaskCount(currentUser?.uid);
+      setTaskCount(previous => previous === nextCount ? previous : nextCount);
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [currentUser?.uid]);
+
+  useEffect(() => {
+    const interval = setInterval(() => setTokenClock(Date.now()), 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    setSessionTokens(readTokenUsage(currentUser?.uid));
+  }, [currentUser?.uid, tokenResetAt]);
+
+  useEffect(() => {
+    if (!tokenResetAt) return;
+    if (tokenClock < tokenResetAt) {
+      if (appliedTokenResetRef.current === tokenResetAt) appliedTokenResetRef.current = 0;
+      return;
+    }
+    if (appliedTokenResetRef.current === tokenResetAt) return;
+    appliedTokenResetRef.current = tokenResetAt;
+    setSessionTokens(0);
+    persistTokenUsage(currentUser?.uid, 0, 0);
+  }, [tokenResetAt, tokenClock, currentUser?.uid]);
 
   // ── Extension Connection Check ──────────────────────────────────────────────
   const checkConnection = useCallback(async () => {
@@ -114,6 +216,8 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     return () => {
       clearInterval(interval);
       window.removeEventListener('ZULORA_PLUGIN_CONNECTED', onReady);
+      clearTimeout(voiceSilenceTimerRef.current);
+      recognitionRef.current?.stop?.();
     };
   }, [isOpen, checkConnection]);
 
@@ -124,8 +228,14 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
         setTaskStatus(data.taskStatus);
         setActionLog(data.actionLog || []);
         if (data.taskStatus === 'done' || data.taskStatus === 'error') {
+          isRunningRef.current = false;
           setIsRunning(false);
           setIsLogOpen(true);
+        }
+        if (data.cancelled && isRunningRef.current) {
+          isRunningRef.current = false;
+          setIsRunning(false);
+          void cancelTask();
         }
       }
       if (data.type === 'ZULORA_LOGIN_REQUIRED') {
@@ -147,12 +257,27 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
       setShowPreview(false);
       return;
     }
-    const steps = parseCommandToSteps(command);
+    const youtubeQuery = getYoutubeSearchQuery(command);
+    const steps = youtubeQuery
+      ? [{ action: 'youtube_search', app: 'YouTube', params: { query: youtubeQuery } }]
+      : parseCommandToSteps(command);
     setParsedPreview(steps);
     setShowPreview(steps.length > 0);
   }, [command]);
 
   // ── Web Speech API Live Voice Recognition ───────────────────────────────────
+  const scheduleVoiceExecution = useCallback(() => {
+    clearTimeout(voiceSilenceTimerRef.current);
+    voiceSilenceTimerRef.current = setTimeout(() => {
+      const transcript = voiceTranscriptRef.current.trim();
+      recognitionRef.current?.stop?.();
+      if (transcript) {
+        setCommand(transcript);
+        handleRunRef.current?.(transcript);
+      }
+    }, 1100);
+  }, []);
+
   const toggleVoice = useCallback(() => {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
       alert('Live voice command is not supported in this browser. Please use Chrome, Edge, or Brave.');
@@ -160,6 +285,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     }
 
     if (isListening) {
+      scheduleVoiceExecution();
       recognitionRef.current?.stop();
       setIsListening(false);
       return;
@@ -167,9 +293,10 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
 
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
     const rec = new SpeechRec();
-    rec.continuous = false;
+    rec.continuous = true;
     rec.interimResults = true;
     rec.lang = 'en-US';
+    voiceTranscriptRef.current = '';
 
     rec.onstart = () => {
       setIsListening(true);
@@ -179,7 +306,9 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
       const transcript = Array.from(event.results)
         .map(result => result[0].transcript)
         .join('');
+      voiceTranscriptRef.current = transcript;
       setCommand(transcript);
+      scheduleVoiceExecution();
     };
 
     rec.onend = () => {
@@ -193,14 +322,14 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
 
     recognitionRef.current = rec;
     rec.start();
-  }, [isListening]);
+  }, [isListening, scheduleVoiceExecution]);
 
   // ── Run Task & Gatekeeper ───────────────────────────────────────────────────
-  const handleRun = useCallback(async () => {
-    if (!command.trim() || isRunning) return;
+  const handleRun = useCallback(async (voiceCommand) => {
+    const commandText = String(voiceCommand ?? command).trim();
+    if (!commandText || isRunning || isRunningRef.current) return;
 
-    // Gatekeeper: Free users capped at 5 tasks
-    if (!isPro && taskCount >= FREE_TASK_LIMIT) {
+    if (taskCount >= taskLimit) {
       setShowUpgradeGate(true);
       return;
     }
@@ -212,42 +341,45 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     }
 
     setIsRunning(true);
+    isRunningRef.current = true;
     setTaskStatus('running');
     setActionLog([]);
     setLoginRequired(null);
     setIsLogOpen(true);
 
-    // Increment task count for free users
-    if (!isPro) {
-      const nextCount = taskCount + 1;
-      setTaskCount(nextCount);
-      localStorage.setItem('zulora_plugin_task_count', String(nextCount));
-    }
+    const nextCount = taskCount + 1;
+    setTaskCount(nextCount);
+    try { localStorage.setItem(dailyTaskStorageKey(currentUser?.uid), JSON.stringify({ day: localDayKey(), count: nextCount })); } catch {}
 
     const tokenStart = sessionTokens;
-    const result = await executeCommand(command, (entry) => {
-      setActionLog(prev => [...prev, entry]);
-    }, currentUser, (tokens) => {
+    const onTokens = (tokens) => {
       const liveTotal = tokenStart + tokens;
       setSessionTokens(liveTotal);
-      sessionStorage.setItem('zulora_plugin_session_tokens', String(liveTotal));
-    });
+      persistTokenUsage(currentUser?.uid, liveTotal, tokenResetAt > tokenClock ? tokenResetAt : 0);
+    };
+    const youtubeQuery = getYoutubeSearchQuery(commandText);
+    const result = youtubeQuery
+      ? await runTask([{ action: 'youtube_search', app: 'YouTube', params: { query: youtubeQuery } }])
+      : await executeCommand(commandText, (entry) => {
+        setActionLog(prev => [...prev, entry]);
+      }, currentUser, onTokens);
 
     if (result.tokensUsed) {
       const finalTotal = tokenStart + result.tokensUsed;
       setSessionTokens(finalTotal);
-      sessionStorage.setItem('zulora_plugin_session_tokens', String(finalTotal));
+      persistTokenUsage(currentUser?.uid, finalTotal, tokenResetAt > tokenClock ? tokenResetAt : 0);
     }
 
     if (result.error === 'Task stopped.') return;
 
-    if (!result.ok && !result.success && /extension context|reload this page to reconnect|not connected/i.test(result.error || '')) {
+    if (!result.ok && !result.success && /extension context|reload this page to reconnect|not connected|reconnect/i.test(result.error || '')) {
       setTaskStatus('paused');
+      isRunningRef.current = false;
       setIsRunning(false);
       setShowInstallGuide(true);
       setActionLog(prev => [...prev, {
         index: prev.length + 1,
-        label: 'Extension connection needs a refresh. Reload this page to reconnect.',
+        label: 'Extension connection needs to reconnect. Try again in a moment.',
         status: 'paused',
         timestamp: Date.now()
       }]);
@@ -256,12 +388,14 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
 
     if (result.analysis) {
       setTaskStatus('done');
+      isRunningRef.current = false;
       setIsRunning(false);
       setIsLogOpen(true);
     }
 
     if (!result.ok && !result.success) {
       setTaskStatus('error');
+      isRunningRef.current = false;
       setIsRunning(false);
       setActionLog(prev => [...prev, {
         index: prev.length + 1,
@@ -270,7 +404,9 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
         timestamp: Date.now()
       }]);
     }
-  }, [command, isRunning, isPro, taskCount, checkConnection, currentUser, sessionTokens]);
+  }, [command, isRunning, taskCount, taskLimit, checkConnection, currentUser, sessionTokens, tokenResetAt, tokenClock]);
+
+  handleRunRef.current = handleRun;
 
   const handlePause = useCallback(async () => {
     await pauseTask();
@@ -285,6 +421,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   }, []);
 
   const handleStopAgent = useCallback(async () => {
+    isRunningRef.current = false;
     await cancelTask();
     setTaskStatus('idle');
     setIsRunning(false);
@@ -297,13 +434,30 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   }, []);
 
   const handleReset = useCallback(() => {
+    const archived = { command, actionLog, status: taskStatus, savedAt: Date.now() };
+    if (command.trim() || actionLog.length) {
+      try {
+        const history = JSON.parse(localStorage.getItem(TASK_HISTORY_KEY) || '[]');
+        localStorage.setItem(TASK_HISTORY_KEY, JSON.stringify([...history, archived].slice(-30)));
+      } catch { localStorage.setItem(TASK_HISTORY_KEY, JSON.stringify([archived])); }
+    }
+    void cancelTask();
     setTaskStatus('idle');
+    isRunningRef.current = false;
     setActionLog([]);
     setLoginRequired(null);
     setIsRunning(false);
     setCommand('');
     setParsedPreview([]);
     setShowPreview(false);
+  }, [command, actionLog, taskStatus]);
+
+  const handleContinueTask = useCallback(() => {
+    setTaskStatus('idle');
+    isRunningRef.current = false;
+    setIsRunning(false);
+    setLoginRequired(null);
+    inputRef.current?.focus();
   }, []);
 
   if (!isOpen) return null;
@@ -387,8 +541,8 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
             <Zap className="w-3.5 h-3.5 text-sky-500 animate-pulse" />
             <span>Tokens Used: <strong className="font-bold text-sky-600 dark:text-sky-400">{sessionTokens.toLocaleString()}</strong> Tokens</span>
           </div>
-          <span className="text-[10px] text-slate-400 dark:text-slate-500 font-semibold uppercase tracking-wider">
-            Session Usage
+          <span className="text-[9px] text-slate-400 dark:text-slate-500 font-semibold text-right">
+            {tokenResetAt ? formatTokenReset(tokenResetAt, tokenClock) : 'Local DOM actions use no planner tokens'}
           </span>
         </div>
 
@@ -401,11 +555,11 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
               <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
                 <Crown className="w-5 h-5 text-amber-500" />
                 <h3 className="text-xs font-black uppercase tracking-wide">
-                  Free Limit Reached (5/5 Tasks)
+                  Daily Limit Reached ({taskCount}/{taskLimit} Tasks)
                 </h3>
               </div>
               <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
-                You've completed all 5 free automation tasks. Upgrade to <strong>Zulora Pro</strong> for unlimited autonomous browser agent execution, rich Pearl/Azure templates, and WhatsApp/Gmail integration.
+                You've used today's {taskLimit} computer tasks. Your limit resets tomorrow; Zulora Pro includes 50 tasks per day.
               </p>
               <div className="flex items-center gap-2">
                 <button
@@ -473,11 +627,9 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
                 {actionLog.filter(l => l.status === 'done').length} / {actionLog.length} steps done
               </span>
             )}
-            {!isPro && (
-              <span className="text-[10px] text-slate-400 ml-auto font-medium">
-                {taskCount}/{FREE_TASK_LIMIT} tasks used
-              </span>
-            )}
+            <span className="text-[10px] text-slate-400 ml-auto font-medium">
+              {taskCount}/{taskLimit} tasks used today
+            </span>
           </div>
 
           {/* Login Required Alert */}
@@ -701,7 +853,13 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
                 onClick={handleReset}
                 className="mt-1 px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-bold transition-colors shadow-sm"
               >
-                Run Another Task
+                Next Task / Clean Session
+              </button>
+              <button
+                onClick={handleContinueTask}
+                className="ml-2 mt-1 px-4 py-2 rounded-xl bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-xs font-bold transition-colors"
+              >
+                Continue Current Task
               </button>
             </div>
           )}
@@ -711,7 +869,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
 
         {/* ── Footer ──────────────────────────────────────────────────────── */}
         <div className="px-5 py-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-[10px] text-slate-400 bg-slate-50 dark:bg-slate-900/40">
-          <span>Zulora Computer Plugin v1.2.0</span>
+          <span>Zulora Computer Plugin v1.3.0</span>
           <div className="flex items-center gap-3">
             <button
               onClick={() => setIsPricingModalOpen(true)}

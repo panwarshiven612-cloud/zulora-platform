@@ -48,8 +48,12 @@
 
   function sendRuntimeMessage(message, callback = () => {}) {
     if (!extensionContextAvailable()) {
-      dispatchBridgeResponse({ ok: false, success: false, error: 'Extension context was refreshed. Reload this page to reconnect.' });
-      callback({ ok: false, success: false, error: 'Extension context was refreshed. Reload this page to reconnect.' });
+      const response = { ok: false, success: false, reconnecting: true, error: 'Extension connection is reconnecting. Try again shortly.' };
+      try {
+        window.postMessage({ source: 'ZULORA_EXTENSION', type: 'ZULORA_CONTEXT_RECONNECT', recoverable: true }, '*');
+        window.dispatchEvent(new CustomEvent('ZULORA_CONTEXT_RECONNECT', { detail: { recoverable: true } }));
+      } catch {}
+      callback(response);
       return false;
     }
     try {
@@ -66,11 +70,109 @@
       return true;
     } catch (error) {
       const messageText = /context invalidated|extension context/i.test(error?.message || '')
-        ? 'Extension context was refreshed. Reload this page to reconnect.'
+        ? 'Extension connection is reconnecting. Try again shortly.'
         : (error?.message || 'Extension connection unavailable.');
-      callback({ ok: false, success: false, error: messageText });
+      callback({ ok: false, success: false, reconnecting: /reconnect/i.test(messageText), error: messageText });
       return false;
     }
+  }
+
+  let overlayRoot = null;
+  let overlayRecognition = null;
+  let overlayTaskStatus = 'idle';
+  let overlayActionLabel = '';
+
+  function sendOverlayCommand(type, extra = {}) {
+    sendRuntimeMessage({ type, ...extra }, (response) => {
+      if (response?.error) setOverlayLabel(response.error);
+    });
+  }
+
+  function setOverlayLabel(label) {
+    const node = overlayRoot?.shadowRoot?.querySelector('[data-status]');
+    if (node) node.textContent = label || overlayActionLabel || 'Working on your task';
+  }
+
+  function installFloatingOverlay() {
+    if (overlayRoot?.isConnected) return;
+    overlayRoot = document.createElement('div');
+    overlayRoot.id = 'zulora-agent-floating-widget';
+    overlayRoot.style.cssText = 'all:initial;position:fixed;right:18px;bottom:18px;z-index:2147483647;';
+    const shadow = overlayRoot.attachShadow({ mode: 'open' });
+    shadow.innerHTML = `
+      <style>
+        *{box-sizing:border-box} .panel{font:12px/1.4 Inter,system-ui,sans-serif;color:#15304c;background:rgba(255,255,255,.97);border:1px solid #bfdbfe;border-radius:16px;box-shadow:0 12px 38px rgba(15,56,93,.2);padding:10px;min-width:235px;max-width:290px;backdrop-filter:blur(12px)}
+        .top{display:flex;align-items:center;gap:8px}.pulse{width:9px;height:9px;background:#0ea5e9;border-radius:50%;box-shadow:0 0 0 0 rgba(14,165,233,.55);animation:pulse 1.5s infinite}.paused{background:#f59e0b;animation:none}.done{background:#10b981;animation:none}.error{background:#ef4444;animation:none}@keyframes pulse{70%{box-shadow:0 0 0 8px rgba(14,165,233,0)}100%{box-shadow:0 0 0 0 rgba(14,165,233,0)}}
+        [data-status]{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}.buttons{display:flex;gap:5px;margin-top:9px}button{border:0;border-radius:9px;padding:7px 9px;background:#eaf5ff;color:#075985;font:700 11px system-ui;cursor:pointer}button:hover{background:#d9efff}.stop{background:#fff1f2;color:#be123c}.donebox{display:none;margin-top:9px;padding-top:8px;border-top:1px solid #e0f2fe}.donebox[data-visible="true"]{display:block}.newtask{display:none;gap:5px;margin-top:8px}.newtask[data-visible="true"]{display:flex}input{width:100%;min-width:0;border:1px solid #bfdbfe;border-radius:8px;padding:7px;font:11px system-ui;color:#15304c}
+      </style>
+      <section class="panel" role="status" aria-live="polite">
+        <div class="top"><span class="pulse" data-pulse></span><span data-status>Working on your task</span></div>
+        <div class="buttons">
+          <button data-mic title="Speak a command">🎙 Voice</button>
+          <button data-pause>Pause</button>
+          <button class="stop" data-stop>Stop</button>
+        </div>
+        <div class="donebox" data-done><strong>Task Completed!</strong><br/><button data-new>Start New Task</button></div>
+        <div class="newtask" data-newtask><input data-command placeholder="Open a site, search, read, click…"/><button data-submit>Go</button></div>
+      </section>`;
+    document.documentElement.appendChild(overlayRoot);
+    const root = shadow;
+    root.querySelector('[data-pause]').addEventListener('click', () => {
+      if (overlayTaskStatus === 'paused') sendOverlayCommand('ZULORA_RESUME');
+      else sendOverlayCommand('ZULORA_PAUSE');
+    });
+    root.querySelector('[data-stop]').addEventListener('click', () => sendOverlayCommand('ZULORA_CANCEL'));
+    root.querySelector('[data-mic]').addEventListener('click', () => {
+      if (overlayRecognition) { overlayRecognition.stop(); overlayRecognition = null; return; }
+      const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRec) { setOverlayLabel('Voice input is not supported here'); return; }
+      const rec = new SpeechRec();
+      rec.continuous = false;
+      rec.interimResults = false;
+      rec.lang = 'en-US';
+      rec.onresult = event => {
+        const transcript = event.results?.[0]?.[0]?.transcript?.trim();
+        if (transcript) sendOverlayCommand('ZULORA_OVERLAY_VOICE', { transcript });
+      };
+      rec.onerror = () => setOverlayLabel('Voice input stopped');
+      rec.onend = () => { overlayRecognition = null; };
+      overlayRecognition = rec;
+      try { rec.start(); setOverlayLabel('Listening…'); } catch { overlayRecognition = null; }
+    });
+    root.querySelector('[data-new]').addEventListener('click', () => {
+      root.querySelector('[data-newtask]').setAttribute('data-visible', 'true');
+      root.querySelector('[data-command]').focus();
+    });
+    const submitOverlayTask = () => {
+      const input = root.querySelector('[data-command]');
+      const transcript = input.value.trim();
+      if (transcript) {
+        sendOverlayCommand('ZULORA_OVERLAY_VOICE', { transcript });
+        input.value = '';
+        root.querySelector('[data-done]').setAttribute('data-visible', 'false');
+      }
+    };
+    root.querySelector('[data-submit]').addEventListener('click', submitOverlayTask);
+    root.querySelector('[data-command]').addEventListener('keydown', event => { if (event.key === 'Enter') submitOverlayTask(); });
+    updateFloatingOverlay({ taskStatus: overlayTaskStatus, actionLog: [] });
+  }
+
+  function updateFloatingOverlay(message) {
+    overlayTaskStatus = message.taskStatus || overlayTaskStatus;
+    const latest = [...(message.actionLog || [])].reverse().find(entry => entry.status === 'running');
+    if (latest?.label) overlayActionLabel = latest.label.replace(/^Step \d+:\s*/, '');
+    if (overlayTaskStatus === 'idle') {
+      overlayRoot?.remove();
+      overlayRoot = null;
+      return;
+    }
+    installFloatingOverlay();
+    const root = overlayRoot.shadowRoot;
+    const pulse = root.querySelector('[data-pulse]');
+    pulse.className = `pulse ${overlayTaskStatus}`;
+    root.querySelector('[data-status]').textContent = overlayTaskStatus === 'done' ? 'Task finished' : overlayTaskStatus === 'paused' ? 'Task paused' : overlayTaskStatus === 'error' ? 'Task needs attention' : (overlayActionLabel || 'Reading screen…');
+    root.querySelector('[data-pause]').textContent = overlayTaskStatus === 'paused' ? 'Resume' : 'Pause';
+    root.querySelector('[data-done]').setAttribute('data-visible', overlayTaskStatus === 'done' ? 'true' : 'false');
   }
 
   let lastAnnouncedStatus = null;
@@ -124,8 +226,10 @@
             lastAnnouncedStatus = message.taskStatus;
             playStatusPrompt(message.taskStatus);
           }
+          updateFloatingOverlay(message);
           window.postMessage({ ...message, source: 'ZULORA_EXTENSION' }, '*');
           sendResponse({ ok: true, success: true });
+          return true;
         }
         return true;
       });
@@ -254,6 +358,32 @@
         .some(value => value?.trim().toLowerCase().includes(needle))) || null;
   }
 
+  function waitForDomChange(beforeUrl, beforeText, timeoutMs = 600, runId = automationRunId) {
+    return new Promise(resolve => {
+      let settled = false;
+      let timer;
+      const finish = changed => {
+        if (settled) return;
+        settled = true;
+        observer.disconnect();
+        clearTimeout(timer);
+        window.removeEventListener('ZULORA_ABORT_AUTOMATION', onCancel);
+        resolve(changed);
+      };
+      const inspect = () => {
+        if (automationCancelled || runId !== automationRunId) return finish(false);
+        const currentText = document.body?.innerText?.slice(0, 2500) || '';
+        if (location.href !== beforeUrl || currentText !== beforeText) finish(true);
+      };
+      const onCancel = () => finish(false);
+      const observer = new MutationObserver(inspect);
+      observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true });
+      window.addEventListener('ZULORA_ABORT_AUTOMATION', onCancel, { once: true });
+      timer = setTimeout(() => finish(false), timeoutMs);
+      inspect();
+    });
+  }
+
   async function executeAutomation(params = {}) {
     const runId = startAutomation();
     const operation = String(params.operation || params.intent || 'read').toLowerCase();
@@ -268,9 +398,14 @@
       try { target = selector ? document.querySelector(selector) : findTextTarget(params.target || text); } catch {}
       if (!target && operation === 'submit') target = document.querySelector(DOM_SELECTOR_DICTIONARIES.submit.join(','));
       if (!target || !isVisible(target)) throw new Error(`Could not find a visible ${operation} target.`);
+      const beforeUrl = location.href;
+      const beforeText = document.body?.innerText?.slice(0, 2500) || '';
       target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      assertAutomationActive(runId);
       target.click();
-      return { success: true, target: target.innerText?.trim().slice(0, 120) || target.getAttribute('aria-label') || target.tagName };
+      const verified = await waitForDomChange(beforeUrl, beforeText, 600, runId);
+      assertAutomationActive(runId);
+      return { success: true, verified, target: target.innerText?.trim().slice(0, 120) || target.getAttribute('aria-label') || target.tagName };
     }
     if (operation === 'fill' || operation === 'type' || operation === 'search') {
       let target = null;
@@ -289,7 +424,11 @@
         target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
         target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
       }
-      return { success: true, selector: selector || target.tagName.toLowerCase() };
+      const actualValue = 'value' in target ? target.value : target.innerText || target.textContent;
+      const verified = String(actualValue || '').includes(text);
+      if (operation === 'search' && params.submit !== false) await waitForDomChange(location.href, document.body?.innerText?.slice(0, 2500) || '', 500, runId);
+      assertAutomationActive(runId);
+      return { success: verified, verified, selector: selector || target.tagName.toLowerCase() };
     }
     if (operation === 'wait_for') {
       const target = await waitForElement(selector, Math.min(60000, Number(params.timeoutMs) || 15000), runId);
@@ -297,7 +436,48 @@
       if (!target) throw new Error(`Timed out waiting for ${selector || 'an element'}.`);
       return { success: true };
     }
+    if (operation === 'scroll') {
+      const direction = String(params.direction || 'down').toLowerCase();
+      window.scrollBy({ top: direction === 'up' ? -Math.max(250, Number(params.amount) || 600) : Math.max(250, Number(params.amount) || 600), behavior: 'smooth' });
+      await sleep(400, runId);
+      assertAutomationActive(runId);
+      return { success: true, verified: true, scrollY: window.scrollY };
+    }
     throw new Error(`Unsupported browser automation operation: ${operation}`);
+  }
+
+  async function searchAndOpenTopYoutubeVideo(query) {
+    const runId = startAutomation();
+    if (!/youtube\.com$/i.test(location.hostname)) throw new Error('Open YouTube before running a YouTube search.');
+    const searchBox = await waitForElement('input#search, input[name="search_query"]', 12000, runId);
+    if (!searchBox) throw new Error('YouTube search field is not ready.');
+    await typeIntoElement(searchBox, query, runId);
+    searchBox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+    searchBox.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+    const resultLink = await waitForElement('ytd-video-renderer a#thumbnail, ytd-video-renderer a[href*="/watch"]', 15000, runId);
+    assertAutomationActive(runId);
+    if (!resultLink) throw new Error('No YouTube video result appeared for this search.');
+    resultLink.click();
+    const video = await waitForElement('video.html5-main-video, ytd-player video', 12000, runId);
+    assertAutomationActive(runId);
+    if (!video) throw new Error('The selected YouTube video did not load.');
+    try { if (video.paused) await video.play(); } catch {}
+    if (video.paused) {
+      const playButton = document.querySelector('.ytp-play-button, button[aria-label*="Play" i]');
+      try { playButton?.click(); } catch {}
+    }
+    await sleep(400, runId);
+    assertAutomationActive(runId);
+    const playing = !video.paused && video.currentTime > 0;
+    if (!playing) throw new Error('The top result opened, but playback is blocked. Press Play in YouTube and resume the task.');
+    return { success: true, verified: true, title: document.title, url: location.href };
+  }
+
+  async function openTopGoogleResult() {
+    const link = Array.from(document.querySelectorAll('#search a[href^="http"], #rso a[href^="http"]'))
+      .find(anchor => isVisible(anchor) && !/google\.(com|co\.)/i.test(new URL(anchor.href).hostname) && anchor.querySelector('h3'));
+    if (!link) throw new Error('Google did not show a visible organic search result.');
+    return { success: true, verified: true, selected: true, url: link.href, title: link.innerText?.trim() || link.querySelector('h3')?.innerText || '' };
   }
 
   function waitForResponseComplete({ timeout = 90000, quietPeriod = 1200, runId = automationRunId } = {}) {
@@ -429,14 +609,14 @@
       if (!searchBox) throw new Error('WhatsApp contact search is unavailable. Sign in and open the chats panel first.');
       searchBox.focus();
       await typeIntoElement(searchBox, recipient, runId);
-      await sleep(1500, runId);
+      await sleep(400, runId);
       assertAutomationActive(runId);
 
       const contactSelector = 'div[role="listitem"] div[tabindex="-1"], div[data-testid="cell-frame-container"]';
       const contact = await waitForElement(contactSelector, 8000, runId);
       if (!contact) throw new Error(`No WhatsApp chat matched "${recipient}". Message was not sent.`);
       contact.click();
-      await sleep(900, runId);
+      await sleep(400, runId);
       assertAutomationActive(runId);
     }
 
@@ -448,8 +628,10 @@
 
     msgBox.focus();
     await typeIntoElement(msgBox, message, runId);
-    await sleep(500, runId);
+    await sleep(350, runId);
     assertAutomationActive(runId);
+    const beforeUrl = location.href;
+    const beforeText = document.body?.innerText?.slice(0, 2500) || '';
 
     // Click send button or press enter
     const sendBtn = document.querySelector('button[aria-label*="Send" i], [data-icon="send"]')?.closest('button') || document.querySelector('button[aria-label*="Send" i]');
@@ -458,7 +640,13 @@
     } else {
       msgBox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
     }
-    return { success: true, recipient };
+    await waitForDomChange(beforeUrl, beforeText, 600, runId);
+    assertAutomationActive(runId);
+    const inputCleared = !(msgBox.innerText || msgBox.textContent || '').trim();
+    const messageVisible = message && Array.from(document.querySelectorAll('.message-out, [data-testid="msg-container"]'))
+      .some(node => node.innerText?.includes(message.slice(0, Math.min(24, message.length))));
+    if (!inputCleared && !messageVisible) throw new Error('WhatsApp did not confirm that the message was sent.');
+    return { success: true, verified: true, recipient };
   }
 
   // ─── ChatGPT & Gemini Automation Helpers ────────────────────────────────────
@@ -474,7 +662,7 @@
     } else {
       await typeIntoElement(input, promptText, runId);
     }
-    await sleep(600, runId);
+    await sleep(400, runId);
     assertAutomationActive(runId);
 
     const sendBtn = document.querySelector('button[data-testid="send-button"], button[aria-label*="Send" i]');
@@ -493,7 +681,7 @@
 
     input.focus();
     await typeIntoElement(input, promptText, runId);
-    await sleep(600, runId);
+    await sleep(400, runId);
     assertAutomationActive(runId);
 
     const sendBtn = document.querySelector('button[aria-label*="Send" i], button.send-button');
@@ -534,6 +722,8 @@
     downloadContentAsFile,
     detectLoginRequired,
     executeAutomation,
+    searchAndOpenTopYoutubeVideo,
+    openTopGoogleResult,
     waitForResponseComplete,
     DOM_SELECTOR_DICTIONARIES
   };
