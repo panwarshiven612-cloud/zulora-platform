@@ -82,11 +82,11 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     
     // Immediate response to dynamic injection/handshake
     const onReady = () => checkConnection();
-    window.addEventListener('ZULORA_EXTENSION_READY', onReady);
+    window.addEventListener('ZULORA_PLUGIN_CONNECTED', onReady);
     
     return () => {
       clearInterval(interval);
-      window.removeEventListener('ZULORA_EXTENSION_READY', onReady);
+      window.removeEventListener('ZULORA_PLUGIN_CONNECTED', onReady);
     };
   }, [isOpen, checkConnection]);
 

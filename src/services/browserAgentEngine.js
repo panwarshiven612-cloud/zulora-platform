@@ -45,46 +45,10 @@ function _emit(status) {
  * @returns {Promise<boolean>}
  */
 export async function checkExtensionConnected() {
-  // 1. Fast DOM Check (Content script injected attribute)
-  if (typeof document !== 'undefined' && document.documentElement.getAttribute('data-zulora-extension-installed') === 'true') {
+  if (typeof document !== 'undefined' && document.documentElement.getAttribute('data-zulora-plugin-active') === 'true') {
     return true;
   }
-  if (typeof window !== 'undefined' && window.__ZULORA_EXTENSION_INSTALLED__) {
-    return true;
-  }
-
-  // 2. Custom Event Handshake (Wait for content script to respond)
-  if (typeof window !== 'undefined') {
-    const eventCheck = await new Promise((resolve) => {
-      const handler = () => {
-        window.removeEventListener('ZULORA_EXTENSION_READY', handler);
-        resolve(true);
-      };
-      window.addEventListener('ZULORA_EXTENSION_READY', handler);
-      window.dispatchEvent(new Event('ZULORA_CHECK_EXTENSION'));
-      setTimeout(() => {
-        window.removeEventListener('ZULORA_EXTENSION_READY', handler);
-        resolve(false);
-      }, 300);
-    });
-    if (eventCheck) return true;
-  }
-
-  // 3. Fallback to chrome.runtime.sendMessage with hardcoded ID
-  return new Promise((resolve) => {
-    if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
-      resolve(false);
-      return;
-    }
-    try {
-      chrome.runtime.sendMessage(EXTENSION_ID, { type: 'ZULORA_PING' }, (response) => {
-        if (chrome.runtime.lastError) { resolve(false); return; }
-        resolve(response?.ok === true);
-      });
-    } catch {
-      resolve(false);
-    }
-  });
+  return false;
 }
 
 /**
@@ -97,19 +61,19 @@ export async function runTask(steps) {
     if (!steps?.length) { resolve({ ok: false, error: 'No steps provided' }); return; }
     
     const listener = (event) => {
-      if (event.data?.source === 'ZULORA_EXTENSION' && typeof event.data.ok !== 'undefined') {
-        window.removeEventListener('message', listener);
-        resolve(event.data);
-      }
+      window.removeEventListener('ZULORA_AGENT_RESPONSE', listener);
+      resolve(event.detail || { ok: false, error: 'Empty response' });
     };
-    window.addEventListener('message', listener);
+    window.addEventListener('ZULORA_AGENT_RESPONSE', listener);
     
-    // Send via DOM bridge to content.js
-    window.postMessage({ source: 'ZULORA_WEBAPP', type: 'ZULORA_RUN_TASK', steps }, '*');
+    // Dispatch execution event to content script
+    window.dispatchEvent(new CustomEvent('ZULORA_EXECUTE_AGENT_TASK', {
+      detail: { type: 'ZULORA_RUN_TASK', steps }
+    }));
     
     // Timeout fallback
     setTimeout(() => {
-      window.removeEventListener('message', listener);
+      window.removeEventListener('ZULORA_AGENT_RESPONSE', listener);
       resolve({ ok: false, error: 'No response from extension bridge' });
     }, 2000);
   });
@@ -134,17 +98,17 @@ export async function getTaskStatus() {
 function _sendControl(type) {
   return new Promise((resolve) => {
     const listener = (event) => {
-      if (event.data?.source === 'ZULORA_EXTENSION' && typeof event.data.ok !== 'undefined') {
-        window.removeEventListener('message', listener);
-        resolve(event.data);
-      }
+      window.removeEventListener('ZULORA_AGENT_RESPONSE', listener);
+      resolve(event.detail || { ok: false });
     };
-    window.addEventListener('message', listener);
+    window.addEventListener('ZULORA_AGENT_RESPONSE', listener);
     
-    window.postMessage({ source: 'ZULORA_WEBAPP', type }, '*');
+    window.dispatchEvent(new CustomEvent('ZULORA_EXECUTE_AGENT_TASK', {
+      detail: { type }
+    }));
     
     setTimeout(() => {
-      window.removeEventListener('message', listener);
+      window.removeEventListener('ZULORA_AGENT_RESPONSE', listener);
       resolve({ ok: false });
     }, 1500);
   });

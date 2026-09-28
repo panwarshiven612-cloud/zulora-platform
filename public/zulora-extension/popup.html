@@ -63,21 +63,6 @@
   </div>
   <div class="footer">Zulora AI Computer Plugin v1.0.0</div>
 
-  <script>
-    // Ping the Zulora web app tab to check connection status
-    chrome.tabs.query({ active: false }, (tabs) => {
-      const zuloraTab = tabs.find(t => t.url && (
-        t.url.includes('localhost') || t.url.includes('zulora')
-      ));
-      const dot  = document.getElementById('dot');
-      const text = document.getElementById('statusText');
-      if (zuloraTab) {
-        dot.classList.add('connected');
-        text.textContent = 'Connected to Zulora AI ✓';
-      } else {
-        text.textContent = 'Open Zulora AI to connect';
-      }
-    });
-  </script>
+  <script src="popup.js"></script>
 </body>
 </html>

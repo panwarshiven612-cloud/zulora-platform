@@ -8,22 +8,14 @@
   'use strict';
 
   // ─── Handshake / Auto-Detection ─────────────────────────────────────────────
-  document.documentElement.setAttribute('data-zulora-extension-installed', 'true');
-  const script = document.createElement('script');
-  script.textContent = 'window.__ZULORA_EXTENSION_INSTALLED__ = true;';
-  (document.head || document.documentElement).appendChild(script);
-  script.remove();
-
-  window.addEventListener('ZULORA_CHECK_EXTENSION', () => {
-    window.dispatchEvent(new CustomEvent('ZULORA_EXTENSION_READY', {
-      detail: { version: chrome.runtime.getManifest().version, id: chrome.runtime.id }
-    }));
-  });
+  document.documentElement.setAttribute('data-zulora-plugin-active', 'true');
+  
+  // Dispatch an event on load to tell the web app that extension is connected
+  window.dispatchEvent(new CustomEvent('ZULORA_PLUGIN_CONNECTED'));
 
   // ─── Bridge: relay background messages to page via postMessage ──────────────
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'ZULORA_STATUS_UPDATE') {
-      // Relay to Zulora web app running in this tab
       window.postMessage({ ...message, source: 'ZULORA_EXTENSION' }, '*');
       sendResponse({ ok: true });
     }
@@ -31,11 +23,9 @@
   });
 
   // ─── Bridge: receive commands from Zulora web app page ──────────────────────
-  window.addEventListener('message', (event) => {
-    if (event.data?.source !== 'ZULORA_WEBAPP') return;
-    // Forward to background worker
-    chrome.runtime.sendMessage(event.data, (response) => {
-      window.postMessage({ source: 'ZULORA_EXTENSION', ...response }, '*');
+  window.addEventListener('ZULORA_EXECUTE_AGENT_TASK', (event) => {
+    chrome.runtime.sendMessage(event.detail, (response) => {
+      window.dispatchEvent(new CustomEvent('ZULORA_AGENT_RESPONSE', { detail: response }));
     });
   });
 
