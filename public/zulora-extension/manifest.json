@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Zulora AI Computer Plugin",
-  "version": "1.0.0",
-  "description": "Chrome automation agent for Zulora AI — lets Zulora control your browser to complete complex multi-step tasks hands-free.",
+  "version": "1.1.0",
+  "description": "Chrome automation agent for Zulora AI — controls browser tabs, Gmail, WhatsApp, ChatGPT, and DOM automation with smart LLM generation.",
   "icons": {
     "16":  "icons/icon16.png",
     "48":  "icons/icon48.png",
@@ -22,10 +22,11 @@
   ],
   "permissions": [
     "tabs",
-    "scripting",
     "activeTab",
+    "scripting",
     "storage",
     "webNavigation",
+    "downloads",
     "notifications",
     "alarms"
   ],
