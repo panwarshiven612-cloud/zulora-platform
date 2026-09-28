@@ -1,5 +1,21 @@
+function readAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === 'string'
+      ? resolve(reader.result)
+      : reject(new Error('Could not read the selected image.'));
+    reader.onerror = () => reject(reader.error || new Error('Could not read the selected image.'));
+    reader.onabort = () => reject(new Error('Image reading was cancelled.'));
+    reader.readAsDataURL(file);
+  });
+}
+
 export async function imageFileToDataUrl(file, { maxDimension = 1280, maxBytes = 900_000 } = {}) {
   if (!file?.type?.startsWith('image/')) throw new Error('Choose an image file.');
+
+  const originalDataUrl = await readAsDataUrl(file);
+  const supportedInlineImage = /^image\/(?:png|jpe?g|webp|gif)$/i.test(file.type);
+  if (supportedInlineImage && file.size <= maxBytes) return originalDataUrl;
 
   const bitmap = await createImageBitmap(file);
   const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));

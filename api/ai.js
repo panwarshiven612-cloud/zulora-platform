@@ -2,7 +2,7 @@ import { createPublicKey, createSign, verify as verifySignature } from 'node:cry
 import { GEMINI_KEYS, apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from '../src/services/systemPrompt.js';
 import { AI_STUDIO_SYSTEM_PROMPT } from '../src/services/aiStudioPrompt.js';
-import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_MODEL_FALLBACKS, isCodeGenerationPrompt, normalizeGeminiModelId } from '../src/services/aiModels.js';
+import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_FLASH_MODEL_ID, GEMINI_MODEL_FALLBACKS, GEMINI_PRO_MODEL_FALLBACKS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId } from '../src/services/aiModels.js';
 import { buildImagePrompt } from '../src/services/imageGen.js';
 
 export const maxDuration = 60;
@@ -10,6 +10,7 @@ export const config = { maxDuration };
 
 const CHAT_ORDER = ['gemini', 'cerebras', 'groq', 'mistral', 'openrouter'];
 const GEMINI_FAST_MODEL = process.env.GEMINI_FAST_MODEL || GEMINI_FAST_MODEL_ID;
+const GEMINI_FLASH_MODEL = process.env.GEMINI_FLASH_MODEL || GEMINI_FLASH_MODEL_ID;
 const GEMINI_HIGH_CAPACITY_MODEL = process.env.GEMINI_HIGH_CAPACITY_MODEL || GEMINI_BEST_MODEL_ID;
 const GEMINI_FLASH_VARIANTS = [...new Set([GEMINI_HIGH_CAPACITY_MODEL, ...GEMINI_MODEL_FALLBACKS])];
 const CHAT_WINDOW_MS = 4 * 60 * 60 * 1000;
@@ -668,7 +669,8 @@ async function tryGeminiWithModelFallback(messages, options = {}) {
   });
   if (result) return result;
 
-  const alternatives = [...new Set([...GEMINI_FLASH_VARIANTS, 'gemini-2.5-flash-lite'])]
+  const proAlternatives = options.model === GEMINI_PRO_MODEL_ID ? GEMINI_PRO_MODEL_FALLBACKS : [];
+  const alternatives = [...new Set([...proAlternatives, ...GEMINI_FLASH_VARIANTS, 'gemini-2.5-flash-lite'])]
     .filter(model => model !== preferredModel);
   for (const model of alternatives) {
     const fallback = await tryGemini(messages, { ...options, model, recheckCoolingKeys: true });
@@ -736,9 +738,8 @@ async function generateChat(body, streamOptions = {}) {
   const useProModel = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference);
   const geminiModel = String(preference).startsWith('gemini-')
     ? preference
-    : requestedPreference === 'gemini' ? (coding || complex ? GEMINI_HIGH_CAPACITY_MODEL : GEMINI_FAST_MODEL)
-      : flagship ? GEMINI_HIGH_CAPACITY_MODEL
-        : useProModel ? GEMINI_HIGH_CAPACITY_MODEL : GEMINI_FAST_MODEL;
+    : requestedPreference === 'gemini' ? (coding || complex ? GEMINI_PRO_MODEL_ID : GEMINI_FLASH_MODEL)
+      : flagship || useProModel ? GEMINI_PRO_MODEL_ID : GEMINI_FAST_MODEL;
   const groqModel = 'llama-3.3-70b-versatile';
   const order = chooseChatOrder(preference, requestedPreference === 'auto');
   for (const provider of order) {

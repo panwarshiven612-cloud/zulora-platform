@@ -12,10 +12,17 @@ export const GEMINI_MODELS = Object.freeze([
   { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', tier: 'stable', speed: 'reasoning' }
 ]);
 
+export const GEMINI_FLASH_MODEL_ID = 'gemini-3.5-flash';
 export const GEMINI_FAST_MODEL_ID = 'gemini-3.5-flash-lite';
 export const GEMINI_BEST_MODEL_ID = 'gemini-3.8-flash';
+export const GEMINI_PRO_MODEL_ID = 'gemini-3.1-pro-preview';
+export const GEMINI_PRO_MODEL_FALLBACKS = Object.freeze([
+  GEMINI_PRO_MODEL_ID,
+  'gemini-2.5-pro'
+]);
 
 export const GEMINI_MODEL_FALLBACKS = Object.freeze([
+  ...GEMINI_PRO_MODEL_FALLBACKS,
   'gemini-3.8-flash',
   'gemini-3.7-flash',
   'gemini-3.6-flash',

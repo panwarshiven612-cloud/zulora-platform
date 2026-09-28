@@ -17,7 +17,7 @@ import { requestGeneration, requestGenerationStream, trackSuccessfulUsage, check
 import { generateVideo as generateVideoWithProviders } from './videoService';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from './systemPrompt';
 import { AI_STUDIO_SYSTEM_PROMPT } from './aiStudioPrompt';
-import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_MODELS, GEMINI_MODEL_FALLBACKS, isCodeGenerationPrompt, normalizeGeminiModelId } from './aiModels';
+import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_FLASH_MODEL_ID, GEMINI_MODELS, GEMINI_MODEL_FALLBACKS, GEMINI_PRO_MODEL_FALLBACKS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId } from './aiModels';
 import { buildImagePrompt } from './imageGen';
 
 // ─── SAFE ENVIRONMENT EXTRACTOR ──────────────────────────────────────────────
@@ -29,6 +29,7 @@ export const GROQ_MODELS = Object.freeze({
   fallback: 'gemini-2.5-flash',
 });
 const GEMINI_FAST_MODEL = getEnv('VITE_GEMINI_FAST_MODEL') || GEMINI_FAST_MODEL_ID;
+const GEMINI_FLASH_MODEL = getEnv('VITE_GEMINI_FLASH_MODEL') || GEMINI_FLASH_MODEL_ID;
 const GEMINI_HIGH_CAPACITY_MODEL = getEnv('VITE_GEMINI_HIGH_CAPACITY_MODEL') || GEMINI_BEST_MODEL_ID;
 const GEMINI_FLASH_VARIANTS = [...new Set([GEMINI_HIGH_CAPACITY_MODEL, ...GEMINI_MODEL_FALLBACKS])];
 export { GEMINI_MODELS };
@@ -98,12 +99,12 @@ export const MODEL_TIERS = {
   },
   flash: {
     id: 'flash',
-    label: 'Gemini',
-    shortLabel: 'Gemini',
-    description: 'Ultra-fast lightweight responses',
+    label: 'Zulora Flash 3.5',
+    shortLabel: 'Flash 3.5',
+    description: 'Gemini 3.5 Flash and Flash-Lite with automatic fallbacks',
     badge: '⚡',
     color: 'text-sky-500',
-    geminiModel: GEMINI_FAST_MODEL,
+    geminiModel: GEMINI_FLASH_MODEL,
     groqModel: GROQ_MODELS.fastStream,
     cerebrasModel: 'llama3.1-8b',
     openrouterModel: 'meta-llama/llama-3.1-8b-instruct:free',
@@ -118,7 +119,7 @@ export const MODEL_TIERS = {
     description: 'Selects a Gemini Flash model for the request type',
     badge: '⚡',
     color: 'text-sky-500',
-    geminiModel: GEMINI_FAST_MODEL,
+    geminiModel: GEMINI_FLASH_MODEL,
     groqModel: GROQ_MODELS.fastStream,
     cerebrasModel: 'llama3.1-8b',
     openrouterModel: 'meta-llama/llama-3.1-8b-instruct:free',
@@ -143,8 +144,8 @@ export const MODEL_TIERS = {
   },
   groq: {
     id: 'groq',
-    label: 'Groq LPU',
-    shortLabel: 'Groq LPU',
+    label: 'Zulora Turbo Speed',
+    shortLabel: 'Turbo Speed',
     description: 'Fast Groq LPU responses with Gemini Flash fallback',
     badge: '⚡',
     color: 'text-orange-500',
@@ -163,7 +164,7 @@ export const MODEL_TIERS = {
     description: 'Complex analysis and high-reasoning tasks',
     badge: '🚀',
     color: 'text-violet-500',
-    geminiModel: GEMINI_HIGH_CAPACITY_MODEL,
+    geminiModel: GEMINI_PRO_MODEL_ID,
     groqModel: GROQ_MODELS.primary,
     cerebrasModel: 'llama-3.3-70b',
     openrouterModel: 'meta-llama/llama-3.3-70b-instruct',
@@ -178,7 +179,7 @@ export const MODEL_TIERS = {
     description: 'Extended reasoning & complex analysis',
     badge: '🧠',
     color: 'text-amber-500',
-    geminiModel: GEMINI_HIGH_CAPACITY_MODEL,
+    geminiModel: GEMINI_PRO_MODEL_ID,
     groqModel: 'openai/gpt-oss-120b',
     cerebrasModel: 'qwq-32b',
     openrouterModel: 'deepseek/deepseek-r1',
@@ -503,7 +504,12 @@ async function tryGeminiKeyWaterfall(prompt, contextMessages, preferredModel, op
       }
     }
     if (!modelUnavailable) break;
-    if (modelIndex === 0) models.push(...GEMINI_FLASH_VARIANTS.filter(candidate => candidate !== preferredModel));
+    if (modelIndex === 0) {
+      const fallbacks = preferredModel === GEMINI_PRO_MODEL_ID
+        ? [...GEMINI_PRO_MODEL_FALLBACKS, ...GEMINI_FLASH_VARIANTS]
+        : GEMINI_FLASH_VARIANTS;
+      models.push(...fallbacks.filter(candidate => candidate !== preferredModel && !models.includes(candidate)));
+    }
   }
   return null;
 }
@@ -766,7 +772,7 @@ export const apiRouter = {
     const flagship = requestedTier === 'think';
     const directGeminiModel = String(requestedTier).startsWith('gemini-');
     const geminiSelected = requestedTier === 'gemini';
-    const intentGeminiModel = coding || complex || flagship ? GEMINI_HIGH_CAPACITY_MODEL : GEMINI_FAST_MODEL;
+    const intentGeminiModel = coding || complex || flagship ? GEMINI_PRO_MODEL_ID : GEMINI_FLASH_MODEL;
     const tier = vision
       ? directGeminiModel ? requestedTier : (geminiSelected ? 'gemini' : requestedTier === 'think' || requestedTier === 'pro' ? requestedTier : 'flash')
       : requestedTier === 'auto' ? (coding ? 'think' : complex ? 'pro' : 'flash') : requestedTier;
@@ -774,7 +780,7 @@ export const apiRouter = {
     options = { ...options, coding, flagship: highTierCodeRequest, preferBestKey: flagship || highTierCodeRequest, streamState: options.streamState || { sent: false } };
     const errors = [];
     const messages = [...buildHistory(contextMessages), { role: 'user', content: prompt }];
-    const geminiModel = directGeminiModel ? requestedTier : geminiSelected ? intentGeminiModel : flagship ? GEMINI_HIGH_CAPACITY_MODEL : (MODEL_TIERS[tier]?.geminiModel || MODEL_TIERS.flash.geminiModel);
+    const geminiModel = directGeminiModel ? requestedTier : geminiSelected ? intentGeminiModel : flagship ? MODEL_TIERS.think.geminiModel : (MODEL_TIERS[tier]?.geminiModel || MODEL_TIERS.flash.geminiModel);
 
     await ensureGenerationAllowance('chat', options.currentUser, {
       modelPreference: requestedTier,

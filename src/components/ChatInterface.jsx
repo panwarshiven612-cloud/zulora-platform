@@ -19,8 +19,8 @@ import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown
 import {
   Send,
   Search,
-  Sparkles,
   Paperclip,
+  Camera,
   Mic,
   MicOff,
   Volume2,
@@ -32,16 +32,13 @@ import {
   Bot,
   User,
   ExternalLink,
-  ChevronDown,
   RefreshCw,
-  Zap,
   Image as ImageIcon,
   X,
   ChevronRight,
   StopCircle,
   Lightbulb,
   Code2,
-  FlaskConical,
   BarChart3,
   ThumbsUp,
   ThumbsDown,
@@ -52,11 +49,12 @@ import {
   Radio,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { apiRouter, MODEL_TIERS } from '../services/apiRouter';
-import { GEMINI_MODELS, isCodeGenerationPrompt } from '../services/aiModels';
+import { apiRouter } from '../services/apiRouter';
+import { isCodeGenerationPrompt } from '../services/aiModels';
 import { firestoreService, deriveChatTitle } from '../services/firestoreService';
 import { imageFileToDataUrl } from '../services/imageUtils';
 import CodeArtifactRunner from './CodeArtifactRunner';
+import ModelSelector from './ModelSelector';
 
 /* ============================================================
    CONSTANTS
@@ -68,27 +66,6 @@ const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
   ['typescript', typescript], ['tsx', tsx], ['python', python], ['bash', bash],
   ['json', json], ['css', css], ['sql', sql], ['yaml', yaml], ['markdown', markdown]
 ].forEach(([name, language]) => SyntaxHighlighter.registerLanguage(name, language));
-
-const MODEL_OPTIONS = [
-  ...['auto', 'gemini', 'groq', 'think'].map(id => MODEL_TIERS[id]).map(t => ({
-    id: t.id,
-    label: t.label,
-    shortLabel: t.shortLabel,
-    icon: t.id === 'gemini' || t.id === 'groq' ? Zap : t.id === 'think' ? FlaskConical : Sparkles,
-    color: t.color,
-    badge: t.badge,
-    tier: t.tier,
-  })),
-  ...GEMINI_MODELS.map(model => ({
-    id: model.id,
-    label: model.label,
-    shortLabel: model.label.replace('Gemini ', ''),
-    icon: model.speed === 'reasoning' ? FlaskConical : Zap,
-    color: model.speed === 'reasoning' ? 'text-violet-500' : 'text-sky-500',
-    badge: model.tier === 'preview' ? 'Preview' : 'Gemini',
-    tier: 'free'
-  }))
-];
 
 const SUGGESTION_CARDS = [
   {
@@ -488,6 +465,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const [modelPreference, setModelPreference] = useState('auto');
   const [enableWebSearch, setEnableWebSearch] = useState(false);
   const [attachments, setAttachments] = useState([]);
+  const [attachmentPreviewUrls, setAttachmentPreviewUrls] = useState(() => new Map());
   const [isListening, setIsListening] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [isSpeakingIndex, setIsSpeakingIndex] = useState(null);
@@ -499,6 +477,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
   const fileInputRef = useRef(null);
+  const cameraInputRef = useRef(null);
   const recognitionRef = useRef(null);
   const textareaRef = useRef(null);
   const speechRef = useRef(null);
@@ -506,6 +485,15 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const thinkingTimerRef = useRef(null);
 
   useEffect(() => () => clearTimeout(thinkingTimerRef.current), []);
+
+  useEffect(() => {
+    const previews = new Map();
+    attachments.forEach(file => {
+      if (file.type?.startsWith('image/')) previews.set(file, URL.createObjectURL(file));
+    });
+    setAttachmentPreviewUrls(previews);
+    return () => previews.forEach(url => URL.revokeObjectURL(url));
+  }, [attachments]);
 
   // Sync messages when activeSession changes
   useEffect(() => {
@@ -643,7 +631,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   }, [messages]);
 
   const sendMessage = useCallback(async (promptOverride = null) => {
-    const basePrompt = (promptOverride || inputPrompt).trim();
+    const hasImageAttachment = attachments.some(file => file.type?.startsWith('image/'));
+    const basePrompt = String(promptOverride ?? inputPrompt).trim() || (hasImageAttachment ? 'Please analyze the attached image.' : '');
     if (!basePrompt || loading || sendingRef.current) return;
 
     const codeGenerationRequest = isCodeGenerationPrompt(basePrompt);
@@ -892,8 +881,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     }
   };
 
-  const selectedModel = MODEL_OPTIONS.find(m => m.id === modelPreference) || MODEL_OPTIONS[0];
-
   return (
     <div className="flex-1 min-h-0 min-w-0 flex flex-col h-full overflow-hidden relative">
 
@@ -938,27 +925,39 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       {/* ─── Input Area ─── */}
       <div className={`shrink-0 border-t border-slate-200/70 dark:border-slate-800/70 bg-white/80 dark:bg-[#070b14]/90 backdrop-blur-xl px-2.5 sm:px-4 md:px-6 pt-3 sm:py-4 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-4 ${showModelMenu ? 'relative z-[60]' : ''}`}>
 
-        {/* Attachments Preview */}
-        {attachments.length > 0 && (
-          <div className="flex flex-wrap gap-2 mb-3">
-            {attachments.map((file, i) => (
-              <div key={i} className="flex items-center gap-1.5 text-xs bg-sky-50 dark:bg-sky-950/30 text-sky-700 dark:text-sky-400 border border-sky-200/50 dark:border-sky-800/40 rounded-lg px-2.5 py-1.5">
-                <Paperclip className="w-3 h-3" />
-                <span className="max-w-[120px] truncate">{file.name}</span>
-                <button onClick={() => removeAttachment(i)} className="hover:text-red-500 transition-colors ml-0.5">
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
         {/* Input Box */}
         <div
           onDrop={handleDrop}
           onDragOver={event => { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; }}
           className="glass-pearl dark:glass-dark rounded-2xl border border-slate-200/70 dark:border-slate-700/60 overflow-visible transition-all duration-200 focus-within:border-sky-400/50 dark:focus-within:border-sky-500/40 focus-within:shadow-[0_0_0_3px_rgba(14,165,233,0.1)]"
         >
+
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 px-3 pt-3" aria-label="Attached files">
+              {attachments.map((file, i) => {
+                const previewUrl = attachmentPreviewUrls.get(file);
+                return (
+                  <div key={`${file.name}-${file.lastModified}-${i}`} className="group relative flex h-14 max-w-[13rem] items-center gap-2 overflow-hidden rounded-xl border border-sky-200/60 bg-sky-50/80 pr-8 text-xs text-sky-800 dark:border-sky-800/50 dark:bg-sky-950/30 dark:text-sky-300">
+                    {previewUrl ? (
+                      <img src={previewUrl} alt={`Preview of ${file.name}`} className="h-14 w-14 shrink-0 object-cover" />
+                    ) : (
+                      <span className="grid h-14 w-14 shrink-0 place-items-center bg-sky-100 dark:bg-sky-900/50"><Paperclip className="h-4 w-4" /></span>
+                    )}
+                    <span className="max-w-[7rem] truncate">{file.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(i)}
+                      aria-label={`Remove ${file.name}`}
+                      title="Remove attachment"
+                      className="absolute right-1 top-1 grid h-6 w-6 place-items-center rounded-full bg-slate-900/70 text-white transition hover:bg-red-500 focus:outline-none focus:ring-2 focus:ring-sky-400"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {/* Text Area */}
           <textarea
@@ -979,48 +978,16 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             {/* Left Tools */}
             <div className="flex items-center gap-1 min-w-0">
               {/* Model Selector */}
-              <div className="relative" id="model-selector">
-                <button
-                  type="button"
-                  aria-haspopup="menu"
-                  aria-expanded={showModelMenu}
-                  aria-controls="model-selector-menu"
-                  onClick={event => {
-                    event.stopPropagation();
-                    setShowModelMenu(v => !v);
-                  }}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700/50 transition-all"
-                >
-                  <selectedModel.icon className={`w-3.5 h-3.5 ${selectedModel.color}`} />
-                  <span className="max-w-[4.5rem] truncate sm:max-w-none">{selectedModel.shortLabel}</span>
-                  <ChevronDown className="w-3 h-3 text-slate-400" />
-                </button>
-                {showModelMenu && (
-                  <div id="model-selector-menu" role="menu" onClick={event => event.stopPropagation()} className="absolute bottom-full mb-2 left-0 glass-elevated dark:glass-dark rounded-xl border border-white/80 dark:border-slate-700/60 shadow-2xl z-50 p-1.5 w-[min(15rem,calc(100vw-1.5rem))] sm:w-auto sm:min-w-[180px] max-h-[min(60vh,24rem)] overflow-y-auto animate-scale-in">
-                    {MODEL_OPTIONS.map(opt => (
-                      <button
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={modelPreference === opt.id}
-                        key={opt.id}
-                        onClick={() => {
-                          setModelPreference(opt.id);
-                          setShowModelMenu(false);
-                        }}
-                        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
-                          modelPreference === opt.id
-                            ? 'bg-sky-50 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400'
-                            : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60'
-                        }`}
-                      >
-                        <opt.icon className={`w-3.5 h-3.5 ${opt.color}`} />
-                        <span className="truncate">{opt.label}</span>
-                        {modelPreference === opt.id && <Check className="w-3 h-3 ml-auto" />}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <ModelSelector
+                modelPreference={modelPreference}
+                onModelChange={setModelPreference}
+                isOpen={showModelMenu}
+                onToggle={event => {
+                  event.stopPropagation();
+                  setShowModelMenu(value => !value);
+                }}
+                onClose={() => setShowModelMenu(false)}
+              />
 
               {/* Web Search Toggle */}
               <button
@@ -1040,10 +1007,21 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
                 onClick={() => fileInputRef.current?.click()}
                 className="p-1.5 rounded-lg text-slate-500 dark:text-slate-500 hover:text-sky-500 hover:bg-sky-50 dark:hover:bg-sky-950/30 border border-slate-200/60 dark:border-slate-700/50 transition-all"
                 title="Attach file"
+                aria-label="Attach file"
               >
                 <Paperclip className="w-3.5 h-3.5" />
               </button>
-          <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileAttach} accept="image/*,.txt,.md,.csv,.json,.pdf" />
+              <button
+                type="button"
+                onClick={() => cameraInputRef.current?.click()}
+                className="p-1.5 rounded-lg text-slate-500 dark:text-slate-500 hover:text-sky-500 hover:bg-sky-50 dark:hover:bg-sky-950/30 border border-slate-200/60 dark:border-slate-700/50 transition-all"
+                title="Take or choose a photo"
+                aria-label="Take or choose a photo"
+              >
+                <Camera className="w-3.5 h-3.5" />
+              </button>
+              <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileAttach} accept="image/*,.txt,.md,.csv,.json,.pdf" />
+              <input ref={cameraInputRef} type="file" className="hidden" onChange={handleFileAttach} accept="image/*" capture="environment" />
 
               {/* Mic */}
               <button
@@ -1075,9 +1053,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             {/* Right: Send Button */}
             <button
               onClick={() => sendMessage()}
-              disabled={!inputPrompt.trim() || loading}
+              disabled={(!inputPrompt.trim() && !attachments.some(file => file.type?.startsWith('image/'))) || loading}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-semibold transition-all duration-200 ${
-                inputPrompt.trim() && !loading
+                (inputPrompt.trim() || attachments.some(file => file.type?.startsWith('image/'))) && !loading
                   ? 'azure-gradient-btn text-white shadow-md'
                   : 'bg-slate-100 dark:bg-slate-800/60 text-slate-400 cursor-not-allowed'
               }`}
