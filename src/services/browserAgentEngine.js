@@ -364,11 +364,53 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
   };
 }
 
+// ─── Persistent Screen State Memory Buffer ───────────────────────────────────
+export const screenMemoryBuffer = [];
+
+export function recordScreenMemory(entry) {
+  if (!entry) return;
+  screenMemoryBuffer.push({
+    timestamp: Date.now(),
+    url: entry.url || '',
+    title: entry.title || '',
+    summary: (entry.summary || entry.text || '').slice(0, 1500),
+    screenshot: entry.screenshot || '',
+    step: entry.step || null,
+    status: entry.status || 'captured'
+  });
+  if (screenMemoryBuffer.length > 25) {
+    screenMemoryBuffer.shift();
+  }
+}
+
+export function getRecentScreenMemory(count = 3) {
+  return screenMemoryBuffer.slice(-count);
+}
+
+export function clearScreenMemory() {
+  screenMemoryBuffer.length = 0;
+}
+
+// Listen for screen state memory updates from extension background
+if (typeof window !== 'undefined') {
+  window.addEventListener('message', (event) => {
+    if (event.data?.source === 'ZULORA_EXTENSION' && event.data?.type === 'ZULORA_SCREEN_STATE_UPDATE') {
+      recordScreenMemory({
+        url: event.data.url,
+        title: event.data.title,
+        screenshot: event.data.screenshot,
+        step: event.data.stepAction,
+        status: event.data.status
+      });
+    }
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// AGENT 1: MASTER PLANNER & DECOMPOSER
+// AGENT 1: MASTER PLANNER & DECOMPOSER (SCREEN MEMORY AWARE)
 // ─────────────────────────────────────────────────────────────────────────────
 /**
- * Takes user voice/text prompt + current screen text context.
+ * Takes user voice/text prompt + current screen text context + past screen history.
  * Decomposes complex tasks into an ordered JSON step queue:
  * [
  *   { "step": 1, "action": "NAVIGATE", "url": "..." },
@@ -409,9 +451,15 @@ Rules:
 - Ensure all URLs start with https://.
 - Output ONLY the JSON array.`;
 
+  // Weave persistent screen memory buffer into planning context
+  const recentMemory = getRecentScreenMemory(2);
+  const memoryContext = recentMemory.length > 0
+    ? `\nScreen Vision Memory History:\n` + recentMemory.map((m, i) => `[State ${i+1}: ${m.title || m.url}]`).join('\n')
+    : '';
+
   const contextPrompt = screenContext
-    ? `User Prompt: ${cleanPrompt}\nCurrent Screen Summary:\n${screenContext.slice(0, 1000)}`
-    : `User Prompt: ${cleanPrompt}`;
+    ? `User Prompt: ${cleanPrompt}\nCurrent Screen Summary:\n${screenContext.slice(0, 1000)}${memoryContext}`
+    : `User Prompt: ${cleanPrompt}${memoryContext}`;
 
   const planResult = await callWaterfallLLM(contextPrompt, systemPrompt, {
     maxTokens: 900,
@@ -551,6 +599,17 @@ export function agent3_ScreenVerifier(stepResult, step) {
   }
   if (stepResult.error) {
     return { verified: false, retry: true, reason: stepResult.error };
+  }
+  // Record screen memory state
+  if (stepResult.url || stepResult.dom || stepResult.screenshot || stepResult.text) {
+    recordScreenMemory({
+      url: stepResult.url || stepResult.dom?.url,
+      title: stepResult.title || stepResult.dom?.title,
+      summary: stepResult.text || stepResult.dom?.summary,
+      screenshot: stepResult.screenshot,
+      step: step?.action,
+      status: 'verified'
+    });
   }
   return { verified: true, retry: false };
 }

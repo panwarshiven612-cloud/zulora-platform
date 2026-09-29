@@ -470,7 +470,23 @@ function __zuloraUniversalExecutor(action, payload) {
     }
     if (!el) return { error: `Element not found: ${selector || target}` };
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    await sleep(200);
+    await sleep(150);
+
+    // Agent 2 Turtle Cursor Simulation
+    const rect = el.getBoundingClientRect();
+    const turtle = document.getElementById('zulora-turtle-cursor');
+    if (turtle) {
+      turtle.style.opacity = '1';
+      turtle.style.transform = `translate(${rect.left + rect.width / 2}px, ${rect.top + rect.height / 2}px)`;
+      const ripple = turtle.querySelector('.zulora-cursor-ripple');
+      if (ripple) {
+        ripple.classList.add('animate');
+        setTimeout(() => ripple.classList.remove('animate'), 350);
+      }
+      await sleep(180);
+      turtle.style.opacity = '0';
+    }
+
     el.focus();
     el.click();
     return { success: true, clicked: true, tag: el.tagName };
@@ -491,6 +507,19 @@ function __zuloraUniversalExecutor(action, payload) {
       el = inputs.find(i => (i.placeholder || '').toLowerCase().includes(selector.toLowerCase()));
     }
     if (!el) return { error: `Input element not found: ${selector || target}` };
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    await sleep(150);
+
+    // Agent 2 Turtle Cursor Simulation
+    const rect = el.getBoundingClientRect();
+    const turtle = document.getElementById('zulora-turtle-cursor');
+    if (turtle) {
+      turtle.style.opacity = '1';
+      turtle.style.transform = `translate(${rect.left + rect.width / 2}px, ${rect.top + rect.height / 2}px)`;
+      await sleep(150);
+      turtle.style.opacity = '0';
+    }
+
     insertText(el, text);
     return { success: true, filled: true, value: text };
   }
@@ -817,7 +846,44 @@ async function runQueue() {
     try {
       const res = await executeStep(taskQueue[currentStepIndex]);
       if (res?.paused) break;
-      await sleep(300);
+
+      // ── Agent 3: Vision & Screen Reasoning Verifier ──
+      try {
+        const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const curTab = activeTabs[0];
+        if (curTab?.id) {
+          let screenshot = '';
+          try {
+            if (curTab.windowId) {
+              screenshot = await chrome.tabs.captureVisibleTab(curTab.windowId, { format: 'jpeg', quality: 50 });
+            }
+          } catch {}
+
+          const screenMemoryPayload = {
+            type: 'ZULORA_SCREEN_STATE_UPDATE',
+            stepIndex: currentStepIndex + 1,
+            totalSteps: taskQueue.length,
+            stepAction: taskQueue[currentStepIndex]?.action,
+            url: curTab.url || '',
+            title: curTab.title || '',
+            screenshot,
+            status: 'verified',
+            timestamp: Date.now()
+          };
+
+          chrome.tabs.query({}, (tabs) => {
+            tabs.forEach(t => {
+              if (t.id && isZuloraOrigin(t.url || '')) {
+                chrome.tabs.sendMessage(t.id, screenMemoryPayload).catch(() => {});
+              }
+            });
+          });
+        }
+      } catch (visionErr) {
+        console.warn('[Agent 3 Screen Verifier]', visionErr.message);
+      }
+
+      await sleep(250);
     } catch {
       taskStatus = 'error';
       broadcastStatus();

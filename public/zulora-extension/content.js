@@ -1,12 +1,14 @@
 /**
- * Zulora AI Computer Plugin — Content Script v1.4.0
+ * Zulora AI Computer Plugin — Content Script v1.4.1
  * ===================================================
  * Features:
- *  - Triple-Agent Execution Support (Direct JS actions in <300ms)
- *  - Ultra-Fast DOM Minifier (<3KB Payload, interactive elements only)
- *  - Continuous Voice Recognition with 4.0s Silence Auto-Stop & Manual Stop
- *  - Draggable Pearl & Azure Floating Mic with Position Persistence
- *  - Real-time Screen Readout via Web Speech Synthesis TTS
+ *  - Triple-Agent DOM & Native Turtle Cursor Executor (sub-300ms latency)
+ *  - Smooth visual mouse cursor movement on screen during clicks
+ *  - Continuous Voice Recognition with 4.0s Silence Auto-Stop & Manual 2nd-Click Stop
+ *  - Draggable Pearl & Azure Glassmorphism Floating Mic with Coordinate Persistence
+ *  - Live pulsing audio visualizer ring & real-time interim transcript tooltip
+ *  - Ultra-Fast DOM Minifier (<3KB payload, clickable/interactive elements only)
+ *  - Real-Time Screen Readout via Web Speech Synthesis TTS
  *  - Bulletproof Context-Invalidation Guard & Native Event Dispatch
  */
 
@@ -23,7 +25,7 @@
   try {
     document.documentElement.setAttribute('data-zulora-plugin-active', 'true');
     window.dispatchEvent(new CustomEvent('ZULORA_PLUGIN_CONNECTED', {
-      detail: { version: '1.4.0', status: 'connected' }
+      detail: { version: '1.4.1', status: 'connected' }
     }));
   } catch {}
 
@@ -50,17 +52,23 @@
     }
   }
 
-  // ─── Listen for Status Updates from Background ──────────────────────────────
+  // ─── Listen for Status Updates & Commands from Background ────────────────────
   if (isExtensionValid()) {
     try {
       chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-        if (message && (message.type === 'ZULORA_STATUS_UPDATE' || message.type === 'ZULORA_AGENT_STEP_UPDATE')) {
+        if (message && (message.type === 'ZULORA_STATUS_UPDATE' || message.type === 'ZULORA_AGENT_STEP_UPDATE' || message.type === 'ZULORA_SCREEN_STATE_UPDATE')) {
           window.postMessage({ ...message, source: 'ZULORA_EXTENSION' }, '*');
           if (sendResponse) sendResponse({ ok: true });
         }
         if (message && message.type === 'ZULORA_READ_SCREEN_TTS') {
           speakScreenText(message.text || document.body?.innerText?.slice(0, 1500) || 'No text found on screen.');
           if (sendResponse) sendResponse({ ok: true });
+        }
+        if (message && message.type === 'ZULORA_MOVE_TURTLE_CURSOR') {
+          animateTurtleCursorTo(message.x, message.y, () => {
+            if (sendResponse) sendResponse({ ok: true });
+          });
+          return true;
         }
         return true;
       });
@@ -98,11 +106,6 @@
   });
 
   // ─── Ultra-Fast DOM Minifier (<3KB Payload) ─────────────────────────────────
-  /**
-   * Extracts ONLY clickable / interactive elements:
-   *  a, button, input, textarea, select, [role="button"], [onclick]
-   * Strips all inline styles, SVG paths, and hidden elements to keep payload <3KB.
-   */
   function getMinifiedDOM() {
     const MAX_ELEMENTS = 35;
     const MAX_TEXT = 50;
@@ -130,7 +133,6 @@
       const type = el.type || '';
       const href = tag === 'a' ? (el.getAttribute('href') || '').slice(0, 80) : '';
 
-      // Generate a fast selector
       let selector = tag;
       if (el.id) {
         selector = `#${el.id}`;
@@ -145,7 +147,6 @@
       return { i: idx, tag, type, name, placeholder, ariaLabel, text, href, selector };
     });
 
-    // Main article/body text excerpt
     const mainContainer = document.querySelector('article, main, [role="main"]') || document.body;
     const mainText = (mainContainer?.innerText || '').replace(/\s+/g, ' ').slice(0, 1200);
 
@@ -155,6 +156,41 @@
       elements: minifiedList,
       summary: mainText
     };
+  }
+
+  // ─── AGENT 2: Turtle Cursor Simulation Engine ───────────────────────────────
+  function getOrCreateTurtleCursor() {
+    let cursor = document.getElementById('zulora-turtle-cursor');
+    if (cursor) return cursor;
+
+    cursor = document.createElement('div');
+    cursor.id = 'zulora-turtle-cursor';
+    cursor.innerHTML = `
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" style="filter: drop-shadow(0 2px 8px rgba(2, 132, 199, 0.75));">
+        <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" fill="#0284c7" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round"/>
+      </svg>
+      <div class="zulora-cursor-ripple"></div>
+    `;
+    document.body.appendChild(cursor);
+    return cursor;
+  }
+
+  function animateTurtleCursorTo(targetX, targetY, onComplete) {
+    const cursor = getOrCreateTurtleCursor();
+    cursor.style.opacity = '1';
+    cursor.style.transform = `translate(${targetX}px, ${targetY}px)`;
+
+    setTimeout(() => {
+      const ripple = cursor.querySelector('.zulora-cursor-ripple');
+      if (ripple) {
+        ripple.classList.add('animate');
+        setTimeout(() => ripple.classList.remove('animate'), 350);
+      }
+      if (typeof onComplete === 'function') onComplete();
+      setTimeout(() => {
+        cursor.style.opacity = '0';
+      }, 350);
+    }, 160);
   }
 
   // ─── Direct JS Executor Engine (Agent 2 - <300ms Latency) ───────────────────
@@ -174,14 +210,17 @@
         }
 
         if (el) {
-          el.focus();
-          if (el.isContentEditable) {
-            el.innerText = text;
-          } else {
-            el.value = text;
-          }
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
+          const rect = el.getBoundingClientRect();
+          animateTurtleCursorTo(rect.left + rect.width / 2, rect.top + rect.height / 2, () => {
+            el.focus();
+            if (el.isContentEditable) {
+              el.innerText = text;
+            } else {
+              el.value = text;
+            }
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          });
           return { success: true, method: 'direct_js', target: el.tagName };
         }
       }
@@ -195,8 +234,11 @@
                );
         }
         if (el) {
-          el.focus();
-          el.click();
+          const rect = el.getBoundingClientRect();
+          animateTurtleCursorTo(rect.left + rect.width / 2, rect.top + rect.height / 2, () => {
+            el.focus();
+            el.click();
+          });
           return { success: true, method: 'direct_js', clicked: true };
         }
       }
@@ -215,7 +257,7 @@
   function speakScreenText(textToSpeak) {
     if (!('speechSynthesis' in window)) return;
     try {
-      window.speechSynthesis.cancel(); // Stop any active speech
+      window.speechSynthesis.cancel();
       const text = textToSpeak || extractCleanScreenText();
       const utterance = new SpeechSynthesisUtterance(text.slice(0, 500));
       utterance.rate = 1.05;
@@ -237,7 +279,6 @@
       .slice(0, 1500);
   }
 
-  // Expose DOM snapshot to background & web app
   window.addEventListener('ZULORA_GET_DOM_SNAPSHOT', () => {
     const snap = getMinifiedDOM();
     window.postMessage({ source: 'ZULORA_EXTENSION', type: 'ZULORA_DOM_SNAPSHOT', snapshot: snap }, '*');
@@ -285,20 +326,53 @@
   function buildWidget() {
     if (document.getElementById('zulora-floating-mic')) return;
 
-    // Inject Styles
+    // Inject Styles for Mic & Turtle Cursor
     const style = document.createElement('style');
     style.id = 'zulora-mic-styles';
     style.textContent = `
+      #zulora-turtle-cursor {
+        position: fixed;
+        top: 0; left: 0;
+        width: 24px;
+        height: 24px;
+        pointer-events: none;
+        z-index: 2147483647;
+        opacity: 0;
+        transform: translate(0px, 0px);
+        transition: transform 0.22s cubic-bezier(0.25, 1, 0.5, 1), opacity 0.2s ease;
+      }
+      .zulora-cursor-ripple {
+        position: absolute;
+        top: 50%; left: 50%;
+        width: 10px; height: 10px;
+        margin: -5px 0 0 -5px;
+        border-radius: 50%;
+        border: 2px solid #38bdf8;
+        opacity: 0;
+        pointer-events: none;
+      }
+      .zulora-cursor-ripple.animate {
+        animation: zuloraRippleAnim 0.38s ease-out forwards;
+      }
+      @keyframes zuloraRippleAnim {
+        0% { transform: scale(1); opacity: 1; }
+        100% { transform: scale(5); opacity: 0; }
+      }
+
+      /* Pearl & Azure Glassmorphism Floating Mic */
       #zulora-floating-mic {
         position: fixed;
         bottom: 28px;
         right: 28px;
         z-index: 2147483647;
-        width: 56px;
-        height: 56px;
+        width: 58px;
+        height: 58px;
         border-radius: 50%;
-        background: linear-gradient(135deg, #0284c7 0%, #6366f1 100%);
-        box-shadow: 0 4px 18px rgba(2, 132, 199, 0.45);
+        background: linear-gradient(135deg, rgba(2, 132, 199, 0.88) 0%, rgba(56, 189, 248, 0.75) 50%, rgba(99, 102, 241, 0.88) 100%);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border: 1.5px solid rgba(255, 255, 255, 0.65);
+        box-shadow: 0 8px 32px 0 rgba(2, 132, 199, 0.38), inset 0 1px 2px rgba(255, 255, 255, 0.8);
         display: flex;
         align-items: center;
         justify-content: center;
@@ -308,15 +382,39 @@
         transition: transform 0.15s ease, box-shadow 0.2s ease;
       }
       #zulora-floating-mic:hover {
-        transform: scale(1.05);
-        box-shadow: 0 6px 22px rgba(2, 132, 199, 0.65);
+        transform: scale(1.06);
+        box-shadow: 0 10px 36px 0 rgba(2, 132, 199, 0.55), inset 0 1px 2px rgba(255, 255, 255, 0.9);
       }
       #zulora-floating-mic.listening {
-        background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+        background: linear-gradient(135deg, rgba(239, 68, 68, 0.92) 0%, rgba(220, 38, 38, 0.92) 100%);
+        border: 1.5px solid rgba(255, 255, 255, 0.8);
         box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.8);
         animation: zuloraPulseRing 1.3s infinite cubic-bezier(0.4, 0, 0.6, 1);
       }
       #zulora-floating-mic svg { pointer-events: none; }
+      
+      /* Visualizer waves inside mic while listening */
+      .zulora-wave-bar {
+        width: 3px;
+        background: #ffffff;
+        border-radius: 2px;
+        margin: 0 1.5px;
+        display: none;
+      }
+      #zulora-floating-mic.listening .zulora-mic-icon { display: none; }
+      #zulora-floating-mic.listening .zulora-wave-bar {
+        display: block;
+        animation: zuloraWave 0.8s ease-in-out infinite alternate;
+      }
+      #zulora-floating-mic .zulora-wave-bar:nth-child(2) { animation-delay: 0.15s; }
+      #zulora-floating-mic .zulora-wave-bar:nth-child(3) { animation-delay: 0.3s; }
+      #zulora-floating-mic .zulora-wave-bar:nth-child(4) { animation-delay: 0.45s; }
+      @keyframes zuloraWave {
+        0%   { height: 6px; }
+        100% { height: 22px; }
+      }
+
+      /* Real-time Interim Tooltip */
       #zulora-voice-toast {
         position: fixed;
         bottom: 96px;
@@ -371,11 +469,22 @@
       toast.classList.remove('visible');
     }
 
-    // Create Widget Button
+    // Create Widget Button with Wave Visualizer
     const mic = document.createElement('div');
     mic.id = 'zulora-floating-mic';
     mic.setAttribute('title', 'Zulora AI Voice Agent (Click to speak / click to stop)');
-    mic.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>`;
+    mic.innerHTML = `
+      <svg class="zulora-mic-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+        <line x1="12" y1="19" x2="12" y2="23"/>
+        <line x1="8" y1="23" x2="16" y2="23"/>
+      </svg>
+      <div class="zulora-wave-bar" style="height: 10px;"></div>
+      <div class="zulora-wave-bar" style="height: 18px;"></div>
+      <div class="zulora-wave-bar" style="height: 24px;"></div>
+      <div class="zulora-wave-bar" style="height: 14px;"></div>
+    `;
     document.body.appendChild(mic);
 
     // Restore Saved Coordinates
@@ -535,7 +644,7 @@
       }
 
       recognition = new SR();
-      recognition.continuous = true;       // CONTINUOUS: Do NOT cut off early
+      recognition.continuous = true;       // CONTINUOUS: Do NOT cut off early while speaking
       recognition.interimResults = true;   // Live transcript stream
       recognition.lang = 'en-US';
       recognition.maxAlternatives = 1;
@@ -582,7 +691,6 @@
       };
 
       recognition.onend = () => {
-        // If still flagged as listening (e.g. Chrome automatic pause), restart if no silence cutoff
         if (isListening && !fullTranscript) {
           try { recognition.start(); } catch {}
         } else if (isListening) {
@@ -605,8 +713,7 @@
     document.addEventListener('DOMContentLoaded', injectVoiceWidget);
   }
 
-  // Ready signal
   safeSendMessage({ type: 'ZULORA_CONTENT_READY', url: window.location.href });
-  console.log('[Zulora Content v1.4] Triple-Agent & Continuous Speech Active on', window.location.hostname);
+  console.log('[Zulora Content v1.4.1] Triple-Agent & Continuous Speech Active on', window.location.hostname);
 
 })();

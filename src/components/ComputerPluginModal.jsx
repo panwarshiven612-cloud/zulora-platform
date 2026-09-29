@@ -15,6 +15,8 @@ import {
   parseCommandToSteps
 } from '../services/browserAgentEngine';
 import { useAuth } from '../context/AuthContext';
+import { db } from '../services/firebase';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 
 // ─── Status Badge Config ──────────────────────────────────────────────────────
 const STATUS_CONFIG = {
@@ -62,7 +64,20 @@ const INSTALL_STEPS = [
   'Reload this page — the plugin connects automatically.',
 ];
 
-const FREE_TASK_LIMIT = 5;
+export const DAILY_RUN_LIMIT = 10;
+
+const getTodayDateString = () => new Date().toISOString().slice(0, 10);
+
+const getInitialDailyUsage = () => {
+  const savedDate = localStorage.getItem('zulora_plugin_last_date');
+  const today = getTodayDateString();
+  if (savedDate !== today) {
+    localStorage.setItem('zulora_plugin_last_date', today);
+    localStorage.setItem('zulora_plugin_daily_count', '0');
+    return 0;
+  }
+  return parseInt(localStorage.getItem('zulora_plugin_daily_count') || '0', 10);
+};
 
 // ─── Component ────────────────────────────────────────────────────────────────
 const ComputerPluginModal = ({ isOpen, onClose }) => {
@@ -81,13 +96,11 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   const [showPreview, setShowPreview] = useState(false);
   const [isListening, setIsListening] = useState(false);
 
-  // Token Tracking & Gatekeeper state
+  // Token Tracking & Daily 10-Use Gatekeeper state
   const [sessionTokens, setSessionTokens] = useState(() => {
     return parseInt(localStorage.getItem('zulora_total_tokens') || '0', 10);
   });
-  const [taskCount, setTaskCount] = useState(() => {
-    return parseInt(localStorage.getItem('zulora_plugin_task_count') || '0', 10);
-  });
+  const [dailyUsage, setDailyUsage] = useState(getInitialDailyUsage);
   const [showUpgradeGate, setShowUpgradeGate] = useState(false);
   const [floatingMicEnabled, setFloatingMicEnabled] = useState(() => {
     return localStorage.getItem('zulora_floating_mic') !== 'false';
@@ -96,6 +109,50 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   const logEndRef = useRef(null);
   const inputRef  = useRef(null);
   const recognitionRef = useRef(null);
+
+  // ── Sync Firestore daily usage ──────────────────────────────────────────────
+  const syncDailyUsageToFirestore = async (userId, count, date) => {
+    if (!userId || !db) return;
+    try {
+      const userRef = doc(db, 'users', userId);
+      await setDoc(userRef, {
+        dailyPluginUsage: {
+          date,
+          count,
+          updatedAt: Date.now()
+        }
+      }, { merge: true });
+    } catch (err) {
+      console.warn('[ComputerPluginModal] Firestore daily usage sync warning:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (!currentUser?.uid || !db) return;
+    let isMounted = true;
+    const fetchUsage = async () => {
+      try {
+        const userRef = doc(db, 'users', currentUser.uid);
+        const snap = await getDoc(userRef);
+        if (snap.exists() && isMounted) {
+          const data = snap.data()?.dailyPluginUsage;
+          const today = getTodayDateString();
+          if (data && data.date === today && typeof data.count === 'number') {
+            setDailyUsage(prev => {
+              const maxVal = Math.max(prev, data.count);
+              localStorage.setItem('zulora_plugin_daily_count', String(maxVal));
+              localStorage.setItem('zulora_plugin_last_date', today);
+              return maxVal;
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('[ComputerPluginModal] Firestore fetch usage error:', e);
+      }
+    };
+    fetchUsage();
+    return () => { isMounted = false; };
+  }, [currentUser]);
 
   // ── Sync session token storage ──────────────────────────────────────────────
   const recordTokens = useCallback((tokens) => {
@@ -255,8 +312,8 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   const handleRun = useCallback(async () => {
     if (!command.trim() || isRunning) return;
 
-    // Gatekeeper: Free users capped at 5 tasks
-    if (!isPro && taskCount >= FREE_TASK_LIMIT) {
+    // Gatekeeper: Free users capped at DAILY_RUN_LIMIT (10) per 24 hours
+    if (!isPro && dailyUsage >= DAILY_RUN_LIMIT) {
       setShowUpgradeGate(true);
       return;
     }
@@ -273,11 +330,16 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     setLoginRequired(null);
     setIsLogOpen(true);
 
-    // Increment task count for free users
+    // Increment daily usage count for free users
     if (!isPro) {
-      const nextCount = taskCount + 1;
-      setTaskCount(nextCount);
-      localStorage.setItem('zulora_plugin_task_count', String(nextCount));
+      const today = getTodayDateString();
+      const nextUsage = dailyUsage + 1;
+      setDailyUsage(nextUsage);
+      localStorage.setItem('zulora_plugin_last_date', today);
+      localStorage.setItem('zulora_plugin_daily_count', String(nextUsage));
+      if (currentUser?.uid) {
+        syncDailyUsageToFirestore(currentUser.uid, nextUsage, today);
+      }
     }
 
     const result = await executeCommand(command, (entry) => {
@@ -301,7 +363,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
         timestamp: Date.now()
       }]);
     }
-  }, [command, isRunning, isPro, taskCount, checkConnection, currentUser, recordTokens]);
+  }, [command, isRunning, isPro, dailyUsage, checkConnection, currentUser, recordTokens]);
 
   const handlePause = useCallback(async () => {
     await pauseTask();
@@ -417,6 +479,10 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
           <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300 font-medium">
             <Zap className="w-3.5 h-3.5 text-sky-500 animate-pulse" />
             <span>Tokens Used: <strong className="font-bold text-sky-600 dark:text-sky-400">{sessionTokens.toLocaleString()}</strong> Tokens</span>
+            <span className="text-slate-300 dark:text-slate-700 mx-1">|</span>
+            <span className={isPro ? "text-amber-500 font-bold" : "text-slate-500 dark:text-slate-400 font-medium"}>
+              {isPro ? 'Unlimited Pro Runs' : `${Math.max(0, DAILY_RUN_LIMIT - dailyUsage)}/10 Runs Left Today`}
+            </span>
           </div>
           {/* Floating Mic Toggle */}
           <button
@@ -443,11 +509,11 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
               <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
                 <Crown className="w-5 h-5 text-amber-500" />
                 <h3 className="text-xs font-black uppercase tracking-wide">
-                  Free Limit Reached (5/5 Tasks)
+                  Daily Limit Reached (10/10 Tasks Today)
                 </h3>
               </div>
               <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
-                You've completed all 5 free automation tasks. Upgrade to <strong>Zulora Pro</strong> for unlimited autonomous browser agent execution, rich Pearl/Azure templates, and WhatsApp/Gmail integration.
+                You've used all 10 free daily automation tasks. Your quota resets at midnight, or upgrade to <strong>Zulora Pro</strong> for unlimited autonomous browser agent execution, rich Pearl/Azure templates, and WhatsApp/Gmail integration.
               </p>
               <div className="flex items-center gap-2">
                 <button
@@ -515,9 +581,13 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
                 {actionLog.filter(l => l.status === 'done').length} / {actionLog.length} steps done
               </span>
             )}
-            {!isPro && (
+            {!isPro ? (
               <span className="text-[10px] text-slate-400 ml-auto font-medium">
-                {taskCount}/{FREE_TASK_LIMIT} tasks used
+                {Math.max(0, DAILY_RUN_LIMIT - dailyUsage)}/10 Runs Left Today
+              </span>
+            ) : (
+              <span className="text-[10px] text-amber-500 ml-auto font-medium">
+                Unlimited Pro Runs
               </span>
             )}
           </div>
