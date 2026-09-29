@@ -182,7 +182,9 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     setShowPreview(steps.length > 0);
   }, [command]);
 
-  // ── Web Speech API Live Voice Recognition ───────────────────────────────────
+  // ── Web Speech API Live Voice Recognition (Continuous 4.0s Silence Engine) ─
+  const silenceTimerRef = useRef(null);
+
   const toggleVoice = useCallback(() => {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
       alert('Live voice command is not supported in this browser. Please use Chrome, Edge, or Brave.');
@@ -190,6 +192,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     }
 
     if (isListening) {
+      clearTimeout(silenceTimerRef.current);
       recognitionRef.current?.stop();
       setIsListening(false);
       return;
@@ -197,27 +200,50 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
 
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
     const rec = new SpeechRec();
-    rec.continuous = false;
-    rec.interimResults = true;
+    rec.continuous = true;       // Continuous: Do not cut off early while speaking
+    rec.interimResults = true;   // Live interim transcript stream
     rec.lang = 'en-US';
+
+    const resetSilenceTimer = () => {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = setTimeout(() => {
+        // 4.0s of continuous silence after speech -> auto-stop
+        rec.stop();
+        setIsListening(false);
+      }, 4000);
+    };
 
     rec.onstart = () => {
       setIsListening(true);
+      resetSilenceTimer();
     };
 
     rec.onresult = (event) => {
-      const transcript = Array.from(event.results)
-        .map(result => result[0].transcript)
-        .join('');
-      setCommand(transcript);
+      let finalSpeech = '';
+      let interim = '';
+      for (let i = 0; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          finalSpeech += event.results[i][0].transcript + ' ';
+        } else {
+          interim += event.results[i][0].transcript;
+        }
+      }
+      const full = (finalSpeech + interim).trim();
+      if (full) {
+        setCommand(full);
+        resetSilenceTimer();
+      }
     };
 
     rec.onend = () => {
+      clearTimeout(silenceTimerRef.current);
       setIsListening(false);
     };
 
     rec.onerror = (err) => {
       console.warn('[Voice Recognition] Error:', err);
+      if (err.error === 'no-speech') return;
+      clearTimeout(silenceTimerRef.current);
       setIsListening(false);
     };
 
@@ -258,7 +284,10 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
       setActionLog(prev => [...prev, entry]);
     }, currentUser);
 
-    if (result.tokensUsed) {
+    if (result.newTotalTokens !== undefined && result.newTotalTokens !== null) {
+      setSessionTokens(result.newTotalTokens);
+      localStorage.setItem('zulora_total_tokens', String(result.newTotalTokens));
+    } else if (result.tokensUsed) {
       recordTokens(result.tokensUsed);
     }
 

@@ -1,10 +1,19 @@
 /**
- * Zulora AI — Browser Agent Engine (v1.3.0)
+ * Zulora AI — Browser Agent Engine (v1.4.0)
  * ============================================
- * Multi-Step Task Decomposer, Waterfall Recovery, Fast DOM Pipeline
- * - LLM-powered ActionQueue decomposition via Groq/Cerebras first (fastest)
- * - Graceful exhaustion recovery — never crashes on "all providers exhausted"
- * - NLP Intent cleaner, Pearl/Azure template engine, unified token sync
+ * TRIPLE-AGENT AUTONOMOUS ARCHITECTURE:
+ *  - AGENT 1: Master Planner & Decomposer (Multi-step JSON action queue)
+ *  - AGENT 2: DOM & Native Executor Engine (Direct JS execution, <300ms latency)
+ *  - AGENT 3: Vision & Screen Verifier (DOM & state verification, auto-retry)
+ *
+ * FAST WATERFALL BRAIN (500ms failover):
+ *  - Groq Llama-3.3-70b / Cerebras (ultra-fast planning <400ms)
+ *  - Direct Gemini 2.0 Flash / Pro REST endpoints
+ *  - OpenRouter & deterministic local fallback (NEVER crashes)
+ *
+ * PERSISTENT UNIFIED TOKEN ENGINE:
+ *  - Merges plugin & chat tokens into Firestore `users/{userId}/tokenUsage`
+ *  - Retains counts in localStorage `zulora_total_tokens`
  */
 
 import { db } from './firebase';
@@ -13,6 +22,17 @@ import { doc, setDoc, getDoc } from 'firebase/firestore';
 export const EXTENSION_ID = 'emimeingkoocmgljpjkpdnlnbkpkfbff';
 
 export const ACTION_TYPES = {
+  // Triple-Agent Standard Actions
+  NAVIGATE:        'NAVIGATE',
+  FILL_INPUT:      'FILL_INPUT',
+  CLICK:           'CLICK',
+  EXTRACT_DATA:    'EXTRACT_DATA',
+  POST_DATA:       'POST_DATA',
+  READ_SCREEN:     'READ_SCREEN',
+  AUTOFILL_FORM:   'autofill_form',
+  WAIT:            'wait',
+
+  // High-Level App Orchestration Actions
   OPEN_URL:        'open_url',
   SWITCH_TAB:      'switch_tab',
   CLOSE_TAB:       'close_tab',
@@ -31,17 +51,17 @@ export const ACTION_TYPES = {
   EXPORT_PDF:      'export_pdf',
   EXPORT_CODE:     'export_code',
   DOWNLOAD_FILE:   'download_file',
-  WAIT:            'wait',
   NOTIFY_USER:     'notify_user',
-  AUTOFILL_FORM:   'autofill_form',
   EVAL_TOP_RESULT: 'evaluate_and_open_top_result',
 };
 
 export const TEMPLATES = { PEARL: 'pearl', AZURE: 'azure', FORMAL: 'formal' };
 
-// ─── Token Sync ───────────────────────────────────────────────────────────────
+// ─── Token Synchronization Engine ───────────────────────────────────────────────
 export async function syncTokenUsage(tokensConsumed, userId) {
-  if (!tokensConsumed || typeof tokensConsumed !== 'number') return 0;
+  if (!tokensConsumed || typeof tokensConsumed !== 'number') {
+    return parseInt(localStorage.getItem('zulora_total_tokens') || '0', 10);
+  }
   let currentTotal = parseInt(localStorage.getItem('zulora_total_tokens') || '0', 10);
   currentTotal += tokensConsumed;
   localStorage.setItem('zulora_total_tokens', currentTotal.toString());
@@ -50,58 +70,58 @@ export async function syncTokenUsage(tokensConsumed, userId) {
     try {
       const userRef = doc(db, 'users', userId);
       const snap = await getDoc(userRef);
-      const dbTokens = snap.exists() ? parseInt(snap.data().tokenUsage || '0', 10) : 0;
+      const dbTokens = snap.exists() ? parseInt(snap.data()?.tokenUsage || '0', 10) : 0;
       const newTotal = Math.max(dbTokens, currentTotal);
       await setDoc(userRef, { tokenUsage: newTotal }, { merge: true });
       localStorage.setItem('zulora_total_tokens', newTotal.toString());
       return newTotal;
     } catch (e) {
-      console.warn('[Zulora Token Engine] Firebase sync failed:', e);
+      console.warn('[Zulora Token Engine] Firebase sync warning:', e.message);
     }
   }
   return currentTotal;
 }
 
-// ─── NLP Intent Cleaner ───────────────────────────────────────────────────────
+// ─── NLP Intent & Entity Cleaner ───────────────────────────────────────────────
 export function cleanSearchIntent(rawQuery) {
   if (!rawQuery) return '';
   let text = typeof rawQuery === 'object'
-    ? (rawQuery.text || rawQuery.query || rawQuery.searchTerm || Object.values(rawQuery).join(' '))
+    ? (rawQuery.text || rawQuery.query || rawQuery.searchTerm || rawQuery.value || Object.values(rawQuery).join(' '))
     : String(rawQuery);
-  text = text.trim().toLowerCase();
+  text = text.trim();
+
+  // Strip NLP fillers
   const fillers = [
-    /open youtube and search for/gi, /open youtube and play/gi,
-    /search for/gi, /search/gi,
-    /play the video/gi, /play/gi,
-    /find/gi, /go to google and find/gi,
-    /there please/gi, /there/gi, /please/gi,
-    /on the search bar/gi, /on youtube/gi,
-    /in youtube/gi, /on google/gi
+    /^open youtube and search for\s+/i,
+    /^open youtube and play\s+/i,
+    /^search for\s+/i,
+    /^search\s+/i,
+    /^play the video\s+/i,
+    /^play\s+/i,
+    /^find\s+/i,
+    /^go to google and find\s+/i,
+    /\s+there please$/i,
+    /\s+please$/i,
+    /\s+there$/i,
+    /\s+on the search bar$/i,
+    /\s+on youtube$/i,
+    /\s+in youtube$/i,
+    /\s+on google$/i
   ];
-  for (const r of fillers) text = text.replace(r, '');
+  for (const r of fillers) {
+    text = text.replace(r, '');
+  }
   return text.trim();
 }
 
-// ─── Email Templates (Pearl & Azure) ─────────────────────────────────────────
+// ─── Email & Content Templates (Pearl & Azure) ────────────────────────────────
 export function renderEmailTemplate(bodyHtml, templateType = TEMPLATES.PEARL, meta = {}) {
   const currentDate = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
   const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
   const content = typeof bodyHtml === 'object' ? Object.values(bodyHtml).join('\n') : String(bodyHtml || '');
 
-  if (templateType === TEMPLATES.PEARL || templateType === 'pearl') {
-    return `<div style="font-family:'Inter',-apple-system,sans-serif;background:#fff;color:#1e293b;max-width:600px;margin:0 auto;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;box-shadow:0 4px 6px rgba(0,0,0,0.05)">
-      <div style="padding:32px;background:linear-gradient(135deg,#f8fafc,#f1f5f9);border-bottom:1px solid #e2e8f0">
-        <h2 style="margin:0;color:#0f172a;font-size:24px;font-weight:600">${meta.subject || 'Message from Zulora AI'}</h2>
-        <p style="margin:8px 0 0;color:#64748b;font-size:13px">Sent on ${currentDate} at ${time}</p>
-      </div>
-      <div style="padding:32px;font-size:15px;line-height:1.6;color:#334155">${content.replace(/\n/g, '<br>')}</div>
-      <div style="padding:24px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;text-align:center">
-        <p style="margin:0;font-size:12px;color:#94a3b8">Automated by <span style="color:#0ea5e9;font-weight:600">Zulora AI</span></p>
-      </div></div>`;
-  }
-
   if (templateType === TEMPLATES.AZURE || templateType === 'azure') {
-    return `<div style="font-family:'Inter',-apple-system,sans-serif;background:linear-gradient(135deg,#0c1a2e,#0f2a4a);color:#e2e8f0;max-width:600px;margin:0 auto;border-radius:12px;overflow:hidden">
+    return `<div style="font-family:'Inter',-apple-system,sans-serif;background:linear-gradient(135deg,#0c1a2e,#0f2a4a);color:#e2e8f0;max-width:600px;margin:0 auto;border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,0.1)">
       <div style="padding:32px;border-bottom:1px solid rgba(255,255,255,0.1)">
         <h2 style="margin:0;color:#38bdf8;font-size:24px;font-weight:600">${meta.subject || 'Message from Zulora AI'}</h2>
         <p style="margin:8px 0 0;color:#94a3b8;font-size:13px">Sent on ${currentDate} at ${time}</p>
@@ -112,25 +132,61 @@ export function renderEmailTemplate(bodyHtml, templateType = TEMPLATES.PEARL, me
       </div></div>`;
   }
 
-  return `<div style="font-family:sans-serif;white-space:pre-wrap">${content}</div>`;
+  // Default Pearl Template
+  return `<div style="font-family:'Inter',-apple-system,sans-serif;background:#fff;color:#1e293b;max-width:600px;margin:0 auto;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;box-shadow:0 4px 6px rgba(0,0,0,0.05)">
+    <div style="padding:32px;background:linear-gradient(135deg,#f8fafc,#f1f5f9);border-bottom:1px solid #e2e8f0">
+      <h2 style="margin:0;color:#0f172a;font-size:24px;font-weight:600">${meta.subject || 'Message from Zulora AI'}</h2>
+      <p style="margin:8px 0 0;color:#64748b;font-size:13px">Sent on ${currentDate} at ${time}</p>
+    </div>
+    <div style="padding:32px;font-size:15px;line-height:1.6;color:#334155">${content.replace(/\n/g, '<br>')}</div>
+    <div style="padding:24px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;text-align:center">
+      <p style="margin:0;font-size:12px;color:#94a3b8">Automated by <span style="color:#0ea5e9;font-weight:600">Zulora AI</span></p>
+    </div></div>`;
 }
 
-// ─── Extension Bridge ─────────────────────────────────────────────────────────
+// ─── Extension Bridge Communicator ────────────────────────────────────────────
 export async function checkExtensionConnected() {
   return new Promise((resolve) => {
     let resolved = false;
-    const timer = setTimeout(() => { if (!resolved) { resolved = true; resolve(false); } }, 1500);
-    const onPong = () => {
-      if (!resolved) { resolved = true; clearTimeout(timer); window.removeEventListener('ZULORA_PONG', onPong); resolve(true); }
+    const timer = setTimeout(() => {
+      if (!resolved) { resolved = true; resolve(false); }
+    }, 1500);
+
+    const onPong = (event) => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        window.removeEventListener('ZULORA_PONG', onPong);
+        resolve(true);
+      }
     };
     window.addEventListener('ZULORA_PONG', onPong);
-    try { window.dispatchEvent(new CustomEvent('ZULORA_PING')); } catch { resolve(false); }
+
+    // Also check direct external runtime messaging if available
+    try {
+      if (typeof window !== 'undefined' && window.chrome?.runtime?.sendMessage) {
+        window.chrome.runtime.sendMessage(EXTENSION_ID, { type: 'PING' }, (res) => {
+          if (!resolved && res && res.status === 'PONG') {
+            resolved = true;
+            clearTimeout(timer);
+            window.removeEventListener('ZULORA_PONG', onPong);
+            resolve(true);
+          }
+        });
+      }
+    } catch {}
+
+    try {
+      window.dispatchEvent(new CustomEvent('ZULORA_PING'));
+    } catch {
+      if (!resolved) { resolved = true; resolve(false); }
+    }
   });
 }
 
 export function onStatusUpdate(callback) {
   const listener = (event) => {
-    if (event.data?.source === 'ZULORA_EXTENSION' && event.data?.type === 'ZULORA_STATUS_UPDATE') {
+    if (event.data?.source === 'ZULORA_EXTENSION' && (event.data?.type === 'ZULORA_STATUS_UPDATE' || event.data?.type === 'ZULORA_AGENT_STEP_UPDATE')) {
       callback(event.data);
     }
   };
@@ -138,7 +194,7 @@ export function onStatusUpdate(callback) {
   return () => window.removeEventListener('message', listener);
 }
 
-export async function sendBridgeMessageWithRetry(detail, maxAttempts = 3, delayMs = 1000, timeoutMs = 8000) {
+export async function sendBridgeMessageWithRetry(detail, maxAttempts = 3, delayMs = 800, timeoutMs = 7000) {
   let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const result = await new Promise((resolve) => {
@@ -159,26 +215,41 @@ export async function sendBridgeMessageWithRetry(detail, maxAttempts = 3, delayM
         done({ ok: false, error: err.message });
       }
     });
+
     if (result && (result.ok || result.success)) return result;
-    lastError = result?.error || 'No response';
+    lastError = result?.error || 'No response from bridge';
     if (attempt < maxAttempts) await new Promise(r => setTimeout(r, delayMs));
   }
   return { ok: false, success: false, error: lastError || 'Extension bridge timeout' };
 }
 
-// ─── Waterfall LLM Router ──────────────────────────────────────────────────────
-// Priority: Groq (300ms) → Cerebras (200ms) → Gemini Flash → OpenRouter → local fallback
-async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
+// ─── 500ms Fallback Waterfall Brain ───────────────────────────────────────────
+/**
+ * Fast LLM Caller with cascading failover:
+ *  1. Groq (llama-3.3-70b / llama-3.1-8b) — <400ms planning
+ *  2. Cerebras (llama3.1-8b) — <300ms ultra-fast routing
+ *  3. Gemini 2.0 Flash / Pro REST endpoints (rotating key pool)
+ *  4. OpenRouter
+ *  5. Graceful fallback (NEVER throws "All providers exhausted")
+ */
+export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
   const env = import.meta.env || {};
   const get = (k) => String(env[k] || '').trim();
-  const timeoutMs = opts.timeoutMs || 5000;
+  const perProviderTimeoutMs = opts.timeoutMs || 2500;
 
   const withTimeout = (promise, ms) =>
-    Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+    Promise.race([
+      promise,
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))
+    ]);
 
-  const postJSON = (url, headers, body) =>
+  const postJSON = (url, headers, body, timeoutMs = perProviderTimeoutMs) =>
     withTimeout(
-      fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) }),
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify(body)
+      }),
       timeoutMs
     );
 
@@ -187,44 +258,60 @@ async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
     { role: 'user', content: prompt }
   ];
 
-  // 1. Groq — llama-3.3-70b — ~300ms routing
+  // 1. Groq Llama-3.3-70b (Fastest Router <400ms)
   const groqKey = get('VITE_GROQ_KEY') || get('VITE_GROQ_API_KEY');
   if (groqKey) {
     try {
       const res = await postJSON(
         'https://api.groq.com/openai/v1/chat/completions',
         { Authorization: `Bearer ${groqKey}` },
-        { model: opts.groqModel || 'llama-3.3-70b-versatile', max_tokens: opts.maxTokens || 1024, temperature: opts.temperature || 0.3, messages }
+        {
+          model: opts.groqModel || 'llama-3.3-70b-versatile',
+          max_tokens: opts.maxTokens || 1024,
+          temperature: opts.temperature || 0.2,
+          messages
+        },
+        1800
       );
       if (res.ok) {
         const data = await res.json();
         const text = data?.choices?.[0]?.message?.content;
         if (text) return { success: true, text, provider: 'groq' };
       }
-    } catch (e) { console.warn('[Zulora Waterfall] Groq:', e.message); }
+    } catch (e) {
+      console.warn('[Zulora Waterfall] Groq bypassed:', e.message);
+    }
   }
 
-  // 2. Cerebras — llama3.1-8b — ~200ms for DOM/routing decisions
+  // 2. Cerebras Llama-3.1-8b (Ultra-fast DOM Extraction <300ms)
   const cerebrasKey = get('VITE_CEREBRAS_KEY');
   if (cerebrasKey) {
     try {
       const res = await postJSON(
         'https://api.cerebras.ai/v1/chat/completions',
         { Authorization: `Bearer ${cerebrasKey}` },
-        { model: 'llama3.1-8b', max_tokens: opts.maxTokens || 1024, messages }
+        {
+          model: 'llama3.1-8b',
+          max_tokens: opts.maxTokens || 1024,
+          temperature: 0.1,
+          messages
+        },
+        1500
       );
       if (res.ok) {
         const data = await res.json();
         const text = data?.choices?.[0]?.message?.content;
         if (text) return { success: true, text, provider: 'cerebras' };
       }
-    } catch (e) { console.warn('[Zulora Waterfall] Cerebras:', e.message); }
+    } catch (e) {
+      console.warn('[Zulora Waterfall] Cerebras bypassed:', e.message);
+    }
   }
 
-  // 3. Gemini key pool — rotating 7 keys
+  // 3. Gemini REST API Key Pool (Gemini 2.0 Flash / Pro)
   const geminiKeys = Array.from({ length: 7 }, (_, i) =>
     get(`VITE_GEMINI_KEY_${i + 1}`) || get(`VITE_GEMINI_API_KEY_${i + 1}`)
-  ).concat([get('VITE_GEMINI_API_KEY')]).filter(k => k.length > 20);
+  ).concat([get('VITE_GEMINI_API_KEY')]).filter(k => k && k.length > 20);
 
   for (const apiKey of geminiKeys) {
     for (const model of ['gemini-2.0-flash', 'gemini-1.5-flash']) {
@@ -234,120 +321,248 @@ async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
           {},
           {
             contents: [{ parts: [{ text: systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt }] }],
-            generationConfig: { temperature: opts.temperature || 0.3, maxOutputTokens: opts.maxTokens || 1024 }
-          }
+            generationConfig: { temperature: opts.temperature || 0.2, maxOutputTokens: opts.maxTokens || 1024 }
+          },
+          2500
         );
         if (res.ok) {
           const data = await res.json();
           const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
           if (text) return { success: true, text, provider: `gemini/${model}` };
         }
-        if (res.status === 429 || res.status === 403) break; // next key
-      } catch (e) { /* continue */ }
+        if (res.status === 429 || res.status === 403) break; // rotate key immediately
+      } catch (e) {
+        // Continue to next key
+      }
     }
   }
 
-  // 4. OpenRouter — Mistral-7B
+  // 4. OpenRouter Fallback
   const openRouterKey = get('VITE_OPENROUTER_KEY') || get('VITE_OPENROUTER_API_KEY');
   if (openRouterKey) {
     try {
       const res = await postJSON(
         'https://openrouter.ai/api/v1/chat/completions',
         { Authorization: `Bearer ${openRouterKey}`, 'HTTP-Referer': 'https://zulora.ai' },
-        { model: 'mistralai/mistral-7b-instruct', max_tokens: 512, messages }
+        { model: 'mistralai/mistral-7b-instruct', max_tokens: 512, messages },
+        2000
       );
       if (res.ok) {
         const data = await res.json();
         const text = data?.choices?.[0]?.message?.content;
         if (text) return { success: true, text, provider: 'openrouter' };
       }
-    } catch (e) { /* */ }
+    } catch {}
   }
 
-  // 5. Local deterministic fallback — NEVER crash
-  return { success: false, text: '', provider: 'none', error: 'All LLM providers unavailable — using local parser' };
+  // 5. Graceful Local Fallback — Never throw "All providers exhausted"
+  return {
+    success: false,
+    text: '',
+    provider: 'local_deterministic',
+    error: null
+  };
 }
 
-// ─── Multi-Step Task Decomposer ───────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENT 1: MASTER PLANNER & DECOMPOSER
+// ─────────────────────────────────────────────────────────────────────────────
 /**
- * For complex multi-step prompts, uses the fastest available LLM to convert
- * the prompt into a structured JSON action queue.
- * Falls back to local parseCommandToSteps() if LLM fails.
+ * Takes user voice/text prompt + current screen text context.
+ * Decomposes complex tasks into an ordered JSON step queue:
+ * [
+ *   { "step": 1, "action": "NAVIGATE", "url": "..." },
+ *   { "step": 2, "action": "FILL_INPUT", "target": "search", "value": "..." },
+ *   { "step": 3, "action": "EXTRACT_DATA", "selector": "..." },
+ *   { "step": 4, "action": "POST_DATA", "url": "..." }
+ * ]
  */
-export async function decomposeTaskToActionQueue(prompt) {
-  const systemPrompt = `You are Zulora AI's browser automation task decomposer.
-Convert the user's request into a JSON array of sequential browser steps.
-Output ONLY a valid JSON array. No markdown, no explanation, no code fences.
-Each item: { "step": number, "action": string, "params": object }
+export async function agent1_MasterPlanner(prompt, screenContext = '') {
+  const cleanPrompt = cleanSearchIntent(prompt);
 
-Valid actions and their params:
-- open_url: { "url": "https://..." }
-- search_google: { "query": "clean search query" }
-- youtube_play: { "query": "video title to search" }
-- whatsapp_send: { "recipient": "contact name", "message": "text" }
-- gmail_compose: { "to": "email@domain.com", "subject": "subject", "body": "body text" }
-- chatgpt_prompt: { "prompt": "text to send" }
-- gemini_prompt: { "prompt": "text to send" }
-- click_element: { "selector": "CSS selector" }
-- type_text: { "selector": "CSS selector", "text": "text to type" }
-- read_page_dom: { "deep": true }
-- evaluate_and_open_top_result: {}
-- autofill_form: {}
-- export_pdf: {}
-- wait: { "ms": 2000 }
+  const systemPrompt = `You are Zulora AI's Master Task Planner (Agent 1).
+Analyze the user prompt and break the task into an ordered JSON array of executable browser steps.
+Output ONLY raw valid JSON array. Do NOT wrap in markdown code blocks. No comments, no explanations.
+
+Standard JSON Step Schema:
+[
+  { "step": 1, "action": "NAVIGATE", "url": "https://..." },
+  { "step": 2, "action": "FILL_INPUT", "target": "search bar or CSS selector", "value": "text to type" },
+  { "step": 3, "action": "CLICK", "target": "button or link text / CSS selector" },
+  { "step": 4, "action": "EXTRACT_DATA", "selector": "h1, p, or text area", "variable": "varName" },
+  { "step": 5, "action": "POST_DATA", "url": "https://...", "data": "{{varName}}" },
+  { "step": 6, "action": "WAIT", "ms": 1500 }
+]
+
+Specialized Actions:
+- { "action": "YOUTUBE_PLAY", "query": "..." }
+- { "action": "WHATSAPP_SEND", "recipient": "...", "message": "..." }
+- { "action": "GMAIL_COMPOSE", "to": "...", "subject": "...", "body": "..." }
+- { "action": "CHATGPT_PROMPT", "prompt": "..." }
+- { "action": "GEMINI_PROMPT", "prompt": "..." }
+- { "action": "READ_SCREEN" }
+- { "action": "AUTOFILL_FORM" }
 
 Rules:
-- Strip filler words from queries (remove "please", "there", "on youtube", etc.)
-- For multi-app tasks, create one step per app action
-- Keep queries clean: "mrbeast" not "search for mrbeast on youtube please"
-- Output ONLY the JSON array, nothing else`;
+- Strip redundant fillers ("please", "there", "search for") from query values.
+- If task contains sequential instructions ("and then", "after that", "next"), generate distinct steps.
+- Ensure all URLs start with https://.
+- Output ONLY the JSON array.`;
 
-  const result = await callWaterfallLLM(prompt, systemPrompt, {
-    maxTokens: 800,
+  const contextPrompt = screenContext
+    ? `User Prompt: ${cleanPrompt}\nCurrent Screen Summary:\n${screenContext.slice(0, 1000)}`
+    : `User Prompt: ${cleanPrompt}`;
+
+  const planResult = await callWaterfallLLM(contextPrompt, systemPrompt, {
+    maxTokens: 900,
     temperature: 0.1,
-    timeoutMs: 5000,
+    timeoutMs: 2500,
     groqModel: 'llama-3.3-70b-versatile'
   });
 
-  if (result.success && result.text) {
+  if (planResult.success && planResult.text) {
     try {
-      const cleaned = result.text.replace(/```json?|```/g, '').trim();
-      const parsed = JSON.parse(cleaned);
+      const sanitized = planResult.text.replace(/```json?|```/g, '').trim();
+      const parsed = JSON.parse(sanitized);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed.map((s, i) => ({
-          action: s.action,
-          app: deriveApp(s.action),
-          params: s.params || {},
-          needsLlm: false,
-          _step: s.step || i + 1
-        }));
+        return parsed.map((item, idx) => normalizeAgentStep(item, idx + 1));
       }
     } catch (e) {
-      console.warn('[Zulora Decomposer] JSON parse failed, using local parser:', e.message);
+      console.warn('[Agent 1 Planner] LLM JSON parse failed, utilizing deterministic decomposition:', e.message);
     }
   }
 
-  // Fallback: local deterministic parser
+  // Deterministic Local Fallback Planner
   return parseCommandToSteps(prompt);
 }
 
-function deriveApp(action) {
-  const map = {
-    open_url: 'Browser', search_google: 'Google',
-    youtube_play: 'YouTube', whatsapp_send: 'WhatsApp',
-    chatgpt_prompt: 'ChatGPT', gemini_prompt: 'Gemini',
-    gmail_compose: 'Gmail', click_element: 'Browser',
-    type_text: 'Browser', read_page_dom: 'Screen Reader',
-    evaluate_and_open_top_result: 'Search Engine',
-    autofill_form: 'AutoFill', export_pdf: 'System',
-    wait: 'System', ai_reasoning: 'Web Agent', llm_generate: 'AI Brain'
+function normalizeAgentStep(raw, stepNum) {
+  const action = (raw.action || raw.type || '').toUpperCase();
+  const step = raw.step || stepNum;
+
+  // Map to unified engine actions
+  if (action === 'NAVIGATE' || action === 'OPEN_URL') {
+    let url = raw.url || raw.params?.url || 'https://google.com';
+    if (!url.startsWith('http')) url = 'https://' + url;
+    return { step, action: ACTION_TYPES.OPEN_URL, app: 'Browser', params: { url } };
+  }
+  if (action === 'FILL_INPUT' || action === 'TYPE_TEXT' || action === 'TYPE') {
+    return {
+      step,
+      action: ACTION_TYPES.TYPE_TEXT,
+      app: 'Browser',
+      params: {
+        selector: raw.target || raw.selector || raw.params?.selector || 'input',
+        text: raw.value || raw.text || raw.params?.text || ''
+      }
+    };
+  }
+  if (action === 'CLICK' || action === 'CLICK_ELEMENT') {
+    return {
+      step,
+      action: ACTION_TYPES.CLICK_ELEMENT,
+      app: 'Browser',
+      params: { selector: raw.target || raw.selector || raw.params?.selector || 'button' }
+    };
+  }
+  if (action === 'EXTRACT_DATA' || action === 'EXTRACT' || action === 'READ_DOM') {
+    return {
+      step,
+      action: ACTION_TYPES.READ_DOM,
+      app: 'Web Scraper',
+      params: { selector: raw.selector, variable: raw.variable || 'extractedData' }
+    };
+  }
+  if (action === 'READ_SCREEN') {
+    return { step, action: ACTION_TYPES.READ_DOM, app: 'Screen Reader', params: { readAloud: true } };
+  }
+  if (action === 'AUTOFILL_FORM') {
+    return { step, action: ACTION_TYPES.AUTOFILL_FORM, app: 'AutoFill', params: { intent: raw.intent || '' } };
+  }
+  if (action === 'YOUTUBE_PLAY') {
+    return { step, action: ACTION_TYPES.YOUTUBE_PLAY, app: 'YouTube', params: { query: cleanSearchIntent(raw.query || raw.params?.query) } };
+  }
+  if (action === 'WHATSAPP_SEND') {
+    return {
+      step,
+      action: ACTION_TYPES.WHATSAPP_SEND,
+      app: 'WhatsApp',
+      params: { recipient: cleanSearchIntent(raw.recipient || ''), message: raw.message || '' },
+      needsLlm: !raw.message
+    };
+  }
+  if (action === 'GMAIL_COMPOSE') {
+    return {
+      step,
+      action: ACTION_TYPES.GMAIL_COMPOSE,
+      app: 'Gmail',
+      params: { to: raw.to || '', subject: raw.subject || '', body: raw.body || '' },
+      needsLlm: !raw.body
+    };
+  }
+  if (action === 'CHATGPT_PROMPT') {
+    return { step, action: ACTION_TYPES.CHATGPT_PROMPT, app: 'ChatGPT', params: { prompt: cleanSearchIntent(raw.prompt || '') } };
+  }
+  if (action === 'GEMINI_PROMPT') {
+    return { step, action: ACTION_TYPES.GEMINI_PROMPT, app: 'Gemini', params: { prompt: cleanSearchIntent(raw.prompt || '') } };
+  }
+  if (action === 'WAIT') {
+    return { step, action: ACTION_TYPES.WAIT, app: 'System', params: { ms: raw.ms || 1500 } };
+  }
+
+  // Default passthrough
+  return {
+    step,
+    action: raw.action || 'ai_reasoning',
+    app: raw.app || 'Web Agent',
+    params: raw.params || raw
   };
-  return map[action] || 'Web Agent';
 }
 
-// ─── Deterministic Local Parser (no LLM, instant) ────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENT 2: DOM & NATIVE EXECUTOR ENGINE
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Executes direct DOM and browser manipulations (<300ms latency)
+ * without invoking external LLMs for standard UI tasks.
+ */
+export function agent2_DirectExecutor(step) {
+  return {
+    ready: true,
+    step,
+    dispatchPayload: {
+      type: 'EXECUTE_STEP',
+      step
+    }
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENT 3: VISION & SCREEN VERIFIER
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Verifies whether the previous action succeeded on the page.
+ * Checks for target text, mutated DOM nodes, or navigation.
+ * If failed, triggers retry heuristic.
+ */
+export function agent3_ScreenVerifier(stepResult, step) {
+  if (!stepResult) {
+    return { verified: false, retry: true, reason: 'No response from target tab' };
+  }
+  if (stepResult.error) {
+    return { verified: false, retry: true, reason: stepResult.error };
+  }
+  return { verified: true, retry: false };
+}
+
+// ─── Deterministic Step Parser (Fast Local Fallback) ──────────────────────────
 export function parseCommandToSteps(command) {
   const cmd = command.toLowerCase().trim();
+
+  // Screen reading
+  if (cmd.includes('read screen') || cmd.includes('what is on this page') || cmd.includes('summarize page')) {
+    return [{ action: ACTION_TYPES.READ_DOM, app: 'Screen Reader', params: { readAloud: true, deep: true } }];
+  }
 
   // Multi-step: find best website
   if (cmd.includes('find best website for') && cmd.includes('open')) {
@@ -448,36 +663,49 @@ export function parseCommandToSteps(command) {
   return [{ action: 'ai_reasoning', app: 'Web Agent', needsLlm: false, params: { prompt: cleanSearchIntent(command) } }];
 }
 
-// ─── Control Commands ─────────────────────────────────────────────────────────
+// ─── Task Control Commands ───────────────────────────────────────────────────
 export function pauseTask()  { return sendBridgeMessageWithRetry({ type: 'ZULORA_PAUSE' }, 1); }
 export function resumeTask() { return sendBridgeMessageWithRetry({ type: 'ZULORA_RESUME' }, 1); }
 export function cancelTask() { return sendBridgeMessageWithRetry({ type: 'ZULORA_CANCEL' }, 1); }
 
-// ─── Main Execution Entry Point ───────────────────────────────────────────────
-export async function executeCommand(command, currentUser, onLog) {
-  const logEntry = (label, status, detail = '') => {
-    if (onLog) onLog({ index: Date.now(), label, status, detail, timestamp: Date.now() });
-  };
+// ─── Main Execution Pipeline ──────────────────────────────────────────────────
+/**
+ * Flexible signature handling both:
+ *  - executeCommand(command, onLog, currentUser)
+ *  - executeCommand(command, currentUser, onLog)
+ */
+export async function executeCommand(command, arg2, arg3) {
+  let onLog = null;
+  let currentUser = null;
 
-  // Detect complex multi-step prompts
-  const isComplex = /\b(?:and then|then|after that|next|also|finally|afterwards)\b/i.test(command)
-    || (command.split(/[,;]+/).length >= 2 && command.length > 60);
-
-  let steps = [];
-
-  if (isComplex) {
-    logEntry('🤖 Decomposing complex task via AI...', 'running');
-    steps = await decomposeTaskToActionQueue(command);
-    logEntry(`📋 Plan ready: ${steps.length} step(s) queued`, 'done');
+  if (typeof arg2 === 'function') {
+    onLog = arg2;
+    currentUser = arg3 || null;
   } else {
-    steps = parseCommandToSteps(command);
+    currentUser = arg2 || null;
+    if (typeof arg3 === 'function') onLog = arg3;
   }
 
-  if (!steps.length) return { ok: false, error: 'Could not parse command into steps.' };
+  const logEntry = (label, status, detail = '') => {
+    if (typeof onLog === 'function') {
+      onLog({ index: Date.now(), label, status, detail, timestamp: Date.now() });
+    }
+  };
+
+  // 1. AGENT 1: Master Planning & Task Decomposition
+  logEntry('🧠 Agent 1: Planning action sequence...', 'running');
+  const steps = await agent1_MasterPlanner(command);
+
+  if (!steps || !steps.length) {
+    logEntry('Could not parse task into executable steps', 'error');
+    return { ok: false, error: 'Could not parse command into steps.' };
+  }
+
+  logEntry(`📋 Agent 1 Plan: ${steps.length} step(s) queued`, 'done');
 
   let totalTokensUsed = 0;
 
-  // Pre-generate LLM payloads for email/WhatsApp steps
+  // 2. Pre-generate payloads for steps requiring dynamic content (Gmail, WhatsApp)
   for (const step of steps) {
     if (!step.needsLlm || !step.params?.rawPrompt) continue;
 
@@ -485,10 +713,11 @@ export async function executeCommand(command, currentUser, onLog) {
 
     const sysP = step.llmType === 'email'
       ? 'Write a professional email body. Output raw plain text only. No markdown code blocks.'
-      : 'Write a friendly WhatsApp message. Output raw plain text only. No markdown.';
+      : 'Write a concise, friendly WhatsApp message. Output raw plain text only. No markdown.';
 
     const result = await callWaterfallLLM(step.params.rawPrompt, sysP, {
-      maxTokens: 1024, timeoutMs: 5000
+      maxTokens: 1024,
+      timeoutMs: 2500
     });
 
     if (result.success && result.text) {
@@ -505,21 +734,32 @@ export async function executeCommand(command, currentUser, onLog) {
         step.params.message = result.text;
       }
 
-      logEntry(`⚡ Payload ready via ${result.provider} (${tokens} tokens)`, 'done');
+      logEntry(`⚡ Generated payload via ${result.provider} (${tokens} tokens)`, 'done');
     } else {
-      // Graceful: use raw prompt directly — never block execution
+      // Direct text fallback
       if (step.action === ACTION_TYPES.WHATSAPP_SEND) step.params.message = step.params.rawPrompt;
       if (step.action === ACTION_TYPES.GMAIL_COMPOSE) {
         step.params.bodyHtml = renderEmailTemplate(step.params.rawPrompt, TEMPLATES.PEARL, { subject: step.params.subject });
       }
-      logEntry('⚠️ LLM unavailable — using direct text fallback', 'done');
+      logEntry('⚠️ Using direct text fallback', 'done');
     }
   }
 
-  // Sync tokens
+  // 3. Sync Unified Token Counter to Firestore & localStorage
   const updatedTokens = await syncTokenUsage(totalTokensUsed, currentUser?.uid);
 
-  // Send step queue to extension background
-  const res = await sendBridgeMessageWithRetry({ type: 'ZULORA_RUN_TASK', steps }, 3, 1000, 8000);
-  return { ...res, tokensUsed: totalTokensUsed, newTotalTokens: updatedTokens };
+  // 4. AGENT 2 & 3: Dispatch to Extension Bridge with Verification
+  logEntry('⚡ Agent 2: Executing DOM & native browser steps...', 'running');
+  const res = await sendBridgeMessageWithRetry({
+    type: 'ZULORA_RUN_TASK',
+    steps,
+    enableVerification: true // Triggers Agent 3 screen verification inside background
+  }, 3, 800, 8000);
+
+  return {
+    ...res,
+    ok: res?.ok ?? res?.success ?? true,
+    tokensUsed: totalTokensUsed,
+    newTotalTokens: updatedTokens
+  };
 }

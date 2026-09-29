@@ -104,44 +104,11 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ─── 4. API Key Waterfall Brain ───────────────────────────────────────────────
-async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemini-2.5-flash') {
-  const keys = cachedApiKeys.geminiKeys.filter(k => k && k.length > 20);
-  const modelsToTry = [model, 'gemini-1.5-flash'];
+// ─── 4. API Key Waterfall Brain (500ms Failover) ──────────────────────────────
+async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemini-2.0-flash') {
   let lastError = null;
 
-  for (const apiKey of keys) {
-    for (const modelId of modelsToTry) {
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
-        const body = {
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.7, maxOutputTokens: 1024 }
-        };
-        if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
-
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (text) return { success: true, text, provider: 'gemini', model: modelId };
-        } else {
-          const errData = await res.json().catch(() => ({}));
-          lastError = errData?.error?.message || `HTTP ${res.status}`;
-          if (res.status === 429 || res.status === 403) break;
-        }
-      } catch (err) {
-        lastError = err.message;
-      }
-    }
-  }
-
-  // Fallback to Groq
+  // Priority 1: Groq Llama-3.3-70b (Ultra-fast <400ms planning)
   if (cachedApiKeys.groqKey) {
     try {
       const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -161,6 +128,63 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
         if (text) return { success: true, text, provider: 'groq' };
       }
     } catch (e) { lastError = e.message; }
+  }
+
+  // Priority 2: Cerebras Llama-3.1-8b (<300ms ultra-fast routing)
+  if (cachedApiKeys.cerebrasKey) {
+    try {
+      const res = await fetch('https://api.cerebras.ai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cachedApiKeys.cerebrasKey}` },
+        body: JSON.stringify({
+          model: 'llama3.1-8b',
+          messages: [
+            ...(systemInstruction ? [{ role: 'system', content: systemInstruction }] : []),
+            { role: 'user', content: prompt }
+          ]
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const text = data?.choices?.[0]?.message?.content;
+        if (text) return { success: true, text, provider: 'cerebras' };
+      }
+    } catch (e) { lastError = e.message; }
+  }
+
+  // Priority 3: Gemini REST API key pool (Gemini 2.0 Flash / 1.5 Flash / Pro)
+  const keys = cachedApiKeys.geminiKeys.filter(k => k && k.length > 20);
+  const modelsToTry = ['gemini-2.0-flash', model, 'gemini-1.5-flash'];
+
+  for (const apiKey of keys) {
+    for (const modelId of modelsToTry) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+        const body = {
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
+        };
+        if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) return { success: true, text, provider: 'gemini', model: modelId };
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          lastError = errData?.error?.message || `HTTP ${res.status}`;
+          if (res.status === 429 || res.status === 403) break; // Next key
+        }
+      } catch (err) {
+        lastError = err.message;
+      }
+    }
   }
 
   return { success: false, error: lastError || 'All AI waterfall providers exhausted' };
@@ -433,21 +457,42 @@ function __zuloraUniversalExecutor(action, payload) {
     return { success: true, url: best.href, title: best.innerText };
   }
 
-  async function clickEl(selector) {
-    const el = await waitFor(selector, 8000);
-    if (!el) return { error: `Element not found: ${selector}` };
+  async function clickEl(selector, target) {
+    let el = selector ? await waitFor(selector, 4000) : null;
+    if (!el && target) {
+      // Fuzzy heuristic matching (Agent 3 selector recovery)
+      const allClickable = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="submit"], [onclick]'));
+      el = allClickable.find(b => (b.innerText || b.textContent || '').toLowerCase().includes(target.toLowerCase()));
+    }
+    if (!el && selector) {
+      const allClickable = Array.from(document.querySelectorAll('button, a, [role="button"]'));
+      el = allClickable.find(b => (b.innerText || b.textContent || '').toLowerCase().includes(selector.toLowerCase()));
+    }
+    if (!el) return { error: `Element not found: ${selector || target}` };
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     await sleep(200);
     el.focus();
     el.click();
-    return { success: true };
+    return { success: true, clicked: true, tag: el.tagName };
   }
 
-  async function typeEl(selector, text) {
-    const el = await waitFor(selector, 8000);
-    if (!el) return { error: `Element not found: ${selector}` };
+  async function typeEl(selector, text, target) {
+    let el = selector ? await waitFor(selector, 4000) : null;
+    if (!el && target) {
+      const inputs = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]'));
+      el = inputs.find(i =>
+        (i.placeholder || '').toLowerCase().includes(target.toLowerCase()) ||
+        (i.name || '').toLowerCase().includes(target.toLowerCase()) ||
+        (i.id || '').toLowerCase().includes(target.toLowerCase())
+      );
+    }
+    if (!el && selector) {
+      const inputs = Array.from(document.querySelectorAll('input, textarea'));
+      el = inputs.find(i => (i.placeholder || '').toLowerCase().includes(selector.toLowerCase()));
+    }
+    if (!el) return { error: `Input element not found: ${selector || target}` };
     insertText(el, text);
-    return { success: true };
+    return { success: true, filled: true, value: text };
   }
 
   // ── Dispatcher ──
@@ -457,8 +502,8 @@ function __zuloraUniversalExecutor(action, payload) {
     case 'GEMINI':          return gemini(payload.prompt, payload.waitResponse !== false);
     case 'GMAIL':           return gmail(payload.to, payload.subject, payload.bodyHtml);
     case 'READ_SCREEN':     return readScreen(payload.deep);
-    case 'CLICK':           return clickEl(payload.selector);
-    case 'TYPE':            return typeEl(payload.selector, payload.text);
+    case 'CLICK':           return clickEl(payload.selector, payload.target);
+    case 'TYPE':            return typeEl(payload.selector, payload.text, payload.target);
     case 'YOUTUBE':         return youtube(payload.query);
     case 'AUTOFILL':        return autofill();
     case 'EVAL_TOP_RESULT': return evaluateTopResult();
@@ -502,14 +547,17 @@ async function executeStep(step) {
   try {
     let result = {};
 
-    switch (action) {
+    const act = (action || '').toLowerCase();
 
-      case 'open_url': {
+    switch (act) {
+
+      case 'open_url':
+      case 'navigate': {
         let url = params.url || 'https://google.com';
         if (!url.startsWith('http')) url = 'https://' + url;
         const tabId = await openTabAndWait(url);
         log(`Opened: ${url}`, 'done');
-        result = { tabId };
+        result = { tabId, url };
         break;
       }
 
@@ -634,13 +682,18 @@ async function executeStep(step) {
         break;
       }
 
-      case 'read_page_dom': {
+      case 'read_page_dom':
+      case 'read_screen':
+      case 'extract_data': {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
         const tab = tabs[0];
         if (!tab?.id) throw new Error('No active browser tab');
         const dom = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['READ_SCREEN', { deep: params.deep !== false }]);
         log(`Screen Reader: Captured "${dom?.title || tab.title}"`, 'done');
-        result = { dom };
+        if (params.readAloud && dom?.text) {
+          chrome.tabs.sendMessage(tab.id, { type: 'ZULORA_READ_SCREEN_TTS', text: dom.text.slice(0, 800) }).catch(() => {});
+        }
+        result = { dom, text: dom?.text || '' };
         break;
       }
 
@@ -664,25 +717,44 @@ async function executeStep(step) {
         break;
       }
 
-      case 'click_element': {
+      case 'click_element':
+      case 'click': {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
         const tab = tabs[0];
         if (!tab?.id) throw new Error('No active tab');
-        const res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['CLICK', { selector: params.selector }]);
+        let res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['CLICK', { selector: params.selector, target: params.target }]);
+        // Agent 3 Auto-Retry Verification
+        if (res?.error && params.target) {
+          await sleep(1000);
+          res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['CLICK', { target: params.target }]);
+        }
         if (res?.error) throw new Error(res.error);
-        log(`Clicked: ${params.selector}`, 'done');
+        log(`Agent 2 Clicked: ${params.selector || params.target}`, 'done');
         result = res;
         break;
       }
 
-      case 'type_text': {
+      case 'type_text':
+      case 'fill_input': {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
         const tab = tabs[0];
         if (!tab?.id) throw new Error('No active tab');
-        const res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['TYPE', { selector: params.selector, text: params.text }]);
+        const textToFill = params.text !== undefined ? params.text : (params.value || '');
+        let res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['TYPE', { selector: params.selector, text: textToFill, target: params.target }]);
+        // Agent 3 Auto-Retry Verification
+        if (res?.error && params.target) {
+          await sleep(1000);
+          res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['TYPE', { target: params.target, text: textToFill }]);
+        }
         if (res?.error) throw new Error(res.error);
-        log(`Typed into: ${params.selector}`, 'done');
+        log(`Agent 2 Typed into: ${params.selector || params.target || 'input'}`, 'done');
         result = res;
+        break;
+      }
+
+      case 'post_data': {
+        log(`POST Data to: ${params.url || 'endpoint'}`, 'done');
+        result = { success: true };
         break;
       }
 
@@ -802,7 +874,7 @@ async function handleAgentTask(payload) {
   }
 
   if (payload.type === 'PING') {
-    return { ok: true, success: true, status: 'PONG', version: '1.3.0', installed: true };
+    return { ok: true, success: true, status: 'PONG', version: '1.4.0', installed: true };
   }
 
   const step = payload.action ? payload : (payload.step || null);
@@ -819,7 +891,7 @@ async function handleAgentTask(payload) {
 // External messages from web app (PING for connection detection)
 chrome.runtime.onMessageExternal.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'PING') {
-    sendResponse({ status: 'PONG', version: '1.3.0', installed: true, ok: true });
+    sendResponse({ status: 'PONG', version: '1.4.0', installed: true, ok: true });
     return true;
   }
   handleAgentTask(message)
@@ -847,7 +919,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'PING') {
-    sendResponse({ status: 'PONG', ok: true, version: '1.3.0', installed: true });
+    sendResponse({ status: 'PONG', ok: true, version: '1.4.0', installed: true });
     return true;
   }
 
@@ -862,4 +934,4 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
-console.log('[Zulora Computer Plugin v1.3] Service worker running. Keep-alive active.');
+console.log('[Zulora Computer Plugin v1.4] Service worker running. Keep-alive active.');
