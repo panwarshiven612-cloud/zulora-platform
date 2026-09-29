@@ -5,7 +5,8 @@
  */
 
 import { apiRouter } from './apiRouter';
-import { db, doc, setDoc, getDoc } from '../firebase'; // Import Firestore database
+import { db } from './firebase';
+import { doc, setDoc, getDoc } from 'firebase/firestore'; // Import Firestore database
 
 const EXTENSION_ID = 'emimeingkoocmgljpjkpdnlnbkpkfbff';
 
@@ -51,7 +52,7 @@ export async function syncTokenUsage(tokensConsumed, userId) {
   localStorage.setItem('zulora_total_tokens', currentTotal.toString());
 
   // 3. Sync to Firebase (Unified Tracker)
-  if (userId && db) {
+  if (userId && db && typeof doc === 'function') {
     try {
       const userRef = doc(db, 'users', userId);
       const snap = await getDoc(userRef);
@@ -208,11 +209,35 @@ export async function sendBridgeMessageWithRetry(detail, maxAttempts = 3, delayM
 }
 
 // ─── Step Parser ──────────────────────────────────────────────────────────────
+
 export function parseCommandToSteps(command) {
   const cmd = command.toLowerCase().trim();
-  const steps = [];
+  let steps = [];
 
-  // 1. YouTube Action (Entity extraction & [object Object] fix applied in Extension side, but we ensure string here)
+  // Multi-Step: Find best website and open it
+  if (cmd.includes('find best website for') && cmd.includes('open it')) {
+    const query = cleanSearchIntent(command.replace(/find best website for|open it/gi, ''));
+    steps.push({ action: ACTION_TYPES.SEARCH_GOOGLE, app: 'Google', params: { query } });
+    steps.push({ action: 'evaluate_and_open_top_result', app: 'Search Engine', params: { query } });
+    return steps;
+  }
+
+  // Multi-Step: Scrape and paste
+  if (cmd.includes('scrape') && (cmd.includes('paste') || cmd.includes('inject'))) {
+    const destMatch = command.match(/(?:paste|inject)(?: it| data)?(?: into| in| to) (.+)/i);
+    const destination = cleanSearchIntent(destMatch ? destMatch[1] : 'destination');
+    
+    steps.push({ action: ACTION_TYPES.READ_DOM, app: 'Web Scraper', params: { deep: true } });
+    if (destination.includes('notepad')) {
+      steps.push({ action: ACTION_TYPES.OPEN_URL, app: 'Browser', params: { url: 'https://notepad.pw' } });
+      steps.push({ action: 'wait', app: 'System', params: { ms: 3000 } });
+      steps.push({ action: ACTION_TYPES.TYPE_TEXT, app: 'Notepad', params: { selector: 'textarea, .CodeMirror', text: '{{SCRAPED_DATA}}' } });
+    } else {
+      steps.push({ action: 'ai_reasoning', app: 'Web Agent', params: { prompt: `Navigate to ${destination} and paste data.` } });
+    }
+    return steps;
+  }
+// 1. YouTube Action (Entity extraction & [object Object] fix applied in Extension side, but we ensure string here)
   if (cmd.includes('youtube') || cmd.includes('play video') || cmd.includes('play ')) {
     const rawMatch = command.match(/(?:search|play|find|for)[:\s]+["']?(.+?)["']?$/i);
     let entity = rawMatch ? rawMatch[1] : command;

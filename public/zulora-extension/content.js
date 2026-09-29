@@ -191,21 +191,29 @@
         widget.style.animation = 'pulse 1.5s infinite';
       };
       
+      
       recognition.onresult = (event) => {
-        const transcript = event.results[event.results.length - 1][0].transcript.trim().toLowerCase();
+        const transcript = event.results[event.results.length - 1][0].transcript.trim();
+        const lowerTrans = transcript.toLowerCase();
         
         // Mid-task voice updates
-        if (transcript.includes('stop task') || transcript.includes('stop agent')) {
+        if (lowerTrans.includes('stop task') || lowerTrans.includes('stop agent')) {
           safeSendMessage({ type: 'ZULORA_CANCEL' });
           widget.style.background = 'linear-gradient(135deg, #0284c7 0%, #3b82f6 100%)';
           isListening = false;
           recognition.stop();
-        } else {
-          // Dispatch intent back to web app
-          window.postMessage({ source: 'ZULORA_EXTENSION', type: 'ZULORA_VOICE_COMMAND', command: transcript }, '*');
+          return;
+        } 
+        
+        // Form Auto-Fill via Voice
+        if (lowerTrans.includes('fill') || lowerTrans.includes('my name is') || lowerTrans.includes('email is')) {
+          autoFillFromVoice(transcript);
         }
+
+        // Dispatch intent back to web app
+        window.postMessage({ source: 'ZULORA_EXTENSION', type: 'ZULORA_VOICE_COMMAND', command: transcript }, '*');
       };
-      
+
       recognition.start();
     });
     

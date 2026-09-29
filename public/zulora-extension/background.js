@@ -285,34 +285,15 @@ function __zuloraUniversalExecutor(action, payload) {
     return null;
   }
 
+  
   function insertText(el, text) {
-    el.focus();
-    // 1. Synthetic execCommand for rich text / React editors
-    try {
-      el.select?.();
-      const ok = document.execCommand('insertText', false, text);
-      if (ok) {
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
-      }
-    } catch {}
-
-    // 2. Direct property setting with Prototype setter for React inputs
-    if ('value' in el) {
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
-        || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
-      if (setter) setter.call(el, text);
-      else el.value = text;
+    if (el.isContentEditable) {
+      el.innerText = text;
+    } else {
+      el.value = text;
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
     }
-
-    // 3. Fallback innerText
-    el.innerText = text;
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    return true;
   }
 
   function pressEnter(el) {
@@ -350,7 +331,36 @@ function __zuloraUniversalExecutor(action, payload) {
   }
 
   
-  // ── YouTube ──
+  
+  // ── Evaluate Top Search Result ──
+  async function evaluateTopResult() {
+    const links = Array.from(document.querySelectorAll('a'))
+      .filter(a => a.href && a.href.startsWith('http') && !a.href.includes('google.com/search') && !a.href.includes('youtube.com'))
+      .slice(0, 10);
+    
+    if (links.length > 0) {
+      // Pick first organic result
+      let bestLink = links.find(a => a.querySelector('h3'));
+      if (!bestLink) bestLink = links[0];
+      
+      return { success: true, url: bestLink.href, title: bestLink.innerText };
+    }
+    return { error: 'No relevant search results found.' };
+  }
+
+  
+      // ── Evaluate Top Result ──
+      case 'evaluate_and_open_top_result': {
+        const evalRes = await injectAndRun(result.tabId || (await chrome.tabs.query({active:true}))[0].id, __zuloraUniversalExecutor, ['EVAL_TOP_RESULT', {}], 3, 5000);
+        if (evalRes?.error) throw new Error(evalRes.error);
+        log(`Navigating to top result: ${evalRes.url}`, 'running');
+        await chrome.tabs.update(result.tabId, { url: evalRes.url });
+        await waitTabComplete(result.tabId, 20000);
+        result = { tabId: result.tabId, url: evalRes.url };
+        break;
+      }
+
+      // ── YouTube ──
   async function youtube(query) {
     const searchInput = await waitFor(['input#search', 'input[name="search_query"]'], 15000);
     if (!searchInput) return { error: 'YouTube search bar not found.' };
@@ -584,6 +594,7 @@ function __zuloraUniversalExecutor(action, payload) {
     case 'TYPE':        return typeEl(payload.selector, payload.text);
     case 'YOUTUBE':     return youtube(payload.query);
     case 'AUTOFILL':    return autofill();
+    case 'EVAL_TOP_RESULT': return evaluateTopResult();
     default:            return { error: 'Unknown executor action: ' + action };
   }
 }
