@@ -89,6 +89,9 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     return parseInt(localStorage.getItem('zulora_plugin_task_count') || '0', 10);
   });
   const [showUpgradeGate, setShowUpgradeGate] = useState(false);
+  const [floatingMicEnabled, setFloatingMicEnabled] = useState(() => {
+    return localStorage.getItem('zulora_floating_mic') !== 'false';
+  });
 
   const logEndRef = useRef(null);
   const inputRef  = useRef(null);
@@ -102,6 +105,23 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
       localStorage.setItem('zulora_total_tokens', String(next));
       return next;
     });
+  }, []);
+
+  const toggleFloatingMic = useCallback((enabled) => {
+    setFloatingMicEnabled(enabled);
+    localStorage.setItem('zulora_floating_mic', enabled ? 'true' : 'false');
+    // Notify extension content script to show/hide the widget
+    window.dispatchEvent(new CustomEvent('ZULORA_EXECUTE_AGENT_TASK', {
+      detail: { type: 'SET_FLOATING_MIC', enabled }
+    }));
+    // Communicate directly to extension storage if available
+    try {
+      if (window.chrome?.storage?.local) {
+        window.chrome.storage.local.set({ floatingMicEnabled: enabled });
+      }
+    } catch {}
+    const el = document.getElementById('zulora-floating-mic');
+    if (el) el.style.display = enabled ? 'flex' : 'none';
   }, []);
 
   // ── Extension Connection Check ──────────────────────────────────────────────
@@ -369,10 +389,21 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
             <Zap className="w-3.5 h-3.5 text-sky-500 animate-pulse" />
             <span>Tokens Used: <strong className="font-bold text-sky-600 dark:text-sky-400">{sessionTokens.toLocaleString()}</strong> Tokens</span>
           </div>
-          <span className="text-[10px] text-slate-400 dark:text-slate-500 font-semibold uppercase tracking-wider">
-            Session Usage
-          </span>
+          {/* Floating Mic Toggle */}
+          <button
+            onClick={() => toggleFloatingMic(!floatingMicEnabled)}
+            className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold transition-colors ${
+              floatingMicEnabled
+                ? 'bg-sky-100 dark:bg-sky-900/40 text-sky-600 dark:text-sky-400'
+                : 'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400'
+            }`}
+            title="Toggle floating mic widget on browser tabs"
+          >
+            <Mic className="w-2.5 h-2.5" />
+            Floating Mic {floatingMicEnabled ? 'ON' : 'OFF'}
+          </button>
         </div>
+
 
         {/* ── Body ────────────────────────────────────────────────────────── */}
         <div className="flex-1 overflow-y-auto overscroll-contain space-y-4 p-4">
