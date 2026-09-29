@@ -1,5 +1,5 @@
 /**
- * Zulora AI — Browser Agent Engine (v1.4.0)
+ * Zulora AI — Browser Agent Engine (v1.5.0)
  * ============================================
  * TRIPLE-AGENT AUTONOMOUS ARCHITECTURE:
  *  - AGENT 1: Master Planner & Decomposer (Multi-step JSON action queue)
@@ -56,6 +56,180 @@ export const ACTION_TYPES = {
 };
 
 export const TEMPLATES = { PEARL: 'pearl', AZURE: 'azure', FORMAL: 'formal' };
+
+// ─── BUGFIX 3: Direct App Routing Matrix ─────────────────────────────────────
+// Maps keywords → canonical URLs. Used to prevent defaulting to Google search.
+export const APP_ROUTING_MATRIX = {
+  // Google Apps
+  'gemini':          'https://gemini.google.com/app',
+  'google gemini':   'https://gemini.google.com/app',
+  'gmail':           'https://mail.google.com',
+  'google docs':     'https://docs.google.com',
+  'google sheets':   'https://sheets.google.com',
+  'google slides':   'https://slides.google.com',
+  'google drive':    'https://drive.google.com',
+  'google maps':     'https://maps.google.com',
+  'google meet':     'https://meet.google.com',
+  'google calendar': 'https://calendar.google.com',
+  'google photos':   'https://photos.google.com',
+  'google translate':'https://translate.google.com',
+  'google news':     'https://news.google.com',
+  'youtube':         'https://www.youtube.com',
+  // AI Tools
+  'chatgpt':         'https://chatgpt.com',
+  'chat gpt':        'https://chatgpt.com',
+  'claude':          'https://claude.ai',
+  'perplexity':      'https://www.perplexity.ai',
+  'midjourney':      'https://www.midjourney.com',
+  'copilot':         'https://copilot.microsoft.com',
+  'grok':            'https://grok.x.ai',
+  'notebooklm':      'https://notebooklm.google.com',
+  'bard':            'https://gemini.google.com/app',
+  // Communication
+  'whatsapp':        'https://web.whatsapp.com',
+  'whats app':       'https://web.whatsapp.com',
+  'telegram':        'https://web.telegram.org',
+  'discord':         'https://discord.com/app',
+  'slack':           'https://app.slack.com',
+  'twitter':         'https://twitter.com',
+  'x.com':           'https://x.com',
+  'linkedin':        'https://www.linkedin.com',
+  'instagram':       'https://www.instagram.com',
+  'facebook':        'https://www.facebook.com',
+  'reddit':          'https://www.reddit.com',
+  // Developer
+  'github':          'https://github.com',
+  'gitlab':          'https://gitlab.com',
+  'stackoverflow':   'https://stackoverflow.com',
+  'stack overflow':  'https://stackoverflow.com',
+  'codepen':         'https://codepen.io',
+  'codesandbox':     'https://codesandbox.io',
+  'replit':          'https://replit.com',
+  'vercel':          'https://vercel.com/dashboard',
+  'netlify':         'https://app.netlify.com',
+  'firebase':        'https://console.firebase.google.com',
+  // Productivity
+  'notion':          'https://www.notion.so',
+  'trello':          'https://trello.com',
+  'figma':           'https://www.figma.com',
+  'canva':           'https://www.canva.com',
+  'miro':            'https://miro.com',
+  'airtable':        'https://airtable.com',
+  'linear':          'https://linear.app',
+  'jira':            'https://www.atlassian.com/software/jira',
+  'asana':           'https://app.asana.com',
+  'clickup':         'https://app.clickup.com',
+  // Shopping & Finance
+  'amazon':          'https://www.amazon.in',
+  'flipkart':        'https://www.flipkart.com',
+  'meesho':          'https://www.meesho.com',
+  'myntra':          'https://www.myntra.com',
+  'swiggy':          'https://www.swiggy.com',
+  'zomato':          'https://www.zomato.com',
+  // News & Media
+  'netflix':         'https://www.netflix.com',
+  'spotify':         'https://open.spotify.com',
+  'hotstar':         'https://www.hotstar.com',
+  'prime video':     'https://www.primevideo.com',
+  // Other
+  'wikipedia':       'https://en.wikipedia.org',
+  'leetcode':        'https://leetcode.com',
+  'npm':             'https://www.npmjs.com',
+  'pypi':            'https://pypi.org',
+};
+
+/**
+ * Resolve a user keyword (e.g. "gmail", "chatgpt") to a direct URL.
+ * Returns null if no match found — caller should fall back to Google search.
+ */
+export function resolveDirectUrl(phrase) {
+  const lower = String(phrase || '').toLowerCase().trim();
+  // Try longest match first (multi-word)
+  const sorted = Object.keys(APP_ROUTING_MATRIX).sort((a, b) => b.length - a.length);
+  for (const key of sorted) {
+    if (lower.includes(key)) return APP_ROUTING_MATRIX[key];
+  }
+  // Is it a raw URL?
+  if (/^https?:\/\//.test(lower)) return lower;
+  // Is it a domain like "youtube.com"?
+  if (/^[a-z0-9-]+\.[a-z]{2,}/.test(lower)) return 'https://' + lower;
+  return null;
+}
+
+// ─── BUGFIX 2: Smart Email & Content Payload Generator ───────────────────────
+/**
+ * Extracts structured { recipient, subject, body } from a natural-language prompt.
+ * Never passes raw prompt text directly into DOM inputs.
+ */
+export function smartExtractEmailPayload(prompt) {
+  const emailMatch = prompt.match(/to\s+([\w._%+\-]+@[\w.\-]+\.[a-z]{2,})/i);
+  const subjectPatterns = [
+    /subject[:\s]+[\"']?(.+?)[\"']?(?:\s+(?:body|saying|with|and|message|telling)|$)/i,
+    /(?:about|regarding|re:)\s+[\"']?(.+?)[\"']?(?:\s+(?:body|saying|with|and|message)|$)/i,
+  ];
+  const bodyPatterns = [
+    /(?:body|saying|message|draft|write|tell (?:them|him|her))[:\s]+[\"']?(.+?)[\"']?$/i,
+    /(?:that|saying that)\s+(.+)$/i,
+  ];
+
+  let recipient = '';
+  let subject = '';
+  let body = '';
+
+  if (emailMatch) recipient = emailMatch[1].trim();
+
+  for (const p of subjectPatterns) {
+    const m = prompt.match(p);
+    if (m) { subject = m[1].trim(); break; }
+  }
+
+  for (const p of bodyPatterns) {
+    const m = prompt.match(p);
+    if (m) { body = m[1].trim(); break; }
+  }
+
+  // Fallback: use the cleaned prompt as body
+  if (!body) {
+    body = cleanSearchIntent(prompt.replace(/send (an? )?email/gi, '').replace(/to\s+[\w.@]+/gi, '').trim());
+  }
+
+  if (!subject) {
+    // Guess subject from body
+    const words = body.split(' ').slice(0, 6).join(' ');
+    subject = words.length > 3 ? words : 'Message from Zulora AI';
+  }
+
+  return { recipient, subject, body };
+}
+
+/**
+ * Generates a professional AI email body using the waterfall LLM,
+ * then wraps it in a Pearl or Azure template.
+ */
+export async function generateEmailPayload(rawPrompt, template = TEMPLATES.PEARL, meta = {}) {
+  const systemPrompt = `You are an expert email writer. Write a concise, professional email body based on the following user instruction.
+- Output ONLY the email body text, no subject line, no greeting like "Dear..." unless explicitly requested.
+- Keep it under 200 words.
+- Use clean, professional language.
+- Output plain text only, no markdown.`;
+
+  const llmResult = await callWaterfallLLM(rawPrompt, systemPrompt, {
+    maxTokens: 400,
+    temperature: 0.3,
+    timeoutMs: 3000,
+    groqModel: 'llama-3.3-70b-versatile'
+  });
+
+  const bodyText = (llmResult.success && llmResult.text) ? llmResult.text.trim() : rawPrompt;
+  const bodyHtml = renderEmailTemplate(bodyText, template, { subject: meta.subject || '' });
+
+  return {
+    bodyText,
+    bodyHtml,
+    tokensUsed: llmResult.success ? Math.ceil(bodyText.split(/\s+/).length * 1.3) : 0,
+    provider: llmResult.provider || 'fallback'
+  };
+}
 
 // ─── Token Synchronization Engine ───────────────────────────────────────────────
 export async function syncTokenUsage(tokensConsumed, userId) {
@@ -223,14 +397,17 @@ export async function sendBridgeMessageWithRetry(detail, maxAttempts = 3, delayM
   return { ok: false, success: false, error: lastError || 'Extension bridge timeout' };
 }
 
-// ─── 500ms Fallback Waterfall Brain ───────────────────────────────────────────
+// ─── BUGFIX 4: Waterfall API Resilience — Exponential Backoff Retry Engine ────
 /**
- * Fast LLM Caller with cascading failover:
- *  1. Groq (llama-3.3-70b / llama-3.1-8b) — <400ms planning
- *  2. Cerebras (llama3.1-8b) — <300ms ultra-fast routing
- *  3. Gemini 2.0 Flash / Pro REST endpoints (rotating key pool)
- *  4. OpenRouter
- *  5. Graceful fallback (NEVER throws "All providers exhausted")
+ * Fast LLM Caller with cascading failover and per-provider retry:
+ *  1. Groq (llama-3.3-70b) — <400ms planning
+ *  2. Cerebras (llama3.1-70b) — <300ms ultra-fast routing
+ *  3. Gemini 2.0 Flash / 1.5 Flash (rotating key pool)
+ *  4. OpenRouter fallback
+ *  5. Graceful local deterministic fallback (NEVER crashes UI)
+ *
+ * Each provider gets 2 exponential-backoff retries.
+ * HTTP 429 (rate-limit) silently skips to next provider in <200ms.
  */
 export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
   const env = import.meta.env || {};
@@ -242,6 +419,28 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
       promise,
       new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))
     ]);
+
+  // Exponential backoff helper: 2 retries per provider, skips on 429/403 immediately
+  const tryProvider = async (name, callFn, retries = 2) => {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const result = await callFn(attempt);
+        if (result && result.success && result.text) return result;
+        // If we got a rate-limit status, skip immediately (no retry)
+        if (result && result._rateLimit) {
+          console.warn(`[Zulora Waterfall] ${name} rate-limited, skipping.`);
+          return null;
+        }
+      } catch (e) {
+        const isTimeout = e.message === 'timeout';
+        if (attempt < retries && !isTimeout) {
+          const backoffMs = Math.min(100 * Math.pow(2, attempt - 1), 400);
+          await new Promise(r => setTimeout(r, backoffMs));
+        }
+      }
+    }
+    return null;
+  };
 
   const postJSON = (url, headers, body, timeoutMs = perProviderTimeoutMs) =>
     withTimeout(
@@ -258,104 +457,107 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
     { role: 'user', content: prompt }
   ];
 
-  // 1. Groq Llama-3.3-70b (Fastest Router <400ms)
+  // ── Priority 1: Groq Llama-3.3-70b (Fastest Router <400ms) ──
   const groqKey = get('VITE_GROQ_KEY') || get('VITE_GROQ_API_KEY');
   if (groqKey) {
-    try {
+    const result = await tryProvider('Groq', async () => {
       const res = await postJSON(
         'https://api.groq.com/openai/v1/chat/completions',
         { Authorization: `Bearer ${groqKey}` },
         {
           model: opts.groqModel || 'llama-3.3-70b-versatile',
           max_tokens: opts.maxTokens || 1024,
-          temperature: opts.temperature || 0.2,
+          temperature: opts.temperature ?? 0.2,
           messages
         },
         1800
       );
-      if (res.ok) {
-        const data = await res.json();
-        const text = data?.choices?.[0]?.message?.content;
-        if (text) return { success: true, text, provider: 'groq' };
-      }
-    } catch (e) {
-      console.warn('[Zulora Waterfall] Groq bypassed:', e.message);
-    }
+      if (res.status === 429 || res.status === 403) return { _rateLimit: true };
+      if (!res.ok) return null;
+      const data = await res.json();
+      const text = data?.choices?.[0]?.message?.content;
+      return text ? { success: true, text, provider: 'groq' } : null;
+    });
+    if (result) return result;
   }
 
-  // 2. Cerebras Llama-3.1-8b (Ultra-fast DOM Extraction <300ms)
+  // ── Priority 2: Cerebras Llama-3.1-70b (Ultra-fast <300ms) ──
   const cerebrasKey = get('VITE_CEREBRAS_KEY');
   if (cerebrasKey) {
-    try {
+    const result = await tryProvider('Cerebras', async () => {
       const res = await postJSON(
         'https://api.cerebras.ai/v1/chat/completions',
         { Authorization: `Bearer ${cerebrasKey}` },
         {
-          model: 'llama3.1-8b',
+          model: 'llama3.1-70b',
           max_tokens: opts.maxTokens || 1024,
           temperature: 0.1,
           messages
         },
         1500
       );
-      if (res.ok) {
-        const data = await res.json();
-        const text = data?.choices?.[0]?.message?.content;
-        if (text) return { success: true, text, provider: 'cerebras' };
-      }
-    } catch (e) {
-      console.warn('[Zulora Waterfall] Cerebras bypassed:', e.message);
-    }
+      if (res.status === 429 || res.status === 403) return { _rateLimit: true };
+      if (!res.ok) return null;
+      const data = await res.json();
+      const text = data?.choices?.[0]?.message?.content;
+      return text ? { success: true, text, provider: 'cerebras' } : null;
+    });
+    if (result) return result;
   }
 
-  // 3. Gemini REST API Key Pool (Gemini 2.0 Flash / Pro)
+  // ── Priority 3: Gemini REST API Key Pool (2.0 Flash / 1.5 Flash) ──
   const geminiKeys = Array.from({ length: 7 }, (_, i) =>
     get(`VITE_GEMINI_KEY_${i + 1}`) || get(`VITE_GEMINI_API_KEY_${i + 1}`)
   ).concat([get('VITE_GEMINI_API_KEY')]).filter(k => k && k.length > 20);
 
   for (const apiKey of geminiKeys) {
+    let keyRateLimited = false;
     for (const model of ['gemini-2.0-flash', 'gemini-1.5-flash']) {
-      try {
+      if (keyRateLimited) break;
+      const result = await tryProvider(`Gemini/${model}`, async () => {
         const res = await postJSON(
           `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
           {},
           {
             contents: [{ parts: [{ text: systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt }] }],
-            generationConfig: { temperature: opts.temperature || 0.2, maxOutputTokens: opts.maxTokens || 1024 }
+            generationConfig: { temperature: opts.temperature ?? 0.2, maxOutputTokens: opts.maxTokens || 1024 }
           },
           2500
         );
-        if (res.ok) {
-          const data = await res.json();
-          const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (text) return { success: true, text, provider: `gemini/${model}` };
+        if (res.status === 429 || res.status === 403) {
+          keyRateLimited = true;
+          return { _rateLimit: true };
         }
-        if (res.status === 429 || res.status === 403) break; // rotate key immediately
-      } catch (e) {
-        // Continue to next key
-      }
+        if (!res.ok) return null;
+        const data = await res.json();
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        return text ? { success: true, text, provider: `gemini/${model}` } : null;
+      }, 1); // 1 attempt per model — rotate key on any failure
+      if (result && result.success) return result;
     }
   }
 
-  // 4. OpenRouter Fallback
+  // ── Priority 4: OpenRouter Fallback ──
   const openRouterKey = get('VITE_OPENROUTER_KEY') || get('VITE_OPENROUTER_API_KEY');
   if (openRouterKey) {
-    try {
+    const result = await tryProvider('OpenRouter', async () => {
       const res = await postJSON(
         'https://openrouter.ai/api/v1/chat/completions',
-        { Authorization: `Bearer ${openRouterKey}`, 'HTTP-Referer': 'https://zulora.ai' },
+        { Authorization: `Bearer ${openRouterKey}`, 'HTTP-Referer': 'https://zulora.in' },
         { model: 'mistralai/mistral-7b-instruct', max_tokens: 512, messages },
         2000
       );
-      if (res.ok) {
-        const data = await res.json();
-        const text = data?.choices?.[0]?.message?.content;
-        if (text) return { success: true, text, provider: 'openrouter' };
-      }
-    } catch {}
+      if (res.status === 429 || res.status === 403) return { _rateLimit: true };
+      if (!res.ok) return null;
+      const data = await res.json();
+      const text = data?.choices?.[0]?.message?.content;
+      return text ? { success: true, text, provider: 'openrouter' } : null;
+    });
+    if (result) return result;
   }
 
-  // 5. Graceful Local Fallback — Never throw "All providers exhausted"
+  // ── Priority 5: Graceful Local Fallback — NEVER crash UI ──
+  console.warn('[Zulora Waterfall] All providers exhausted — using local fallback');
   return {
     success: false,
     text: '',
@@ -422,34 +624,49 @@ if (typeof window !== 'undefined') {
 export async function agent1_MasterPlanner(prompt, screenContext = '') {
   const cleanPrompt = cleanSearchIntent(prompt);
 
-  const systemPrompt = `You are Zulora AI's Master Task Planner (Agent 1).
+  // BUGFIX 1: Pre-check for direct URL routing to guide the LLM planner
+  const directUrlHint = (() => {
+    const lower = prompt.toLowerCase();
+    const entries = Object.entries(APP_ROUTING_MATRIX).sort((a, b) => b[0].length - a[0].length);
+    const matches = entries.filter(([k]) => lower.includes(k)).map(([k, v]) => `"${k}" → ${v}`);
+    return matches.length > 0 ? `\nDirect Routing Hints (USE THESE URLs, do NOT default to Google Search):\n${matches.join('\n')}` : '';
+  })();
+
+  const systemPrompt = `You are Zulora AI's Master Task Planner (Agent 1) — a world-class autonomous browser agent.
 Analyze the user prompt and break the task into an ordered JSON array of executable browser steps.
 Output ONLY raw valid JSON array. Do NOT wrap in markdown code blocks. No comments, no explanations.
+
+IMPORTANT ROUTING RULES:
+- When user says "open [service]", ALWAYS use NAVIGATE with the direct URL from the routing hints.
+- NEVER type into Google search to open known web apps (Gmail, ChatGPT, Gemini, WhatsApp, etc.).
+- For multi-step tasks with "and then", "after that", "next", "then", generate SEPARATE steps.
+- Each step must be atomic (one action per step).
+- Use WAIT steps (500-2000ms) after navigation steps before interacting with page elements.${directUrlHint}
 
 Standard JSON Step Schema:
 [
   { "step": 1, "action": "NAVIGATE", "url": "https://..." },
-  { "step": 2, "action": "FILL_INPUT", "target": "search bar or CSS selector", "value": "text to type" },
-  { "step": 3, "action": "CLICK", "target": "button or link text / CSS selector" },
-  { "step": 4, "action": "EXTRACT_DATA", "selector": "h1, p, or text area", "variable": "varName" },
-  { "step": 5, "action": "POST_DATA", "url": "https://...", "data": "{{varName}}" },
-  { "step": 6, "action": "WAIT", "ms": 1500 }
+  { "step": 2, "action": "WAIT", "ms": 1500 },
+  { "step": 3, "action": "FILL_INPUT", "target": "search bar CSS selector or placeholder text", "value": "text to type" },
+  { "step": 4, "action": "CLICK", "target": "button text or CSS selector" },
+  { "step": 5, "action": "EXTRACT_DATA", "selector": "h1, p, .result", "variable": "varName" },
+  { "step": 6, "action": "NAVIGATE", "url": "https://second-site.com" },
+  { "step": 7, "action": "FILL_INPUT", "target": "input area", "value": "{{varName}}" }
 ]
 
-Specialized Actions:
-- { "action": "YOUTUBE_PLAY", "query": "..." }
-- { "action": "WHATSAPP_SEND", "recipient": "...", "message": "..." }
-- { "action": "GMAIL_COMPOSE", "to": "...", "subject": "...", "body": "..." }
-- { "action": "CHATGPT_PROMPT", "prompt": "..." }
-- { "action": "GEMINI_PROMPT", "prompt": "..." }
+Specialized High-Level Actions (preferred for common apps):
+- { "action": "YOUTUBE_PLAY", "query": "search term" }
+- { "action": "WHATSAPP_SEND", "recipient": "contact name", "message": "message text" }
+- { "action": "GMAIL_COMPOSE", "to": "email@domain.com", "subject": "subject", "body": "email body" }
+- { "action": "CHATGPT_PROMPT", "prompt": "your question" }
+- { "action": "GEMINI_PROMPT", "prompt": "your question" }
 - { "action": "READ_SCREEN" }
 - { "action": "AUTOFILL_FORM" }
 
 Rules:
-- Strip redundant fillers ("please", "there", "search for") from query values.
-- If task contains sequential instructions ("and then", "after that", "next"), generate distinct steps.
-- Ensure all URLs start with https://.
-- Output ONLY the JSON array.`;
+- Strip filler words ("please", "there", "search for", "go to google and") from query values.
+- All URLs must start with https://.
+- Output ONLY the JSON array, nothing else.`;
 
   // Weave persistent screen memory buffer into planning context
   const recentMemory = getRecentScreenMemory(2);
@@ -462,18 +679,25 @@ Rules:
     : `User Prompt: ${cleanPrompt}${memoryContext}`;
 
   const planResult = await callWaterfallLLM(contextPrompt, systemPrompt, {
-    maxTokens: 900,
+    maxTokens: 1200,
     temperature: 0.1,
-    timeoutMs: 2500,
+    timeoutMs: 3000,
     groqModel: 'llama-3.3-70b-versatile'
   });
 
   if (planResult.success && planResult.text) {
     try {
-      const sanitized = planResult.text.replace(/```json?|```/g, '').trim();
-      const parsed = JSON.parse(sanitized);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed.map((item, idx) => normalizeAgentStep(item, idx + 1));
+      const sanitized = planResult.text
+        .replace(/```json?|```/g, '')
+        .replace(/^\s*\[/, '[')
+        .trim();
+      // Extract JSON array even if surrounded by text
+      const jsonMatch = sanitized.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((item, idx) => normalizeAgentStep(item, idx + 1));
+        }
       }
     } catch (e) {
       console.warn('[Agent 1 Planner] LLM JSON parse failed, utilizing deterministic decomposition:', e.message);
@@ -614,12 +838,14 @@ export function agent3_ScreenVerifier(stepResult, step) {
   return { verified: true, retry: false };
 }
 
-// ─── Deterministic Step Parser (Fast Local Fallback) ──────────────────────────
+// ─── BUGFIX 1 & 3: Deterministic Step Parser with Direct App Routing ──────────
 export function parseCommandToSteps(command) {
   const cmd = command.toLowerCase().trim();
 
   // Screen reading
-  if (cmd.includes('read screen') || cmd.includes('what is on this page') || cmd.includes('summarize page')) {
+  if (cmd.includes('read screen') || cmd.includes('what is on this page') ||
+      cmd.includes('summarize this page') || cmd.includes('summarize page') ||
+      cmd.includes('what does this page say')) {
     return [{ action: ACTION_TYPES.READ_DOM, app: 'Screen Reader', params: { readAloud: true, deep: true } }];
   }
 
@@ -645,26 +871,25 @@ export function parseCommandToSteps(command) {
   }
 
   // YouTube
-  if (cmd.includes('youtube') || cmd.match(/\bplay\b/)) {
+  if (cmd.includes('youtube') || (cmd.match(/\bplay\b/) && !cmd.includes('gemini') && !cmd.includes('chatgpt'))) {
     const rawMatch = command.match(/(?:search|play|find|for)[:\s]+["']?(.+?)["']?$/i);
     const entity = cleanSearchIntent(rawMatch ? rawMatch[1] : command);
     return [{ action: ACTION_TYPES.YOUTUBE_PLAY, app: 'YouTube', params: { query: entity } }];
   }
 
-  // Gmail
-  if (cmd.includes('email') || cmd.includes('gmail') || cmd.includes('send mail')) {
-    const toMatch = command.match(/to\s+([\w._%+-]+@[\w.-]+\.[a-z]{2,})/i);
-    const subjMatch = command.match(/subject[:\s]+["']?(.+?)["']?(?:\s+(?:body|saying|with|and|message)|$)/i);
-    const bodyMatch = command.match(/(?:body|saying|message|draft|write)[:\s]+["']?(.+?)["']?$/i);
+  // Gmail / Email
+  if (cmd.includes('email') || cmd.includes('gmail') || cmd.includes('send mail') || cmd.includes('compose')) {
+    // BUGFIX 2: Use smart payload extractor — never dump raw prompt into DOM
+    const extracted = smartExtractEmailPayload(command);
     const isAzure = /azure/i.test(command);
-    const isPearl = /pearl|template|formal/i.test(command);
+    const isPearl = /pearl|template|formal|beautiful/i.test(command);
     return [{
       action: ACTION_TYPES.GMAIL_COMPOSE, app: 'Gmail', needsLlm: true, llmType: 'email',
       params: {
-        to: toMatch?.[1] || '',
-        subject: subjMatch?.[1] || 'Message from Zulora AI',
-        rawPrompt: bodyMatch?.[1] || cleanSearchIntent(command),
-        template: isAzure ? TEMPLATES.AZURE : (isPearl ? TEMPLATES.PEARL : TEMPLATES.PEARL)
+        to: extracted.recipient || '',
+        subject: extracted.subject || 'Message from Zulora AI',
+        rawPrompt: extracted.body || cleanSearchIntent(command),
+        template: isAzure ? TEMPLATES.AZURE : TEMPLATES.PEARL
       }
     }];
   }
@@ -682,15 +907,19 @@ export function parseCommandToSteps(command) {
     }];
   }
 
-  // ChatGPT
+  // ChatGPT — BUGFIX 3: Direct routing
   if (cmd.includes('chatgpt') || cmd.includes('chat gpt')) {
     const promptMatch = command.match(/(?:ask|prompt|search|tell|with|query)[:\s]+["']?(.+?)["']?$/i);
     return [{ action: ACTION_TYPES.CHATGPT_PROMPT, app: 'ChatGPT', params: { prompt: cleanSearchIntent(promptMatch?.[1] || command) } }];
   }
 
-  // Gemini
-  if (cmd.includes('gemini')) {
+  // Gemini — BUGFIX 3: Direct routing
+  if (cmd.includes('gemini') || cmd.includes('google gemini')) {
     const promptMatch = command.match(/(?:ask|prompt|tell|query|say)[:\s]+["']?(.+?)["']?$/i);
+    // If no prompt keyword, it's "open gemini" → just navigate
+    if (!promptMatch && /(?:open|go to|launch)\s+gemini/i.test(command)) {
+      return [{ action: ACTION_TYPES.OPEN_URL, app: 'Gemini', params: { url: 'https://gemini.google.com/app' } }];
+    }
     return [{ action: ACTION_TYPES.GEMINI_PROMPT, app: 'Gemini', params: { prompt: cleanSearchIntent(promptMatch?.[1] || command) } }];
   }
 
@@ -700,25 +929,39 @@ export function parseCommandToSteps(command) {
   }
 
   // Form fill
-  if (cmd.includes('fill form') || cmd.includes('register') || cmd.includes('sign in') || cmd.includes('auto fill')) {
+  if (cmd.includes('fill form') || cmd.includes('auto fill') || cmd.includes('autofill')) {
     return [{ action: ACTION_TYPES.AUTOFILL_FORM, app: 'AutoFill', params: { intent: cleanSearchIntent(command) } }];
   }
 
-  // Direct URL navigation
-  const urlMatch = command.match(/(?:open|go to|navigate to|visit)\s+(https?:\/\/\S+|[a-z0-9.-]+\.[a-z]{2,})/i);
-  if (urlMatch) {
-    let url = urlMatch[1];
-    if (!url.startsWith('http')) url = 'https://' + url;
-    return [{ action: ACTION_TYPES.OPEN_URL, app: 'Browser', params: { url } }];
+  // BUGFIX 3: Direct app routing — check routing matrix BEFORE defaulting to Google search
+  const openMatch = command.match(/(?:open|go to|navigate to|launch|visit|take me to)\s+(.+?)(?:\s+and\s+.+)?$/i);
+  if (openMatch) {
+    const target = openMatch[1].trim();
+    const directUrl = resolveDirectUrl(target);
+    if (directUrl) {
+      return [{ action: ACTION_TYPES.OPEN_URL, app: target, params: { url: directUrl } }];
+    }
+    // Try raw URL pattern
+    if (/https?:\/\/\S+|[a-z0-9-]+\.[a-z]{2,}/.test(target)) {
+      let url = target;
+      if (!url.startsWith('http')) url = 'https://' + url;
+      return [{ action: ACTION_TYPES.OPEN_URL, app: 'Browser', params: { url } }];
+    }
   }
 
-  // Google search
-  if (cmd.includes('search') || cmd.includes('google') || cmd.includes('look up')) {
-    const query = cleanSearchIntent(command.replace(/search|google|look up/gi, ''));
+  // Try resolving any mention of a known service even without "open"
+  const knownServiceUrl = resolveDirectUrl(cmd);
+  if (knownServiceUrl && /\b(open|go|take|launch|visit|load|show)\b/.test(cmd)) {
+    return [{ action: ACTION_TYPES.OPEN_URL, app: 'Browser', params: { url: knownServiceUrl } }];
+  }
+
+  // Google search (last resort for "search X" or "look up X")
+  if (cmd.includes('search') || cmd.includes('look up')) {
+    const query = cleanSearchIntent(command.replace(/search\s+(for\s+)?|look\s+up\s+/gi, ''));
     return [{ action: ACTION_TYPES.SEARCH_GOOGLE, app: 'Google', params: { query: query || command } }];
   }
 
-  // Default: AI brain reasoning
+  // Default: pass to AI brain for reasoning
   return [{ action: 'ai_reasoning', app: 'Web Agent', needsLlm: false, params: { prompt: cleanSearchIntent(command) } }];
 }
 
