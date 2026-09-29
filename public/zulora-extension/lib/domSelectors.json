@@ -1,0 +1,116 @@
+{
+  "whatsapp": {
+    "searchBox": [
+      "div[contenteditable=\"true\"][data-tab=\"3\"]",
+      "div[contenteditable=\"true\"][title*=\"Search\"]",
+      "div[role=\"textbox\"][title*=\"Search\"]",
+      "#side div[contenteditable=\"true\"]"
+    ],
+    "contactListItem": [
+      "#pane-side div[role=\"listitem\"]",
+      "#pane-side [data-testid=\"cell-frame-container\"]",
+      "div[role=\"listitem\"] div[tabindex=\"-1\"]"
+    ],
+    "messageInput": [
+      "footer div[contenteditable=\"true\"][data-tab=\"10\"]",
+      "footer div[contenteditable=\"true\"][aria-label*=\"message\" i]",
+      "footer div[contenteditable=\"true\"]",
+      "div[contenteditable=\"true\"][spellcheck=\"true\"]"
+    ],
+    "sendButton": [
+      "[data-icon=\"send\"]",
+      "button[aria-label*=\"Send\" i]",
+      "span[data-icon=\"send\"]"
+    ]
+  },
+  "chatgpt": {
+    "promptInput": [
+      "#prompt-textarea",
+      "div[contenteditable=\"true\"][data-id]",
+      "textarea[placeholder*=\"Message\"]",
+      "div[contenteditable=\"true\"]"
+    ],
+    "sendButton": [
+      "button[data-testid=\"send-button\"]",
+      "button[aria-label*=\"Send prompt\" i]",
+      "button[aria-label*=\"Send\" i]:not([disabled])"
+    ],
+    "responseContainer": [
+      "[data-message-author-role=\"assistant\"]:last-child",
+      ".markdown.prose:last-of-type",
+      ".agent-turn:last-child"
+    ]
+  },
+  "gemini": {
+    "promptInput": [
+      "rich-textarea p",
+      "rich-textarea div[contenteditable=\"true\"]",
+      "div[contenteditable=\"true\"][role=\"textbox\"]",
+      "textarea[aria-label*=\"prompt\" i]"
+    ],
+    "sendButton": [
+      "button[aria-label*=\"Send prompt\" i]",
+      "button.send-button",
+      "button[data-mat-icon-name=\"send\"]",
+      "button[aria-label*=\"Send\" i]"
+    ],
+    "responseContainer": [
+      "model-response:last-of-type .markdown",
+      ".response-container:last-child",
+      "div.model-response-text"
+    ]
+  },
+  "claude": {
+    "promptInput": [
+      "div[contenteditable=\"true\"][data-placeholder]",
+      "fieldset div[contenteditable=\"true\"]",
+      "div[contenteditable=\"true\"]"
+    ],
+    "sendButton": [
+      "button[aria-label*=\"Send Message\" i]",
+      "button[aria-label*=\"Send\" i]"
+    ],
+    "responseContainer": [
+      ".font-claude-message:last-of-type",
+      "[data-test-render-count]:last-child"
+    ]
+  },
+  "gmail": {
+    "composeButton": [
+      "div[role=\"button\"][gh=\"cm\"]",
+      "div[role=\"button\"][aria-label*=\"Compose\" i]",
+      ".T-I.T-I-KE.L3"
+    ],
+    "toField": [
+      "input[aria-label*=\"To\" i]",
+      "input[name=\"to\"]",
+      "textarea[name=\"to\"]",
+      "div[aria-label*=\"To recipients\" i] input"
+    ],
+    "subjectField": [
+      "input[name=\"subjectbox\"]",
+      "input[aria-label*=\"Subject\" i]"
+    ],
+    "bodyField": [
+      "div[aria-label*=\"Message Body\" i]",
+      ".Am.Al.editable",
+      "div[role=\"textbox\"].Am",
+      "div[g_editable=\"true\"]"
+    ],
+    "sendButton": [
+      "div[role=\"button\"][data-tooltip*=\"Send\" i]",
+      ".T-I.J-J5-Ji.aoO.v7.T-I-atl.L3"
+    ]
+  },
+  "googlesheets": {
+    "formulaBar": [
+      "#t-formula-bar-input",
+      ".cell-input",
+      "div[role=\"combobox\"][aria-label*=\"Formula\" i]"
+    ],
+    "cellGrid": [
+      "#waffle-grid-container",
+      ".grid-scrollable-wrapper"
+    ]
+  }
+}

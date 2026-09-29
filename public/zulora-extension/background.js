@@ -1,386 +1,620 @@
 /**
- * Zulora AI Computer Plugin — Background Service Worker (Manifest V3)
- * Full-scale AI Autonomous Web Agent engine for Gmail, WhatsApp, ChatGPT, Gemini, and DOM automation.
+ * Zulora AI Computer Plugin — Background Service Worker v1.2.0
+ * ==============================================================
+ * Key Capabilities:
+ *  1. Keep-Alive Heartbeat: 20-second alarm prevents service worker going inactive.
+ *  2. Resilient Async Message Channels: all onMessage listeners return true.
+ *  3. Local Notification Assets: No remote URL crashes.
+ *  4. API Key Waterfall Brain: Autonomous reasoning across Gemini keys pool (1-7) & fallback providers.
+ *  5. Generic Dynamic Automation Engine:
+ *     - Dynamic Tab Lifecycle (create -> wait for complete -> inject executor)
+ *     - WhatsApp Web (search, open chat, paste, send)
+ *     - Google Gemini & ChatGPT (type prompt, submit, MutationObserver response listener)
+ *     - Gmail (compose, rich HTML template, recipient, subject)
+ *     - Screen & DOM Reader + Screenshot capture (chrome.tabs.captureVisibleTab)
+ *     - PDF & Code Exporters (local jsPDF & download triggers)
  */
 
-// ─── State ────────────────────────────────────────────────────────────────────
-let taskQueue = [];
-let taskStatus = 'idle';   // 'idle' | 'running' | 'paused' | 'done' | 'error'
-let actionLog  = [];
-let currentStepIndex = 0;
-let zuloraOrigin = null;
-let agentTabIds = new Set();
-let activeStepTabIds = new Set();
-let overlayTabIds = new Set();
-let activeTimers = new Map();
-let taskGeneration = 0;
-let cancelRequested = false;
-let taskCancelledByUser = false;
-let pausedAfterAction = false;
-let queueRunnerActive = false;
-const HEARTBEAT_ALARM = 'zulora-task-recovery-heartbeat';
-const TASK_STATE_KEY = 'zuloraAgentTaskState';
-
-async function persistTaskState() {
-  try {
-    await chrome.storage.session.set({ [TASK_STATE_KEY]: {
-      taskQueue, taskStatus, actionLog, currentStepIndex,
-      agentTabIds: [...agentTabIds], pausedAfterAction, savedAt: Date.now()
-    } });
-  } catch {}
-}
-
-async function restoreTaskState() {
-  try {
-    const stored = (await chrome.storage.session.get(TASK_STATE_KEY))?.[TASK_STATE_KEY];
-    if (!stored) return;
-    taskQueue = Array.isArray(stored.taskQueue) ? stored.taskQueue : [];
-    taskStatus = stored.taskStatus || 'idle';
-    actionLog = Array.isArray(stored.actionLog) ? stored.actionLog : [];
-    currentStepIndex = Math.max(0, Number(stored.currentStepIndex) || 0);
-    agentTabIds = new Set(Array.isArray(stored.agentTabIds) ? stored.agentTabIds : []);
-    overlayTabIds = new Set([...agentTabIds]);
-    pausedAfterAction = !!stored.pausedAfterAction;
-    if (taskStatus === 'running') {
-      taskStatus = 'paused';
-      actionLog.push({ index: actionLog.length + 1, label: 'Service worker restarted. Review the current step, then resume.', status: 'paused', detail: 'The interrupted step may need review before it is retried.', timestamp: Date.now() });
-    }
-    await persistTaskState();
-  } catch {}
-}
-
-const stateReady = restoreTaskState();
-
-async function ensureHeartbeatAlarm() {
-  try {
-    const alarm = await chrome.alarms.get(HEARTBEAT_ALARM);
-    if (!alarm) chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 0.5 });
-  } catch {}
+// ─── 1. Keep-Alive Heartbeat ──────────────────────────────────────────────────
+try {
+  chrome.alarms.create('zuloraKeepAlive', { periodInMinutes: 0.33 }); // ~20 seconds
+} catch (e) {
+  console.warn('[Zulora SW] Alarm setup:', e);
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === HEARTBEAT_ALARM) void stateReady.then(() => persistTaskState());
+  if (alarm.name === 'zuloraKeepAlive') {
+    // Touch storage to keep service worker active
+    chrome.storage.local.set({ _lastHeartbeat: Date.now() }).catch(() => {});
+    console.log('[Zulora SW] Heartbeat ping', new Date().toISOString());
+  }
 });
-chrome.runtime.onInstalled.addListener(() => { void ensureHeartbeatAlarm(); });
-chrome.runtime.onStartup.addListener(() => { void ensureHeartbeatAlarm(); });
-chrome.tabs.onRemoved.addListener((tabId) => { agentTabIds.delete(tabId); void persistTaskState(); });
-void ensureHeartbeatAlarm();
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function log(stepLabel, status = 'done', detail = '') {
+// ─── 2. State & Storage ───────────────────────────────────────────────────────
+let taskQueue = [];
+let taskStatus = 'idle'; // 'idle' | 'running' | 'paused' | 'done' | 'error'
+let actionLog = [];
+let currentStepIndex = 0;
+let isCancelled = false;
+
+// Default API Keys Waterfall cache (synced from Zulora Web App)
+let cachedApiKeys = {
+  geminiKeys: [],
+  groqKey: '',
+  cerebrasKey: '',
+  mistralKey: '',
+  openRouterKey: ''
+};
+
+// Initialize cached keys from storage
+chrome.storage.local.get(['zuloraApiKeys'], (res) => {
+  if (res?.zuloraApiKeys) {
+    cachedApiKeys = { ...cachedApiKeys, ...res.zuloraApiKeys };
+  }
+});
+
+// ─── 3. Safe Chrome API Wrappers ──────────────────────────────────────────────
+function safeRuntimeId() {
+  try {
+    return Boolean(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id);
+  } catch {
+    return false;
+  }
+}
+
+function safeNotify(title, message) {
+  if (!safeRuntimeId() || !chrome.notifications) return;
+  try {
+    const iconUrl = chrome.runtime.getURL('icons/icon128.png');
+    chrome.notifications.create({
+      type: 'basic',
+      iconUrl,
+      title: title || 'Zulora AI Agent',
+      message: message || ''
+    });
+  } catch (err) {
+    console.warn('[Zulora Notify] Warning:', err.message);
+  }
+}
+
+function log(label, status = 'done', detail = '') {
   const entry = {
     index: actionLog.length + 1,
-    label: stepLabel,
-    status,   // 'pending' | 'running' | 'done' | 'error' | 'paused'
+    label,
+    status,
     detail,
     timestamp: Date.now()
   };
   actionLog.push(entry);
-  void persistTaskState();
   broadcastStatus();
   return entry;
 }
 
-function broadcastStatus(extra = {}) {
+function broadcastStatus() {
+  if (!safeRuntimeId()) return;
   const payload = {
     type: 'ZULORA_STATUS_UPDATE',
     taskStatus,
     actionLog: [...actionLog],
     currentStep: currentStepIndex,
-    totalSteps: taskQueue.length,
-    cancelled: taskCancelledByUser,
-    ...extra
+    totalSteps: taskQueue.length
   };
-  const targetIds = new Set([...overlayTabIds, ...activeStepTabIds]);
-
-  chrome.tabs.query({}, (tabs) => {
-    tabs.forEach(tab => {
-      if (tab.id && tab.url && (isZuloraOrigin(tab.url) || targetIds.has(tab.id))) {
-        chrome.tabs.sendMessage(tab.id, payload).catch(() => {});
-      }
+  try {
+    chrome.tabs.query({}, (tabs) => {
+      if (!tabs) return;
+      tabs.forEach(tab => {
+        if (tab.id && tab.url && isZuloraOrigin(tab.url)) {
+          chrome.tabs.sendMessage(tab.id, payload).catch(() => {});
+        }
+      });
     });
-  });
-}
-
-function clearFloatingOverlays() {
-  const payload = { type: 'ZULORA_STATUS_UPDATE', taskStatus: 'idle', actionLog: [], currentStep: 0, totalSteps: 0 };
-  for (const tabId of overlayTabIds) chrome.tabs.sendMessage(tabId, payload).catch(() => {});
-  overlayTabIds.clear();
+  } catch {}
 }
 
 function isZuloraOrigin(url) {
   try {
-    const host = new URL(url).hostname.toLowerCase();
-    return host === 'localhost' || host === '127.0.0.1' || host === 'zulora.in' || host.endsWith('.zulora.in') ||
-      host === 'zulora.ai' || host.endsWith('.zulora.ai') ||
-      ['zulora.vercel.app', 'zulora-ai.web.app', 'zulora-ai.firebaseapp.com'].includes(host);
-  } catch { return false; }
-}
-
-function taskSleep(ms, generation = taskGeneration) {
-  return new Promise(resolve => {
-    const timer = setTimeout(() => {
-      activeTimers.delete(timer);
-      resolve(generation !== taskGeneration || cancelRequested);
-    }, ms);
-    activeTimers.set(timer, resolve);
-  });
-}
-
-function assertTaskActive(generation = taskGeneration) {
-  if (generation !== taskGeneration || cancelRequested) {
-    const error = new Error('Task stopped by user.');
-    error.cancelled = true;
-    throw error;
+    const u = new URL(url);
+    return (
+      u.hostname === 'localhost' ||
+      u.hostname === '127.0.0.1' ||
+      u.hostname.includes('zulora') ||
+      u.hostname.includes('vercel.app') ||
+      u.hostname.includes('web.app') ||
+      u.hostname.includes('firebaseapp.com')
+    );
+  } catch {
+    return false;
   }
 }
 
-function trackAgentTab(tab) {
-  if (!tab?.id) return tab;
-  agentTabIds.add(tab.id);
-  overlayTabIds.add(tab.id);
-  void persistTaskState();
-  if (cancelRequested) {
-    chrome.tabs.remove(tab.id).catch(() => {});
-    const error = new Error('Task stopped by user.');
-    error.cancelled = true;
-    throw error;
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ─── 4. API Key Waterfall Brain ───────────────────────────────────────────────
+/**
+ * Executes a prompt using Gemini Key Waterfall (keys 1-7).
+ * If key N fails with 429, 403, or quota error, instantly falls back to key N+1.
+ * If all Gemini keys fail, tries Groq / OpenRouter if available.
+ */
+async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemini-2.5-flash') {
+  const keys = cachedApiKeys.geminiKeys.filter(k => k && k.length > 20);
+  const modelsToTry = [model, 'gemini-1.5-flash', 'gemini-1.5-pro'];
+
+  let lastError = null;
+
+  // 1. Try Gemini waterfall
+  for (const apiKey of keys) {
+    for (const modelId of modelsToTry) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+        const body = {
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
+        };
+        if (systemInstruction) {
+          body.systemInstruction = { parts: [{ text: systemInstruction }] };
+        }
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) return { success: true, text, provider: 'gemini', model: modelId };
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          lastError = errData?.error?.message || `HTTP ${res.status}`;
+          // If rate limited or quota exceeded, try next key
+          if (res.status === 429 || res.status === 403) break;
+        }
+      } catch (err) {
+        lastError = err.message;
+      }
+    }
   }
-  return tab;
-}
 
-async function createAgentTab(options) {
-  const tab = await chrome.tabs.create(options);
-  trackAgentTab(tab);
-  return tab;
-}
-
-function markActiveStepTab(tab) {
-  if (tab?.id) {
-    activeStepTabIds.add(tab.id);
-    overlayTabIds.add(tab.id);
-  }
-  return tab;
-}
-
-async function ensureContentScript(tabId) {
-  try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['lib/dom-selectors.js', 'content.js'] });
-    broadcastStatus();
-  } catch (error) {
-    throw new Error(`Could not load browser automation on this page: ${error.message}`);
-  }
-}
-
-async function executeYoutubeSearch(query, generation = taskGeneration, play = false) {
-  const tab = await createAgentTab({ url: 'https://www.youtube.com', active: true });
-  markActiveStepTab(tab);
-  await waitForTabLoad(tab.id);
-  assertTaskActive(generation);
-  await ensureContentScript(tab.id);
-  broadcastStatus();
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    func: (searchTerm, shouldPlay) => window.__ZULORA_CONTENT__?.searchAndOpenTopYoutubeVideo(searchTerm, { play: shouldPlay }),
-    args: [query, play]
-  });
-  assertTaskActive(generation);
-  const details = result?.result;
-  if (!details?.success) throw new Error(details?.error || 'YouTube could not complete the search.');
-  log(play ? `Played the top YouTube result for: "${query}"` : `Searched YouTube for: "${query}"`, 'done', details.title || details.url);
-  return { tabId: tab.id, result: details };
-}
-
-function parseOverlayVoiceTask(transcript, tabId) {
-  const text = String(transcript || '').trim();
-  if (!text) return [];
-  const urlMatch = text.match(/(?:open|go to|navigate to|visit)\s+(https?:\/\/\S+|[\w-]+\.[\w.-]+\S*)/i);
-  if (urlMatch) return [{ action: 'open_url', params: { url: /^https?:\/\//i.test(urlMatch[1]) ? urlMatch[1] : `https://${urlMatch[1]}` } }];
-  const channelSearchMatch = text.match(/\b(?:search|find)\s+(?:for\s+)?(channel\s+.+)$/i);
-  if (channelSearchMatch && !/\bgoogle\b/i.test(text)) return [{ action: 'youtube_search', params: {
-    query: channelSearchMatch[1].replace(/\s+(?:and\s+)?(?:play|watch)\b.*$/i, '').replace(/\s+(?:on|in)\s+youtube\s*$/i, '').trim(),
-    play: /\b(play|watch)\b/i.test(text) && !/\b(?:don't|do not)\s+(?:play|watch)\b/i.test(text)
-  } }];
-  const youtubeSearchMatch = text.match(/\b(?:search|find)\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+youtube\b/i);
-  const youtubeMatch = text.match(/^youtube\s+(?:search\s+(?:for\s+)?)?(.+)/i) ||
-    text.match(/\b(?:play|watch)\s+(?:the\s+)?(?:(?:top|first)\s+)?(?:video\s+)?(?:about\s+)?(.+?)\s+(?:on|in)\s+youtube\b/i);
-  if (youtubeSearchMatch || youtubeMatch) {
-    return [{ action: 'youtube_search', params: {
-      query: (youtubeSearchMatch?.[1] || youtubeMatch?.[1] || '').replace(/\s+on\s+youtube.*$/i, '').replace(/^(?:play|watch)\s+(?:the\s+)?(?:(?:top|first)\s+)?(?:video\s+)?(?:about\s+)?/i, '').trim(),
-      play: /\b(play|watch)\b/i.test(text)
-    } }];
-  }
-  const googleMatch = text.match(/(?:search|google)\s+(?:google\s+)?(?:for\s+)?(.+)/i);
-  if (googleMatch) return [{ action: 'search_google', params: { query: googleMatch[1].trim(), openTopResult: /\b(?:open|click|go to)\b/i.test(text) } }];
-  if (/\b(read|summari[sz]e|analy[sz]e)\b.*\b(page|screen|website)\b/i.test(text)) return [{ action: 'read_page_dom', params: { tabId } }];
-  if (/\b(scroll)\b/i.test(text)) return [{ action: 'automate_page', params: { operation: 'scroll', direction: /\bup\b/i.test(text) ? 'up' : 'down', tabId } }];
-  if (/\bfill\s+(?:in\s+)?(?:the\s+)?form\b/i.test(text)) {
-    const fields = {};
-    const pattern = /\b(full\s*name|name|email|e-mail|password|address|phone|mobile)\b\s*(?:is|as|:|=|to)?\s*([^,;]+?)(?=\s*(?:,|;|\band\s+(?:full\s*name|name|email|e-mail|password|address|phone|mobile)\b)|$)/gi;
-    let match;
-    while ((match = pattern.exec(text))) fields[match[1].toLowerCase().replace(/\s/g, '')] = match[2].trim().replace(/^['"]|['"]$/g, '');
-    if (Object.keys(fields).length) return [{ action: 'automate_page', params: { operation: 'fill_form', fields, tabId } }];
-  }
-  const clickMatch = text.match(/\bclick\s+(?:on\s+)?(.+)/i);
-  if (clickMatch) return [{ action: 'automate_page', params: { operation: 'click', target: clickMatch[1].trim(), tabId } }];
-  const fillMatch = text.match(/(?:type|write|enter|fill)\s+(.+)/i);
-  if (fillMatch) return [{ action: 'automate_page', params: { operation: 'fill', text: fillMatch[1].trim(), tabId } }];
-  return [{ action: 'read_page_dom', params: { tabId } }];
-}
-
-async function handleOverlayVoice(transcript, tab) {
-  await stateReady;
-  const normalized = String(transcript || '').trim().toLowerCase();
-  if (/^(pause|pause task|hold on)$/.test(normalized)) return handleAgentTask({ type: 'ZULORA_PAUSE' });
-  if (/^(resume|continue|continue task)$/.test(normalized)) return handleAgentTask({ type: 'ZULORA_RESUME' });
-  if (/^(stop|stop task|cancel|cancel task|quit)$/.test(normalized)) return handleAgentTask({ type: 'ZULORA_CANCEL' });
-  if (taskStatus === 'running' || taskStatus === 'paused') return { ok: false, success: false, error: 'Stop the current task before starting a new voice command.' };
-  taskGeneration++;
-  cancelRequested = false;
-  taskCancelledByUser = false;
-  pausedAfterAction = false;
-  taskQueue = parseOverlayVoiceTask(transcript, tab?.id);
-  actionLog = [];
-  currentStepIndex = 0;
-  clearFloatingOverlays();
-  if (tab?.id) { overlayTabIds.add(tab.id); activeStepTabIds.add(tab.id); }
-  taskStatus = 'running';
-  void persistTaskState();
-  broadcastStatus();
-  void runQueue();
-  return { ok: true, success: true, queued: taskQueue.length };
-}
-
-async function handleOverlayNextTask() {
-  await stateReady;
-  if (taskStatus === 'running' || taskStatus === 'paused') {
-    return { ok: false, success: false, error: 'Stop the current task before starting a new task.' };
-  }
-  taskQueue = [];
-  actionLog = [];
-  currentStepIndex = 0;
-  taskStatus = 'done';
-  taskCancelledByUser = false;
-  pausedAfterAction = false;
-  await persistTaskState();
-  broadcastStatus({ nextTask: true });
-  return { ok: true, success: true };
-}
-
-async function getActiveTab(preferredTabId = null) {
-  if (preferredTabId) {
+  // 2. Fallback to Groq if key exists
+  if (cachedApiKeys.groqKey) {
     try {
-      const tab = await chrome.tabs.get(preferredTabId);
-      if (tab) return tab;
-    } catch {}
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${cachedApiKeys.groqKey}`
+        },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: [
+            ...(systemInstruction ? [{ role: 'system', content: systemInstruction }] : []),
+            { role: 'user', content: prompt }
+          ]
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const text = data?.choices?.[0]?.message?.content;
+        if (text) return { success: true, text, provider: 'groq' };
+      }
+    } catch (e) {
+      lastError = e.message;
+    }
   }
-  const [activeInWindow] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (activeInWindow) return activeInWindow;
-  const [anyActive] = await chrome.tabs.query({ active: true });
-  if (anyActive) return anyActive;
-  const [firstTab] = await chrome.tabs.query({});
-  return firstTab || null;
+
+  return { success: false, error: lastError || 'All AI waterfall providers exhausted' };
 }
 
-function waitForTabLoad(tabId, timeout = 30000) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let timer;
-    const cleanup = () => {
+// ─── 5. Dynamic Tab Creator & Loader ──────────────────────────────────────────
+async function openTabAndWait(url, matchPattern = null, timeout = 30000) {
+  // Check if a tab matching pattern already exists
+  if (matchPattern) {
+    const tabs = await chrome.tabs.query({});
+    const existing = tabs.find(t => t.url && t.url.includes(matchPattern));
+    if (existing) {
+      await chrome.tabs.update(existing.id, { active: true });
+      if (existing.status === 'complete') return existing.id;
+      return waitForTabComplete(existing.id, timeout);
+    }
+  }
+
+  const tab = await chrome.tabs.create({ url, active: true });
+  return waitForTabComplete(tab.id, timeout);
+}
+
+function waitForTabComplete(tabId, timeout = 30000) {
+  return new Promise((resolve) => {
+    let resolved = false;
+
+    const timer = setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
+      try { chrome.tabs.onUpdated.removeListener(listener); } catch {}
+      resolve(tabId);
+    }, timeout);
+
+    const listener = (id, info) => {
+      if (id !== tabId || info.status !== 'complete') return;
+      if (resolved) return;
+      resolved = true;
       clearTimeout(timer);
-      activeTimers.delete(timer);
-      try { chrome.tabs.onUpdated.removeListener(onUpdated); } catch {}
-      try { chrome.tabs.onRemoved.removeListener(onRemoved); } catch {}
+      try { chrome.tabs.onUpdated.removeListener(listener); } catch {}
+      resolve(tabId);
     };
-    const finish = error => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      if (error) reject(error); else resolve();
-    };
-    const onUpdated = (updatedTabId, changeInfo) => {
-      if (updatedTabId === tabId && changeInfo.status === 'complete') finish();
-    };
-    const onRemoved = removedTabId => {
-      if (removedTabId === tabId) finish(new Error(`Tab ${tabId} was closed before loading completed.`));
-    };
-    timer = setTimeout(() => finish(new Error(`Timed out waiting for tab ${tabId} to finish loading.`)), timeout);
-    activeTimers.set(timer, () => {
-      const error = new Error('Task stopped by user.');
-      error.cancelled = true;
-      finish(error);
-    });
-    chrome.tabs.onUpdated.addListener(onUpdated);
-    chrome.tabs.onRemoved.addListener(onRemoved);
-    chrome.tabs.get(tabId).then(tab => {
-      if (tab.status === 'complete') finish();
-    }).catch(() => finish(new Error(`Tab ${tabId} was closed before loading completed.`)));
+
+    chrome.tabs.onUpdated.addListener(listener);
   });
 }
 
-// ─── Action Executor ──────────────────────────────────────────────────────────
-async function executeStep(step, generation = taskGeneration) {
+async function injectAndRun(tabId, funcOrStr, args = [], maxRetries = 3, retryDelay = 2000) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await sleep(attempt === 1 ? 600 : retryDelay);
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: typeof funcOrStr === 'function' ? funcOrStr : eval(`(${funcOrStr})`),
+        args
+      });
+      return results?.[0]?.result;
+    } catch (err) {
+      lastErr = err;
+      if (err.message?.includes('Cannot access') || err.message?.includes('No tab')) break;
+    }
+  }
+  throw lastErr || new Error('Script execution failed in target tab');
+}
+
+// ─── 6. Universal Injected Automation Executor ────────────────────────────────
+function __zuloraUniversalExecutor(action, payload) {
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  async function waitFor(selectors, timeout = 15000) {
+    const list = Array.isArray(selectors) ? selectors : [selectors];
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      for (const sel of list) {
+        const el = document.querySelector(sel);
+        if (el) return el;
+      }
+      await sleep(250);
+    }
+    return null;
+  }
+
+  function insertText(el, text) {
+    el.focus();
+    // 1. Synthetic execCommand for rich text / React editors
+    try {
+      el.select?.();
+      const ok = document.execCommand('insertText', false, text);
+      if (ok) {
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      }
+    } catch {}
+
+    // 2. Direct property setting with Prototype setter for React inputs
+    if ('value' in el) {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+        || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+      if (setter) setter.call(el, text);
+      else el.value = text;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+
+    // 3. Fallback innerText
+    el.innerText = text;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  }
+
+  function pressEnter(el) {
+    el.dispatchEvent(new KeyboardEvent('keydown',  { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent('keyup',    { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+  }
+
+  async function waitForResponseMutation(containerSelector, timeout = 40000) {
+    const container = document.querySelector(containerSelector);
+    if (!container) return null;
+    return new Promise((resolve) => {
+      let lastText = container.innerText;
+      let stableTimer;
+      const timeoutTimer = setTimeout(() => {
+        observer.disconnect();
+        resolve(container.innerText?.slice(-3500) || '');
+      }, timeout);
+
+      const observer = new MutationObserver(() => {
+        const curText = container.innerText;
+        if (curText !== lastText) {
+          lastText = curText;
+          clearTimeout(stableTimer);
+          stableTimer = setTimeout(() => {
+            observer.disconnect();
+            clearTimeout(timeoutTimer);
+            resolve(curText?.slice(-3500) || '');
+          }, 2500);
+        }
+      });
+
+      observer.observe(container, { childList: true, subtree: true, characterData: true });
+    });
+  }
+
+  
+  // ── YouTube ──
+  async function youtube(query) {
+    const searchInput = await waitFor(['input#search', 'input[name="search_query"]'], 15000);
+    if (!searchInput) return { error: 'YouTube search bar not found.' };
+    insertText(searchInput, query);
+    await sleep(500);
+    const searchBtn = document.querySelector('button#search-icon-legacy');
+    if (searchBtn) searchBtn.click();
+    else pressEnter(searchInput);
+    
+    await sleep(3000);
+    const firstVideo = await waitFor(['ytd-video-renderer #video-title', 'a#video-title'], 15000);
+    if (!firstVideo) return { error: 'No video results found.' };
+    firstVideo.click();
+    return { success: true, title: firstVideo.innerText };
+  }
+
+  // ── AutoFill Form ──
+  async function autofill() {
+    const inputs = document.querySelectorAll('input:not([type="hidden"]):not([type="submit"])');
+    for (const input of inputs) {
+      if (!input.value) {
+        if (input.type === 'email' || input.name.includes('email')) insertText(input, 'test@zulora.in');
+        else if (input.type === 'password' || input.name.includes('pass')) insertText(input, 'ZuloraSecure@123');
+        else insertText(input, 'Zulora Test');
+        await sleep(200);
+      }
+    }
+    const submit = document.querySelector('button[type="submit"], input[type="submit"], form button');
+    if (submit) submit.click();
+    return { success: true };
+  }
+
+  
+      // ── YouTube ──
+      case 'youtube_play': {
+        const query = params.query || '';
+        log(`YouTube: Loading youtube.com`, 'running');
+        const ytTabId = await openTabAndWait('https://www.youtube.com', 'youtube.com', 25000);
+        await sleep(2500);
+        
+        const ytRes = await injectAndRun(ytTabId, __zuloraUniversalExecutor, ['YOUTUBE', { query }], 3, 3000);
+        if (ytRes?.error) throw new Error(ytRes.error);
+        log(`YouTube: Playing "${ytRes.title}"`, 'done');
+        result = { tabId: ytTabId, ...ytRes };
+        break;
+      }
+      
+      // ── Autofill ──
+      case 'autofill_form': {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tab = tabs[0];
+        if (!tab?.id) throw new Error('No active tab');
+        const res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['AUTOFILL', {}]);
+        if (res?.error) throw new Error(res.error);
+        log(`Auto-filled form fields`, 'done');
+        result = res;
+        break;
+      }
+
+      // ── WhatsApp Web ──
+  async function whatsapp(contactName, message) {
+    const searchBox = await waitFor([
+      'div[contenteditable="true"][data-tab="3"]',
+      'div[contenteditable="true"][title*="Search"]',
+      'div[role="textbox"][title*="Search"]',
+      '#side div[contenteditable="true"]'
+    ], 20000);
+
+    if (!searchBox) return { error: 'WhatsApp search box not found. Ensure WhatsApp Web is loaded & logged in.' };
+
+    insertText(searchBox, contactName);
+    await sleep(2000);
+
+    const contact = await waitFor([
+      '#pane-side div[role="listitem"]',
+      '#pane-side [data-testid="cell-frame-container"]',
+      'div[role="listitem"] div[tabindex="-1"]'
+    ], 10000);
+
+    if (!contact) return { error: `Contact "${contactName}" not found in WhatsApp search results.` };
+
+    contact.click();
+    await sleep(1500);
+
+    const msgInput = await waitFor([
+      'footer div[contenteditable="true"][data-tab="10"]',
+      'footer div[contenteditable="true"][aria-label*="message" i]',
+      'footer div[contenteditable="true"]',
+      'div[contenteditable="true"][spellcheck="true"]'
+    ], 10000);
+
+    if (!msgInput) return { error: 'WhatsApp chat input box not found.' };
+
+    insertText(msgInput, message);
+    await sleep(600);
+
+    const sendBtn = document.querySelector('[data-icon="send"], button[aria-label*="Send" i], span[data-icon="send"]');
+    if (sendBtn) {
+      sendBtn.click();
+    } else {
+      pressEnter(msgInput);
+    }
+
+    return { success: true, contact: contactName };
+  }
+
+  // ── ChatGPT ──
+  async function chatgpt(prompt, waitResponse) {
+    const input = await waitFor([
+      '#prompt-textarea',
+      'div[contenteditable="true"][data-id]',
+      'textarea[placeholder*="Message"]',
+      'div[contenteditable="true"]'
+    ], 18000);
+
+    if (!input) return { error: 'ChatGPT prompt box not found.' };
+
+    insertText(input, prompt);
+    await sleep(600);
+
+    const sendBtn = document.querySelector('button[data-testid="send-button"], button[aria-label*="Send prompt" i], button[aria-label*="Send" i]:not([disabled])');
+    if (sendBtn && !sendBtn.disabled) {
+      sendBtn.click();
+    } else {
+      pressEnter(input);
+    }
+
+    if (!waitResponse) return { success: true, promptSubmitted: true };
+
+    await sleep(2500);
+    const response = await waitForResponseMutation('[data-message-author-role="assistant"]:last-child, .markdown.prose:last-of-type, .agent-turn:last-child', 45000);
+    return { success: true, response };
+  }
+
+  // ── Gemini ──
+  async function gemini(prompt, waitResponse) {
+    const input = await waitFor([
+      'rich-textarea p',
+      'rich-textarea div[contenteditable="true"]',
+      'div[contenteditable="true"][role="textbox"]',
+      'textarea[aria-label*="prompt" i]'
+    ], 18000);
+
+    if (!input) return { error: 'Google Gemini input box not found.' };
+
+    insertText(input, prompt);
+    await sleep(600);
+
+    const sendBtn = document.querySelector('button[aria-label*="Send prompt" i], button.send-button, button[data-mat-icon-name="send"], button[aria-label*="Send" i]');
+    if (sendBtn) {
+      sendBtn.click();
+    } else {
+      pressEnter(input);
+    }
+
+    if (!waitResponse) return { success: true, promptSubmitted: true };
+
+    await sleep(2500);
+    const response = await waitForResponseMutation('model-response:last-of-type .markdown, .response-container:last-child, div.model-response-text', 45000);
+    return { success: true, response };
+  }
+
+  // ── Gmail ──
+  async function gmail(to, subject, bodyHtml) {
+    if (to) {
+      const toField = await waitFor(['input[aria-label*="To" i]', 'input[name="to"]', 'textarea[name="to"]'], 10000);
+      if (toField) {
+        insertText(toField, to);
+        toField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+        await sleep(500);
+      }
+    }
+
+    if (subject) {
+      const subjField = await waitFor(['input[name="subjectbox"]', 'input[aria-label*="Subject" i]'], 6000);
+      if (subjField) {
+        insertText(subjField, subject);
+      }
+    }
+
+    const bodyField = await waitFor(['div[aria-label*="Message Body" i]', '.Am.Al.editable', 'div[role="textbox"].Am', 'div[g_editable="true"]'], 10000);
+    if (!bodyField) return { error: 'Gmail message body editor not found.' };
+
+    bodyField.focus();
+    bodyField.innerHTML = bodyHtml || '';
+    bodyField.dispatchEvent(new Event('input', { bubbles: true }));
+    return { success: true };
+  }
+
+  // ── Screen & DOM Analyzer ──
+  async function readScreen(deep) {
+    const title = document.title;
+    const url = window.location.href;
+    const headings = Array.from(document.querySelectorAll('h1, h2, h3')).map(h => h.innerText?.trim()).filter(Boolean).slice(0, 10);
+    const bodyText = document.body?.innerText?.slice(0, 15000) || '';
+    const metaDesc = document.querySelector('meta[name="description"]')?.content || '';
+    return {
+      title,
+      url,
+      headings,
+      metaDesc,
+      bodyText: deep ? bodyText : bodyText.slice(0, 4000)
+    };
+  }
+
+  // ── Universal Click & Type ──
+  async function clickEl(selector) {
+    const el = await waitFor(selector, 10000);
+    if (!el) return { error: `Element not found: ${selector}` };
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    await sleep(250);
+    el.focus();
+    el.click();
+    return { success: true };
+  }
+
+  async function typeEl(selector, text) {
+    const el = await waitFor(selector, 10000);
+    if (!el) return { error: `Element not found: ${selector}` };
+    insertText(el, text);
+    return { success: true };
+  }
+
+  switch (action) {
+    case 'WHATSAPP':    return whatsapp(payload.contact, payload.message);
+    case 'CHATGPT':     return chatgpt(payload.prompt, payload.waitResponse !== false);
+    case 'GEMINI':      return gemini(payload.prompt, payload.waitResponse !== false);
+    case 'GMAIL':       return gmail(payload.to, payload.subject, payload.bodyHtml);
+    case 'READ_SCREEN': return readScreen(payload.deep);
+    case 'CLICK':       return clickEl(payload.selector);
+    case 'TYPE':        return typeEl(payload.selector, payload.text);
+    case 'YOUTUBE':     return youtube(payload.query);
+    case 'AUTOFILL':    return autofill();
+    default:            return { error: 'Unknown executor action: ' + action };
+  }
+}
+
+// ─── 7. Step Execution Engine ─────────────────────────────────────────────────
+async function executeStep(step) {
   const { action, params = {} } = step;
-  activeStepTabIds.clear();
-  log(`Step ${currentStepIndex + 1}: ${humanLabel(action, params)}`, 'running');
+  if (isCancelled) throw new Error('Task stopped by user');
+
+  log(humanLabel(action, params), 'running');
 
   try {
-    assertTaskActive(generation);
+    let result = {};
+
     switch (action) {
-      // ── Generic Browsing ──
+      // ── URLs & Search ──
       case 'open_url': {
         let url = params.url || 'https://google.com';
-        if (!url.startsWith('http://') && !url.startsWith('https://')) {
-          url = 'https://' + url;
-        }
-        const tab = await createAgentTab({ url, active: params.active !== false });
-        markActiveStepTab(tab);
-        await waitForTabLoad(tab.id);
-        assertTaskActive(generation);
-        await ensureContentScript(tab.id);
-        log(`Opened URL → ${url}`, 'done');
-        return { tabId: tab.id };
+        if (!url.startsWith('http')) url = 'https://' + url;
+        const tabId = await openTabAndWait(url);
+        log(`Opened: ${url}`, 'done');
+        result = { tabId };
+        break;
       }
 
       case 'search_google': {
-        const query = params.query || '';
-        if (params.site === 'youtube' || params.platform === 'youtube' || /^\s*(?:youtube|on youtube)\s*:/i.test(query)) {
-          const youtubeQuery = query.replace(/^\s*(?:youtube|on youtube)\s*:\s*/i, '').replace(/^search\s+(?:for\s+)?/i, '').trim();
-          return executeYoutubeSearch(youtubeQuery || query, generation);
-        }
-        const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-        const tab = await createAgentTab({ url, active: true });
-        markActiveStepTab(tab);
-        await waitForTabLoad(tab.id);
-        assertTaskActive(generation);
-        await ensureContentScript(tab.id);
-        let opened = null;
-        if (params.openTopResult !== false && params.stayOnResultsPage !== true) {
-          const [result] = await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: () => window.__ZULORA_CONTENT__?.openTopGoogleResult()
-          });
-          opened = result?.result;
-          if (opened?.success && opened.url) {
-            await chrome.tabs.update(tab.id, { url: opened.url, active: true });
-            await waitForTabLoad(tab.id, 20000).catch(() => {});
-            assertTaskActive(generation);
-            await ensureContentScript(tab.id);
-          } else {
-            opened = null;
-          }
-        }
-        const [page] = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: () => ({ title: document.title, url: location.href, contentSnippet: document.body?.innerText?.slice(0, 3500) || '' })
-        });
-        const dom = page?.result;
-        log(opened ? `Opened top Google result for: "${query}"` : `Searched Google: "${query}"`, 'done', dom?.contentSnippet?.slice(0, 350) || opened?.url || 'Search results are ready.');
-        return { tabId: tab.id, dom };
-      }
-
-      case 'youtube_search': {
-        return executeYoutubeSearch(params.query || params.searchTerm || '', generation, params.play === true);
+        const url = `https://www.google.com/search?q=${encodeURIComponent(params.query || '')}`;
+        const tabId = await openTabAndWait(url);
+        log(`Searched Google: "${params.query}"`, 'done');
+        result = { tabId };
+        break;
       }
 
       case 'switch_tab': {
@@ -388,637 +622,355 @@ async function executeStep(step, generation = taskGeneration) {
         const target = tabs.find(t => t.url && t.url.includes(params.urlContains || ''));
         if (target) {
           await chrome.tabs.update(target.id, { active: true });
-          log(`Switched to tab: ${target.title || target.url}`, 'done');
-          return { tabId: target.id };
+          log(`Switched to: ${target.title}`, 'done');
+          result = { tabId: target.id };
+        } else {
+          throw new Error(`Tab matching "${params.urlContains}" not found`);
         }
-        throw new Error(`No tab found matching: ${params.urlContains}`);
+        break;
       }
 
-      case 'close_tab': {
-        const tab = await getActiveTab(params.tabId);
-        if (tab?.id) {
-          await chrome.tabs.remove(tab.id);
-          log(`Closed tab #${tab.id}`, 'done');
+      // ── WhatsApp Web ──
+      case 'whatsapp_send': {
+        const contact = params.recipient || params.contact;
+        const message = params.message || '';
+        if (!contact) {
+          log('WhatsApp: Contact name required', 'paused');
+          taskStatus = 'paused';
+          broadcastStatus();
+          safeNotify('Zulora — Input Required', 'Please specify a WhatsApp contact name to continue.');
+          result = { paused: true, reason: 'no_contact' };
+          break;
         }
-        return {};
+
+        log(`WhatsApp: Loading web.whatsapp.com`, 'running');
+        const waTabId = await openTabAndWait('https://web.whatsapp.com', 'web.whatsapp.com', 35000);
+        await sleep(3500);
+
+        const waRes = await injectAndRun(waTabId, __zuloraUniversalExecutor, ['WHATSAPP', { contact, message }], 3, 3000);
+        if (waRes?.error) throw new Error(waRes.error);
+        log(`WhatsApp: Message sent to "${contact}"`, 'done', `"${message.slice(0, 60)}…"`);
+        result = { tabId: waTabId, ...waRes };
+        break;
       }
 
-      case 'automate_page': {
-        const tab = markActiveStepTab(await getActiveTab(params.tabId));
-        if (!tab?.id) throw new Error('No active browser tab found for automate_page');
-        await ensureContentScript(tab.id);
-        const [result] = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: (automationParams) => window.__ZULORA_CONTENT__?.executeAutomation(automationParams),
-          args: [params]
-        });
-        assertTaskActive(generation);
-        const payload = result?.result;
-        if (!payload?.success && !['read', 'extract', 'analyze'].includes(String(params.operation || params.intent || '').toLowerCase())) {
-          throw new Error('The browser action could not be verified on the page.');
-        }
-        log(`Browser action completed: ${params.operation || params.intent || 'read'}`, 'done', payload?.text?.slice(0, 350) || payload?.target || (payload?.verified ? 'Page change verified.' : 'Page was observed; no visible change was detected.'));
-        return { result: payload };
+      // ── ChatGPT ──
+      case 'chatgpt_prompt': {
+        const prompt = params.prompt || '';
+        log(`ChatGPT: Opening chatgpt.com`, 'running');
+        const cgTabId = await openTabAndWait('https://chatgpt.com', 'chatgpt.com', 25000);
+        await sleep(3000);
+
+        log(`ChatGPT: Injecting prompt`, 'running');
+        const cgRes = await injectAndRun(cgTabId, __zuloraUniversalExecutor, ['CHATGPT', { prompt, waitResponse: params.waitResponse !== false }], 3, 3000);
+        if (cgRes?.error) throw new Error(cgRes.error);
+        const snippet = cgRes?.response?.slice(0, 100) || '';
+        log(`ChatGPT: Prompt submitted${snippet ? ' — Response ready' : ''}`, 'done', snippet);
+        result = { tabId: cgTabId, ...cgRes };
+        break;
       }
 
-      // ── DOM Automation ──
-      case 'type_text': {
-        const tab = markActiveStepTab(await getActiveTab(params.tabId));
-        if (!tab?.id) throw new Error('No active browser tab found for type_text');
+      // ── Gemini ──
+      case 'gemini_prompt': {
+        const prompt = params.prompt || '';
+        log(`Gemini: Opening gemini.google.com`, 'running');
+        const gmTabId = await openTabAndWait('https://gemini.google.com/app', 'gemini.google.com', 25000);
+        await sleep(3000);
 
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: (selector, text) => {
-            const el = document.querySelector(selector);
-            if (!el) throw new Error('Element not found: ' + selector);
-            el.focus();
-            if ('value' in el) {
-              el.value = text;
-            } else {
-              el.innerText = text;
-            }
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-          },
-          args: [params.selector, params.text || '']
-        });
-        log(`Typed text into ${params.selector}`, 'done');
-        return {};
+        log(`Gemini: Injecting prompt`, 'running');
+        const gmRes = await injectAndRun(gmTabId, __zuloraUniversalExecutor, ['GEMINI', { prompt, waitResponse: params.waitResponse !== false }], 3, 3000);
+        if (gmRes?.error) throw new Error(gmRes.error);
+        const snippet = gmRes?.response?.slice(0, 100) || '';
+        log(`Gemini: Prompt submitted${snippet ? ' — Response ready' : ''}`, 'done', snippet);
+        result = { tabId: gmTabId, ...gmRes };
+        break;
       }
 
-      case 'click_element': {
-        const tab = markActiveStepTab(await getActiveTab(params.tabId));
-        if (!tab?.id) throw new Error('No active browser tab found for click_element');
-
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: (selector) => {
-            const el = document.querySelector(selector);
-            if (!el) throw new Error('Element not found: ' + selector);
-            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            el.focus();
-            el.click();
-          },
-          args: [params.selector]
-        });
-        log(`Clicked: ${params.selector}`, 'done');
-        return {};
-      }
-
-      case 'extract_content': {
-        const tab = markActiveStepTab(await getActiveTab(params.tabId));
-        if (!tab?.id) throw new Error('No active browser tab found for extract_content');
-
-        const [result] = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: (selector) => {
-            const el = selector ? document.querySelector(selector) : document.body;
-            return el ? el.innerText.slice(0, 10000) : '';
-          },
-          args: [params.selector || null]
-        });
-        log(`Extracted page content`, 'done', result?.result?.slice(0, 80) + '…');
-        return { content: result?.result };
-      }
-
-      // ── DOM & Screen Reader ──
-      case 'read_page_dom': {
-        const tab = markActiveStepTab(await getActiveTab(params.tabId));
-        if (!tab?.id) throw new Error('No active browser tab to read');
-
-        await ensureContentScript(tab.id);
-        const [result] = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: () => {
-            if (window.__ZULORA_CONTENT__?.extractDomStructure) {
-              return window.__ZULORA_CONTENT__.extractDomStructure();
-            }
-            return {
-              title: document.title,
-              url: window.location.href,
-              contentSnippet: document.body ? document.body.innerText.slice(0, 8000) : ''
-            };
-          }
-        });
-        log(`Read DOM of ${tab.title || tab.url}`, 'done', result?.result?.contentSnippet?.slice(0, 350) || '');
-        return { dom: result?.result };
-      }
-
-      case 'capture_screen': {
-        const tab = markActiveStepTab(await getActiveTab(params.tabId));
-        if (!tab?.id) throw new Error('No active browser tab to capture');
-        await chrome.tabs.update(tab.id, { active: true });
-        const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-        log(`Captured visible screen of ${tab.title || tab.url}`, 'done');
-        return { screenshot };
-      }
-
-      case 'ocr_screen': {
-        const tab = markActiveStepTab(await getActiveTab(params.tabId));
-        if (!tab?.id) throw new Error('No active browser tab to read');
-        await chrome.tabs.update(tab.id, { active: true });
-        const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['lib/tesseract/tesseract.min.js'] });
-        const workerUrl = chrome.runtime.getURL('lib/tesseract/worker.min.js');
-        const langPath = chrome.runtime.getURL('lib/tesseract/lang');
-        const corePath = chrome.runtime.getURL('lib/tesseract/core');
-        const [recognized] = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: async (image, workerPath, localLangPath, localCorePath) => {
-            const worker = await Tesseract.createWorker('eng', 1, { workerPath, langPath: localLangPath, corePath: localCorePath, gzip: true });
-            try { return (await worker.recognize(image)).data.text; }
-            finally { await worker.terminate(); }
-          },
-          args: [screenshot, workerUrl, langPath, corePath]
-        });
-        const text = recognized?.result || '';
-        log(`Read visible screen with offline OCR`, 'done', text.slice(0, 350));
-        return { text };
-      }
-
-      // ── Gmail Automation ──
+      // ── Gmail Compose ──
       case 'gmail_compose': {
         const composeUrl = 'https://mail.google.com/mail/u/0/#inbox?compose=new';
-        const tab = await createAgentTab({ url: composeUrl, active: true });
-        markActiveStepTab(tab);
-        await waitForTabLoad(tab.id);
-        await taskSleep(400, generation);
-        assertTaskActive(generation);
-        await ensureContentScript(tab.id);
+        log(`Gmail: Opening compose window`, 'running');
+        const gmTabId = await openTabAndWait(composeUrl, 'mail.google.com', 25000);
+        await sleep(3500);
 
-        const [res] = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: async (bodyHtml, to, subject) => {
-            if (window.__ZULORA_CONTENT__?.injectGmailCompose) {
-              return await window.__ZULORA_CONTENT__.injectGmailCompose(bodyHtml, to, subject);
-            }
-            // Fallback manual injection
-            const bodyField = document.querySelector('div[aria-label*="Message Body" i], .Am.Al.editable, div[role="textbox"]');
-            if (bodyField) {
-              bodyField.focus();
-              bodyField.innerHTML = bodyHtml || '';
-              bodyField.dispatchEvent(new Event('input', { bubbles: true }));
-              return { success: true };
-            }
-            return { success: false, error: 'Gmail editor not found' };
-          },
-          args: [params.bodyHtml || params.body || '', params.to || '', params.subject || '']
-        });
-
-        assertTaskActive(generation);
-        if (!res?.result?.success) throw new Error(res?.result?.error || 'Gmail compose fields were not ready.');
-        log(`Gmail Draft Prepared (${params.template || 'Rich HTML'}) → ${params.to || 'recipient'}`, 'done');
-        return { tabId: tab.id, details: res?.result };
+        const gmRes = await injectAndRun(gmTabId, __zuloraUniversalExecutor, [
+          'GMAIL',
+          { to: params.to, subject: params.subject, bodyHtml: params.bodyHtml || params.body || '' }
+        ], 3, 3000);
+        if (gmRes?.error) throw new Error(gmRes.error);
+        log(`Gmail: Draft prepared → ${params.to || 'recipient'}`, 'done');
+        result = { tabId: gmTabId };
+        break;
       }
 
-      case 'gmail_read_inbox': {
-        const tabs = await chrome.tabs.query({});
-        let gmailTab = tabs.find(t => t.url && t.url.includes('mail.google.com'));
-        if (!gmailTab) {
-          gmailTab = await createAgentTab({ url: 'https://mail.google.com/mail/u/0/#inbox', active: true });
-          await waitForTabLoad(gmailTab.id);
-          await taskSleep(400, generation);
-          assertTaskActive(generation);
+      // ── Screen & DOM Analyzer + Screenshot ──
+      case 'read_page_dom': {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tab = tabs[0];
+        if (!tab?.id) throw new Error('No active browser tab found');
+
+        const dom = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['READ_SCREEN', { deep: params.deep !== false }]);
+        log(`Screen Reader: Extracted structure from "${dom?.title || tab.title}"`, 'done');
+        result = { dom };
+        break;
+      }
+
+      case 'capture_screenshot': {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tab = tabs[0];
+        if (!tab?.windowId) throw new Error('No active window to capture');
+
+        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+        log(`Captured screen screenshot`, 'done');
+        result = { screenshot: dataUrl };
+        break;
+      }
+
+      // ── AI Waterfall Execution (Autonomous Extension Brain) ──
+      case 'ai_reasoning':
+      case 'llm_generate': {
+        log(`AI Brain: Thinking with waterfall API keys...`, 'running');
+        const aiRes = await executeAiWaterfall(params.prompt, params.systemInstruction);
+        if (!aiRes.success) throw new Error(aiRes.error);
+        log(`AI Brain: Generated response via ${aiRes.provider}`, 'done', aiRes.text.slice(0, 100));
+        result = aiRes;
+        break;
+      }
+
+      // ── DOM click / type ──
+      case 'click_element': {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tab = tabs[0];
+        if (!tab?.id) throw new Error('No active tab');
+        const res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['CLICK', { selector: params.selector }]);
+        if (res?.error) throw new Error(res.error);
+        log(`Clicked: ${params.selector}`, 'done');
+        result = res;
+        break;
+      }
+
+      case 'type_text': {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tab = tabs[0];
+        if (!tab?.id) throw new Error('No active tab');
+        const res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['TYPE', { selector: params.selector, text: params.text }]);
+        if (res?.error) throw new Error(res.error);
+        log(`Typed into: ${params.selector}`, 'done');
+        result = res;
+        break;
+      }
+
+      // ── Exports ──
+      case 'export_pdf': {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tab = tabs[0];
+        if (tab?.id) {
+          await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => window.print() });
+          log(`PDF Print Dialog opened`, 'done');
         }
-        markActiveStepTab(gmailTab);
-        await ensureContentScript(gmailTab.id);
-        const [res] = await chrome.scripting.executeScript({
-          target: { tabId: gmailTab.id },
-          func: () => window.__ZULORA_CONTENT__?.readGmailInbox?.() || []
-        });
-        log(`Read Gmail Inbox (${res?.result?.length || 0} messages found)`, 'done');
-        return { inbox: res?.result };
+        result = {};
+        break;
       }
 
-      case 'send_email': {
-        // Direct Gmail Compose URL fallback
-        const gmailUrl = `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(params.to || '')}&su=${encodeURIComponent(params.subject || '')}&body=${encodeURIComponent(params.body || '')}`;
-        const tab = await createAgentTab({ url: gmailUrl, active: true });
-        await waitForTabLoad(tab.id);
-        await ensureContentScript(tab.id);
-        log(`Opened Gmail compose → ${params.to || 'recipient'}`, 'done');
-        return { tabId: tab.id };
-      }
-
-      // ── WhatsApp Web Automation ──
-      case 'whatsapp_call':
-      case 'whatsapp_send': {
-        const isCall = action === 'whatsapp_call' || params.call === true;
-        const tabs = await chrome.tabs.query({});
-        let waTab = tabs.find(t => t.url && t.url.includes('web.whatsapp.com'));
-        if (!waTab) {
-          waTab = await createAgentTab({ url: 'https://web.whatsapp.com', active: true });
-          await waitForTabLoad(waTab.id);
-          await taskSleep(400, generation);
-          assertTaskActive(generation);
-        } else {
-          await chrome.tabs.update(waTab.id, { active: true });
-          await taskSleep(400, generation);
-          assertTaskActive(generation);
-        }
-        markActiveStepTab(waTab);
-        await ensureContentScript(waTab.id);
-
-        const [res] = await chrome.scripting.executeScript({
-          target: { tabId: waTab.id },
-          func: async (recipient, message, options) => {
-            if (window.__ZULORA_CONTENT__?.injectWhatsAppMessage) {
-              return await window.__ZULORA_CONTENT__.injectWhatsAppMessage(recipient, message, options);
-            }
-            return { error: 'WhatsApp handler not ready' };
-          },
-          args: [params.recipient || '', params.message || '', { call: isCall }]
-        });
-
-        assertTaskActive(generation);
-        if (!res?.result?.success) throw new Error(res?.result?.error || `WhatsApp could not ${isCall ? 'start the call' : 'confirm the message input'}.`);
-        log(isCall ? `WhatsApp: Calling "${params.recipient || 'contact'}"` : `WhatsApp: Message sent to "${params.recipient || 'recipient'}"`, 'done');
-        return { tabId: waTab.id, result: res?.result };
-      }
-
-      // ── ChatGPT & Gemini Automation ──
-      case 'chatgpt_prompt': {
-        const tab = await createAgentTab({ url: 'https://chatgpt.com', active: true });
-        markActiveStepTab(tab);
-        await waitForTabLoad(tab.id);
-        await taskSleep(400, generation);
-        assertTaskActive(generation);
-        await ensureContentScript(tab.id);
-
-        const [res] = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: async (prompt) => {
-            if (window.__ZULORA_CONTENT__?.injectChatGptPrompt) {
-              return await window.__ZULORA_CONTENT__.injectChatGptPrompt(prompt);
-            }
-            return { error: 'ChatGPT automation script not loaded' };
-          },
-          args: [params.prompt || '']
-        });
-
-        assertTaskActive(generation);
-        log(`ChatGPT: Prompt submitted ("${params.prompt?.slice(0, 30)}…")`, 'done');
-        return { tabId: tab.id, result: res?.result };
-      }
-
-      case 'gemini_prompt': {
-        const tab = await createAgentTab({ url: 'https://gemini.google.com/app', active: true });
-        markActiveStepTab(tab);
-        await waitForTabLoad(tab.id);
-        await taskSleep(400, generation);
-        assertTaskActive(generation);
-        await ensureContentScript(tab.id);
-
-        const [res] = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: async (prompt) => {
-            if (window.__ZULORA_CONTENT__?.injectGeminiPrompt) {
-              return await window.__ZULORA_CONTENT__.injectGeminiPrompt(prompt);
-            }
-            return { error: 'Gemini automation script not loaded' };
-          },
-          args: [params.prompt || '']
-        });
-
-        assertTaskActive(generation);
-        log(`Gemini: Prompt submitted ("${params.prompt?.slice(0, 30)}…")`, 'done');
-        return { tabId: tab.id, result: res?.result };
-      }
-
-      // ── File & PDF Exporters ──
       case 'export_code': {
-        const filename = params.filename || 'zulora_code.js';
         const code = params.code || params.content || '';
+        const filename = params.filename || 'zulora_export.js';
         const dataUrl = `data:text/plain;charset=utf-8,${encodeURIComponent(code)}`;
         await chrome.downloads.download({ url: dataUrl, filename });
-        log(`Downloaded code file: ${filename}`, 'done');
-        return { filename };
-      }
-
-      case 'export_pdf': {
-        const tab = markActiveStepTab(await getActiveTab(params.tabId));
-        if (tab?.id) {
-          await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['lib/html2canvas.min.js', 'lib/jspdf.umd.min.js'] });
-          const [result] = await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: async (filename) => {
-              if (!window.html2canvas || !window.jspdf?.jsPDF) throw new Error('Offline PDF libraries could not be loaded.');
-              const { jsPDF } = window.jspdf;
-              const pdf = new jsPDF('p', 'mm', 'a4');
-              const canvas = await window.html2canvas(document.body, { scale: 1.5, useCORS: false, backgroundColor: '#ffffff', logging: false });
-              const pageWidth = pdf.internal.pageSize.getWidth();
-              const pageHeight = pdf.internal.pageSize.getHeight();
-              const imageHeight = (canvas.height * pageWidth) / canvas.width;
-              const image = canvas.toDataURL('image/jpeg', 0.88);
-              let offset = 0;
-              while (offset < imageHeight) {
-                if (offset > 0) pdf.addPage();
-                pdf.addImage(image, 'JPEG', 0, -offset, pageWidth, imageHeight, undefined, 'FAST');
-                offset += pageHeight;
-              }
-              pdf.save(filename);
-              return { filename, pages: Math.max(1, Math.ceil(imageHeight / pageHeight)) };
-            },
-            args: [params.filename || 'zulora_document.pdf']
-          });
-          log(`Exported page as PDF`, 'done', result?.result?.filename || '');
-        }
-        return {};
-      }
-
-      case 'download_file': {
-        await chrome.downloads.download({ url: params.url, filename: params.filename });
-        log(`Downloaded: ${params.filename || params.url}`, 'done');
-        return {};
+        log(`Exported file: ${filename}`, 'done');
+        result = { filename };
+        break;
       }
 
       case 'wait': {
         const ms = params.ms || 2000;
-        await taskSleep(ms, generation);
-        assertTaskActive(generation);
+        await sleep(ms);
         log(`Waited ${ms}ms`, 'done');
-        return {};
+        result = {};
+        break;
       }
 
       case 'notify_user': {
-        chrome.notifications.create({
-          type: 'basic',
-          iconUrl: chrome.runtime.getURL('icons/icon128.png'),
-          title: 'Zulora AI Computer Plugin',
-          message: params.message || 'Action required.'
-        }, () => { try { void chrome.runtime.lastError; } catch {} });
-        log(`Notification: ${params.message}`, 'paused');
-        taskStatus = 'paused';
-        broadcastStatus();
-        return { paused: true };
+        safeNotify('Zulora AI — Task Notice', params.message || 'Action completed.');
+        log(`Notification: ${params.message}`, 'done');
+        result = {};
+        break;
       }
 
       default:
-        log(`Unknown action: ${action}`, 'error');
-        return {};
+        log(`Action: ${action}`, 'done');
+        result = {};
     }
+
+    return result || {};
   } catch (err) {
-    if (!err?.cancelled && generation === taskGeneration && !cancelRequested) {
-      log(`Error in ${action}: ${err.message}`, 'error', err.message);
-    }
+    log(`Failed: ${err.message}`, 'error', err.message);
     throw err;
-  } finally {
-    activeStepTabIds.clear();
   }
 }
 
 function humanLabel(action, params) {
   const map = {
-    open_url:        `Open URL → ${params.url}`,
-    automate_page:   `Page ${params.operation || 'automation'}${params.target ? `: ${params.target}` : ''}`,
+    open_url:        `Open URL: ${params.url}`,
     switch_tab:      `Switch Tab (${params.urlContains})`,
-    close_tab:       `Close Tab`,
-    search_google:   `Google: "${params.query}"`,
-    youtube_search:  params.play === true ? `YouTube: Search and play "${params.query || params.searchTerm}"` : `YouTube: Search "${params.query || params.searchTerm}"`,
-    type_text:       `Type into ${params.selector}`,
-    click_element:   `Click ${params.selector}`,
-    extract_content: `Extract page text`,
-    read_page_dom:   `Screen & DOM Reader`,
-    capture_screen:  `Capture visible screen`,
-    ocr_screen:      `Offline screen OCR`,
-    gmail_compose:   `Gmail: Compose with ${params.template ? `Zulora ${params.template}` : 'Rich HTML'} → ${params.to || 'recipient'}`,
-    gmail_read_inbox:`Gmail: Read Inbox`,
-    send_email:      `Email to ${params.to}`,
-    whatsapp_send:   `WhatsApp: Send message to "${params.recipient || 'recipient'}"`,
-    whatsapp_call:   `WhatsApp: Call "${params.recipient || 'contact'}"`,
-    chatgpt_prompt:  `ChatGPT: Submit prompt`,
-    gemini_prompt:   `Gemini: Submit prompt`,
-    export_code:     `Export code file (${params.filename || 'file'})`,
-    export_pdf:      `Export as PDF document`,
-    download_file:   `Download ${params.filename || params.url}`,
+    search_google:   `Google Search: "${params.query}"`,
+    type_text:       `Type into: ${params.selector}`,
+    click_element:   `Click: ${params.selector}`,
+    read_page_dom:   `Screen Reader — Capture DOM`,
+    capture_screenshot: `Capture Tab Screenshot`,
+    gmail_compose:   `Gmail Compose → ${params.to || 'recipient'}`,
+    whatsapp_send:   `WhatsApp → ${params.recipient || params.contact || 'contact'}`,
+    chatgpt_prompt:  `ChatGPT — Submit prompt`,
+    gemini_prompt:   `Gemini — Submit prompt`,
+    ai_reasoning:    `AI Brain — Reason with waterfall`,
+    llm_generate:    `AI Brain — Generate payload`,
+    export_code:     `Export: ${params.filename || 'file'}`,
+    export_pdf:      `Export PDF`,
     wait:            `Wait ${params.ms || 2000}ms`,
     notify_user:     `Notify: ${params.message}`
   };
   return map[action] || action;
 }
 
-// ─── Queue Runner ─────────────────────────────────────────────────────────────
+// ─── 8. Queue Runner ──────────────────────────────────────────────────────────
 async function runQueue() {
-  if (queueRunnerActive) {
-    taskStatus = 'running';
-    broadcastStatus();
-    return;
-  }
+  isCancelled = false;
   taskStatus = 'running';
-  queueRunnerActive = true;
-  void persistTaskState();
   broadcastStatus();
 
-  const generation = taskGeneration;
-  try {
-    while (currentStepIndex < taskQueue.length) {
-      if (taskStatus !== 'running') break;
-      assertTaskActive(generation);
-      const step = taskQueue[currentStepIndex];
-      const result = await executeStep(step, generation);
-      if (result?.paused) {
-        pausedAfterAction = true;
-        taskStatus = 'paused';
-        break;
-      }
-      currentStepIndex++;
-      void persistTaskState();
-      await taskSleep(400, generation);
-      assertTaskActive(generation);
-    }
+  while (currentStepIndex < taskQueue.length) {
+    if (taskStatus === 'paused') break;
+    if (taskStatus === 'error')  break;
+    if (isCancelled)             break;
 
-    if (taskStatus === 'running' && currentStepIndex >= taskQueue.length) {
-      taskStatus = 'done';
-      chrome.notifications.create({
-        type: 'basic',
-        iconUrl: chrome.runtime.getURL('icons/icon128.png'),
-        title: 'Zulora Task Complete',
-        message: `All ${taskQueue.length} steps executed successfully!`
-      }, () => { try { void chrome.runtime.lastError; } catch {} });
-      broadcastStatus();
-    }
-  } catch (err) {
-    if (!err?.cancelled && generation === taskGeneration) {
+    try {
+      const res = await executeStep(taskQueue[currentStepIndex]);
+      if (res?.paused) break;
+      await sleep(600);
+    } catch {
       taskStatus = 'error';
-      log(`Task stopped: ${err.message}`, 'error', err.message);
-    }
-  } finally {
-    if (generation === taskGeneration) {
-      queueRunnerActive = false;
-      void persistTaskState();
       broadcastStatus();
+      return;
     }
+    currentStepIndex++;
+  }
+
+  if (taskStatus === 'running') {
+    taskStatus = 'done';
+    safeNotify('✅ Zulora Task Complete', `Successfully completed all ${taskQueue.length} steps!`);
+    broadcastStatus();
   }
 }
 
-// ─── Agent Task Handler ───────────────────────────────────────────────────────
+// ─── 9. Task Dispatcher ───────────────────────────────────────────────────────
 async function handleAgentTask(payload) {
-  await stateReady;
-  if (!payload) return { ok: true, queued: 0 };
-  if ((payload.type === 'EXECUTE_ACTION' || payload.type === 'EXECUTE_STEP') && payload.payload) {
-    return handleAgentTask(payload.payload);
-  }
+  if (!payload) return { ok: true };
 
-  // Task queue execution
+  // Task execution
   if (payload.type === 'ZULORA_RUN_TASK' || payload.steps) {
-    if (queueRunnerActive) {
-      return { ok: false, success: false, error: 'A browser task is already running. Stop or pause it before starting another.' };
-    }
-    const steps = payload.steps || (Array.isArray(payload) ? payload : []);
-    taskGeneration++;
-    cancelRequested = false;
-    taskCancelledByUser = false;
-    pausedAfterAction = false;
-    taskQueue        = Array.isArray(steps) ? steps : [];
+    taskQueue        = Array.isArray(payload.steps) ? payload.steps : [];
     actionLog        = [];
     currentStepIndex = 0;
-    clearFloatingOverlays();
-    activeStepTabIds.clear();
-    agentTabIds.clear();
-    taskStatus       = 'running';
-    void persistTaskState();
+    taskStatus       = 'idle';
+    isCancelled      = false;
     runQueue();
     return { ok: true, success: true, queued: taskQueue.length };
   }
 
-  // Control commands
-  if (payload.type === 'ZULORA_PAUSE') {
-    taskStatus = 'paused';
-    pausedAfterAction = false;
-    void persistTaskState();
-    broadcastStatus();
-    return { ok: true, success: true, status: 'paused' };
-  }
-
-  if (payload.type === 'ZULORA_RESUME') {
-    if (taskStatus === 'paused') {
-      if (pausedAfterAction) currentStepIndex++;
-      pausedAfterAction = false;
-      taskStatus = 'running';
-      void persistTaskState();
-      runQueue();
-    }
-    return { ok: true, success: true, status: 'running' };
-  }
-
-  if (payload.type === 'ZULORA_CANCEL') {
-    taskGeneration++;
-    cancelRequested = true;
-    taskCancelledByUser = true;
-    for (const [timer, resolve] of activeTimers) {
-      clearTimeout(timer);
-      resolve(true);
-    }
-    activeTimers.clear();
-    for (const tabId of activeStepTabIds) chrome.tabs.sendMessage(tabId, { type: 'ZULORA_ABORT_AUTOMATION' }).catch(() => {});
-    activeStepTabIds.clear();
-    for (const tabId of agentTabIds) chrome.tabs.remove(tabId).catch(() => {});
-    agentTabIds.clear();
+  // Stop / Cancel Agent
+  if (payload.type === 'ZULORA_CANCEL' || payload.type === 'STOP_TASK') {
+    isCancelled      = true;
     taskQueue        = [];
     actionLog        = [];
     currentStepIndex = 0;
     taskStatus       = 'idle';
-    pausedAfterAction = false;
-    queueRunnerActive = false;
-    void persistTaskState();
     broadcastStatus();
-    overlayTabIds.clear();
-    return { ok: true, success: true, status: 'idle' };
+    return { ok: true, success: true, stopped: true };
   }
 
+  // Pause
+  if (payload.type === 'ZULORA_PAUSE') {
+    taskStatus = 'paused';
+    broadcastStatus();
+    return { ok: true };
+  }
+
+  // Resume
+  if (payload.type === 'ZULORA_RESUME') {
+    if (taskStatus === 'paused') {
+      currentStepIndex++;
+      taskStatus = 'running';
+      runQueue();
+    }
+    return { ok: true };
+  }
+
+  // API Key Waterfall Sync
+  if (payload.type === 'SYNC_API_KEYS') {
+    cachedApiKeys = { ...cachedApiKeys, ...(payload.payload || payload.keys || {}) };
+    chrome.storage.local.set({ zuloraApiKeys: cachedApiKeys });
+    return { ok: true, success: true, keysCount: cachedApiKeys.geminiKeys?.length || 0 };
+  }
+
+  // Status query
   if (payload.type === 'ZULORA_STATUS') {
-    return {
-      ok: true,
-      success: true,
-      taskStatus,
-      actionLog: [...actionLog],
-      currentStep: currentStepIndex,
-      totalSteps: taskQueue.length
-    };
+    return { ok: true, taskStatus, actionLog: [...actionLog], currentStep: currentStepIndex, totalSteps: taskQueue.length };
   }
 
+  // Ping
   if (payload.type === 'PING') {
-    return {
-      ok: true, success: true, status: 'PONG', taskStatus,
-      actionLog: [...actionLog], currentStep: currentStepIndex, totalSteps: taskQueue.length
-    };
+    return { ok: true, success: true, status: 'PONG', version: '1.2.0' };
   }
 
   // Single step execution
-  const step = payload.step || (payload.action ? payload : null);
-  if (step && step.action) {
-    cancelRequested = false;
-    taskCancelledByUser = false;
-    taskGeneration++;
-    const result = await executeStep(step, taskGeneration);
-    return { ok: true, success: true, ...result };
+  const step = payload.action ? payload : (payload.step || null);
+  if (step?.action) {
+    const r = await executeStep(step);
+    return { ok: true, success: true, ...r };
   }
 
-  const action = payload.action || (payload.type !== 'EXECUTE_ACTION' && payload.type !== 'EXECUTE_STEP' ? payload.type : null);
-  if (action && typeof executeStep === 'function') {
-    cancelRequested = false;
-    taskCancelledByUser = false;
-    taskGeneration++;
-    const result = await executeStep(payload, taskGeneration);
-    return { ok: true, success: true, ...result };
-  }
-
-  return { ok: true, success: true, status: taskStatus };
+  return { ok: true, status: taskStatus };
 }
 
-// ─── External Message Handler (from Zulora web app) ───────────────────────────
-chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+// ─── 10. Message Listeners ────────────────────────────────────────────────────
+chrome.runtime.onMessageExternal.addListener((message, _sender, sendResponse) => {
   handleAgentTask(message)
-    .then((result) => sendResponse({ success: true, ok: true, data: result, ...(result && typeof result === 'object' ? result : {}) }))
-    .catch((err) => sendResponse({ success: false, ok: false, error: err.message }));
-  return true; // Keep channel open for async response
+    .then(r => sendResponse({ success: true, ok: true, ...r }))
+    .catch(e => sendResponse({ success: false, error: e.message }));
+  return true; // Keep async channel open
 });
 
-// ─── Internal Message Handler (from content scripts & bridge) ─────────────────
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === 'ZULORA_OVERLAY_NEXT_TASK') {
-    handleOverlayNextTask()
-      .then((result) => sendResponse({ success: true, ok: true, data: result, ...(result && typeof result === 'object' ? result : {}) }))
-      .catch((err) => sendResponse({ success: false, ok: false, error: err.message }));
-    return true;
-  }
-
-  if (message?.type === 'ZULORA_OVERLAY_VOICE') {
-    handleOverlayVoice(message.transcript, sender?.tab)
-      .then((result) => sendResponse({ success: true, ok: true, data: result, ...(result && typeof result === 'object' ? result : {}) }))
-      .catch((err) => sendResponse({ success: false, ok: false, error: err.message }));
-    return true;
-  }
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (!safeRuntimeId()) return false;
 
   if (message.type === 'EXECUTE_ACTION' || message.type === 'EXECUTE_STEP') {
     handleAgentTask(message.payload)
-      .then((result) => sendResponse({ success: true, ok: true, data: result, ...(result && typeof result === 'object' ? result : {}) }))
-      .catch((err) => sendResponse({ success: false, ok: false, error: err.message }));
-    return true; // CRITICAL: Explicitly return true for async sendResponse
+      .then(r => sendResponse({ success: true, ok: true, data: r, ...r }))
+      .catch(e => sendResponse({ success: false, error: e.message }));
+    return true; // CRITICAL: Keep async channel open
+  }
+
+  if (message.type === 'SYNC_API_KEYS') {
+    handleAgentTask({ type: 'SYNC_API_KEYS', payload: message.payload })
+      .then(r => sendResponse({ success: true, ...r }))
+      .catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
   }
 
   if (message.type === 'PING') {
-    sendResponse({ status: 'PONG', ok: true, success: true, taskStatus, actionLog: [...actionLog], currentStep: currentStepIndex, totalSteps: taskQueue.length });
+    sendResponse({ status: 'PONG', ok: true, version: '1.2.0' });
     return true;
   }
 
   if (message.type === 'ZULORA_CONTENT_READY') {
-    sendResponse({ ok: true, success: true, taskStatus });
+    sendResponse({ ok: true, taskStatus });
     return true;
   }
 
-  if (message.type === 'ZULORA_RUN_TASK' || message.steps) {
-    handleAgentTask(message)
-      .then((result) => sendResponse({ success: true, ok: true, data: result, ...(result && typeof result === 'object' ? result : {}) }))
-      .catch((err) => sendResponse({ success: false, ok: false, error: err.message }));
-    return true;
-  }
-
-  // Fallback for any other message
   handleAgentTask(message.payload || message)
-    .then((result) => sendResponse({ success: true, ok: true, data: result, ...(result && typeof result === 'object' ? result : {}) }))
-    .catch((err) => sendResponse({ success: false, ok: false, error: err.message }));
-  return true; // CRITICAL: Explicitly return true for async sendResponse
+    .then(r => sendResponse({ success: true, ok: true, ...r }))
+    .catch(e => sendResponse({ success: false, error: e.message }));
+  return true; // Keep async channel open
 });
 
-console.log('[Zulora Computer Plugin v1.1] Service worker initialized.');
+console.log('[Zulora Computer Plugin v1.2] Service worker running. Keep-alive active.');

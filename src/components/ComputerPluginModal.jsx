@@ -8,16 +8,13 @@ import {
 import {
   checkExtensionConnected,
   executeCommand,
-  runTask,
   pauseTask,
   resumeTask,
   cancelTask,
   onStatusUpdate,
-  parseCommandToSteps,
-  parseLocalComputerAction
+  parseCommandToSteps
 } from '../services/browserAgentEngine';
 import { useAuth } from '../context/AuthContext';
-import { firestoreService } from '../services/firestoreService';
 
 // ─── Status Badge Config ──────────────────────────────────────────────────────
 const STATUS_CONFIG = {
@@ -66,108 +63,10 @@ const INSTALL_STEPS = [
 ];
 
 const FREE_TASK_LIMIT = 5;
-const PRO_TASK_LIMIT = 50;
-const TASK_HISTORY_KEY = 'zulora_plugin_task_history';
-
-function localDayKey() {
-  const date = new Date();
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
-
-function dailyTaskStorageKey(userId) {
-  return `zulora_plugin_daily_tasks_${userId || 'anonymous'}`;
-}
-
-function readDailyTaskCount(userId) {
-  try {
-    const record = JSON.parse(localStorage.getItem(dailyTaskStorageKey(userId)) || '{}');
-    return record.day === localDayKey() ? Math.max(0, Number(record.count) || 0) : 0;
-  } catch { return 0; }
-}
-
-function formatTokenReset(resetAt, now) {
-  const remaining = Number(resetAt) - now;
-  if (!Number.isFinite(remaining) || remaining <= 0) return 'refreshing soon';
-  const hours = Math.floor(remaining / 3600000);
-  const minutes = Math.floor((remaining % 3600000) / 60000);
-  return hours ? `resets in ${hours}h ${minutes}m` : `resets in ${minutes}m`;
-}
-
-function tokenStorageKey(userId) {
-  return `zulora_plugin_token_usage_${userId || 'anonymous'}`;
-}
-
-function timestampValue(value) {
-  if (value === null || value === undefined || value === '' || value === 0 || value === '0') return 0;
-  const numeric = Number(value);
-  if (Number.isFinite(numeric) && numeric > 0) return numeric;
-  const parsed = Date.parse(String(value || ''));
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function readTokenUsage(userId) {
-  const counts = [];
-  try {
-    const stored = JSON.parse(localStorage.getItem(tokenStorageKey(userId)) || 'null');
-    if (stored && (!timestampValue(stored.resetAt) || Date.now() < timestampValue(stored.resetAt)) && Number.isFinite(Number(stored.count))) {
-      counts.push(Math.max(0, Number(stored.count)));
-    }
-  } catch {}
-  try {
-    const scoped = JSON.parse(localStorage.getItem(`zulora_used_tokens_${userId || 'anonymous'}`) || 'null');
-    if (scoped && (!timestampValue(scoped.resetAt) || Date.now() < timestampValue(scoped.resetAt)) && Number.isFinite(Number(scoped.count))) {
-      counts.push(Math.max(0, Number(scoped.count)));
-    }
-  } catch {}
-  if (!userId) {
-    counts.push(Math.max(0, Number(localStorage.getItem('zulora_used_tokens')) || 0));
-    counts.push(Math.max(0, Number(sessionStorage.getItem('zulora_plugin_session_tokens')) || 0));
-  }
-  return Math.max(0, ...counts);
-}
-
-function persistTokenUsage(userId, count, resetAt = 0) {
-  const safeCount = Math.max(0, Number(count) || 0);
-  try {
-    const safeResetAt = timestampValue(resetAt);
-    const record = { count: safeCount, resetAt: safeResetAt };
-    localStorage.setItem(tokenStorageKey(userId), JSON.stringify(record));
-    localStorage.setItem(`zulora_used_tokens_${userId || 'anonymous'}`, JSON.stringify(record));
-    localStorage.setItem('zulora_used_tokens', String(safeCount));
-    sessionStorage.setItem('zulora_plugin_session_tokens', String(safeCount));
-  } catch {}
-}
-
-function getYoutubeRequest(command) {
-  const text = String(command || '').trim();
-  const channelSearch = text.match(/\b(?:search|find)\s+(?:for\s+)?(channel\s+.+)$/i);
-  if (channelSearch && !/\bgoogle\b/i.test(text)) {
-    return {
-      query: channelSearch[1].replace(/\s+(?:and\s+)?(?:play|watch)\b.*$/i, '').replace(/\s+(?:on|in)\s+youtube\s*$/i, '').trim(),
-      play: /\b(play|watch)\b/i.test(text) && !/\b(?:don't|do not)\s+(?:play|watch)\b/i.test(text)
-    };
-  }
-  const patterns = [
-    /(?:search|find)\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+youtube\b/i,
-    /\byoutube\b.*?\b(?:search|for)\s+(.+)$/i,
-    /\b(?:youtube|search\s+youtube)\s+(?:search\s+)?(?:for\s+)?(.+)$/i,
-    /\b(?:play|watch)\s+(?:the\s+)?(?:(?:top|first)\s+)?(?:video\s+)?(?:about\s+)?(.+?)(?:\s+on\s+youtube)?$/i
-  ];
-  for (const [index, pattern] of patterns.entries()) {
-    if (index === patterns.length - 1 && !/\byoutube\b/i.test(text)) continue;
-    const match = text.match(pattern);
-    const query = match?.[1]?.replace(/\s+on\s+youtube.*$/i, '').trim();
-    if (query) return {
-      query: query.replace(/^(?:play|watch)\s+(?:the\s+)?(?:(?:top|first)\s+)?(?:video\s+)?(?:about\s+)?/i, '').replace(/^(?:video|videos)\s+(?:about|for)\s+/i, '').trim(),
-      play: /\b(play|watch)\b/i.test(text) && !/\b(?:don't|do not)\s+(?:play|watch)\b/i.test(text)
-    };
-  }
-  return null;
-}
 
 // ─── Component ────────────────────────────────────────────────────────────────
 const ComputerPluginModal = ({ isOpen, onClose }) => {
-  const { isPro, setIsPricingModalOpen, currentUser, usage = {}, userProfile } = useAuth();
+  const { isPro, setIsPricingModalOpen, currentUser } = useAuth();
 
   const [isConnected, setIsConnected] = useState(false);
   const [checkingConnection, setCheckingConnection] = useState(false);
@@ -181,114 +80,28 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   const [parsedPreview, setParsedPreview] = useState([]);
   const [showPreview, setShowPreview] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  const [tokenClock, setTokenClock] = useState(Date.now());
-  const [tokenLimit, setTokenLimit] = useState(() => firestoreService.getProfileTokenLimit(userProfile || {}));
 
   // Token Tracking & Gatekeeper state
   const [sessionTokens, setSessionTokens] = useState(() => {
-    return readTokenUsage(currentUser?.uid);
+    return parseInt(localStorage.getItem('zulora_total_tokens') || '0', 10);
   });
   const [taskCount, setTaskCount] = useState(() => {
-    return readDailyTaskCount(currentUser?.uid);
+    return parseInt(localStorage.getItem('zulora_plugin_task_count') || '0', 10);
   });
   const [showUpgradeGate, setShowUpgradeGate] = useState(false);
 
   const logEndRef = useRef(null);
   const inputRef  = useRef(null);
   const recognitionRef = useRef(null);
-  const voiceSilenceTimerRef = useRef(null);
-  const voiceTranscriptRef = useRef('');
-  const handleRunRef = useRef(null);
-  const appliedTokenResetRef = useRef(0);
-  const isRunningRef = useRef(false);
-  const tokenSyncTimerRef = useRef(null);
-  const pendingTokenSyncRef = useRef(null);
-  const actionLogRef = useRef([]);
-  const commandRef = useRef('');
-  const taskLimit = isPro ? PRO_TASK_LIMIT : FREE_TASK_LIMIT;
-  const tokenResetAt = timestampValue(usage?.tokenResetAt);
 
-  const persistComputerTokens = useCallback((count, resetAt = tokenResetAt, immediate = false) => {
-    const safeCount = Math.max(0, Math.ceil(Number(count) || 0));
-    const safeResetAt = timestampValue(resetAt);
-    persistTokenUsage(currentUser?.uid, safeCount, safeResetAt);
-    if (!currentUser?.uid) return;
-    pendingTokenSyncRef.current = {
-      uid: currentUser.uid,
-      count: safeCount,
-      resetAt: safeResetAt,
-      maxTokenLimit: tokenLimit
-    };
-    const flush = () => {
-      const pending = pendingTokenSyncRef.current;
-      pendingTokenSyncRef.current = null;
-      if (pending) void firestoreService.saveComputerPluginTokenUsage(
-        pending.uid, pending.count, pending.maxTokenLimit, pending.resetAt
-      );
-    };
-    clearTimeout(tokenSyncTimerRef.current);
-    if (immediate) flush();
-    else tokenSyncTimerRef.current = setTimeout(flush, 350);
-  }, [currentUser?.uid, tokenLimit, tokenResetAt]);
-
-  useEffect(() => {
-    setTaskCount(readDailyTaskCount(currentUser?.uid));
-    const interval = setInterval(() => {
-      const nextCount = readDailyTaskCount(currentUser?.uid);
-      setTaskCount(previous => previous === nextCount ? previous : nextCount);
-    }, 30000);
-    return () => clearInterval(interval);
-  }, [currentUser?.uid]);
-
-  useEffect(() => {
-    const interval = setInterval(() => setTokenClock(Date.now()), 30000);
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    let mounted = true;
-    const uid = currentUser?.uid;
-    setSessionTokens(readTokenUsage(uid));
-    setTokenLimit(firestoreService.getProfileTokenLimit(userProfile || {}));
-    if (!uid) return () => { mounted = false; };
-    firestoreService.getComputerPluginTokenUsage(uid, userProfile || {}).then(remote => {
-      if (!mounted) return;
-      const localCount = readTokenUsage(uid);
-      const remoteResetAt = timestampValue(remote?.resetAt);
-      const remoteCount = remoteResetAt > 0 && Date.now() >= remoteResetAt
-        ? 0 : Math.max(0, Number(remote?.usedTokens) || 0);
-      const usedTokens = Math.max(localCount, remoteCount);
-      const activeResetAt = remoteResetAt > Date.now() ? remoteResetAt : tokenResetAt > Date.now() ? tokenResetAt : 0;
-      const resolvedLimit = Math.max(1, Number(remote?.maxTokenLimit) || firestoreService.getProfileTokenLimit(userProfile || {}));
-      setSessionTokens(usedTokens);
-      setTokenLimit(resolvedLimit);
-      persistTokenUsage(uid, usedTokens, activeResetAt);
-      if (localCount > remoteCount) {
-        void firestoreService.saveComputerPluginTokenUsage(uid, usedTokens, resolvedLimit, activeResetAt);
-      }
-    }).catch(error => console.warn('Could not load Computer Plugin token history:', error.message));
-    return () => { mounted = false; };
-  }, [currentUser?.uid, userProfile?.planTier, userProfile?.tier, tokenResetAt]);
-
-  useEffect(() => {
-    if (!tokenResetAt) return;
-    if (tokenClock < tokenResetAt) {
-      if (appliedTokenResetRef.current === tokenResetAt) appliedTokenResetRef.current = 0;
-      return;
-    }
-    if (appliedTokenResetRef.current === tokenResetAt) return;
-    appliedTokenResetRef.current = tokenResetAt;
-    setSessionTokens(0);
-    persistComputerTokens(0, 0, true);
-  }, [tokenResetAt, tokenClock, currentUser?.uid, persistComputerTokens]);
-
-  useEffect(() => () => {
-    clearTimeout(tokenSyncTimerRef.current);
-    const pending = pendingTokenSyncRef.current;
-    pendingTokenSyncRef.current = null;
-    if (pending) void firestoreService.saveComputerPluginTokenUsage(
-      pending.uid, pending.count, pending.maxTokenLimit, pending.resetAt
-    );
+  // ── Sync session token storage ──────────────────────────────────────────────
+  const recordTokens = useCallback((tokens) => {
+    if (!tokens || isNaN(tokens)) return;
+    setSessionTokens(prev => {
+      const next = prev + tokens;
+      localStorage.setItem('zulora_total_tokens', String(next));
+      return next;
+    });
   }, []);
 
   // ── Extension Connection Check ──────────────────────────────────────────────
@@ -311,8 +124,6 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     return () => {
       clearInterval(interval);
       window.removeEventListener('ZULORA_PLUGIN_CONNECTED', onReady);
-      clearTimeout(voiceSilenceTimerRef.current);
-      recognitionRef.current?.stop?.();
     };
   }, [isOpen, checkConnection]);
 
@@ -320,31 +131,11 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   useEffect(() => {
     const unsubscribe = onStatusUpdate((data) => {
       if (data.type === 'ZULORA_STATUS_UPDATE') {
-        if (data.nextTask) {
-          const archived = { command: commandRef.current, actionLog: actionLogRef.current, status: 'done', savedAt: Date.now() };
-          if (archived.command.trim() || archived.actionLog.length) {
-            try {
-              const history = JSON.parse(localStorage.getItem(TASK_HISTORY_KEY) || '[]');
-              localStorage.setItem(TASK_HISTORY_KEY, JSON.stringify([...history, archived].slice(-30)));
-            } catch { localStorage.setItem(TASK_HISTORY_KEY, JSON.stringify([archived])); }
-          }
-          setCommand('');
-          setParsedPreview([]);
-          setShowPreview(false);
-          actionLogRef.current = [];
-          commandRef.current = '';
-        }
         setTaskStatus(data.taskStatus);
         setActionLog(data.actionLog || []);
         if (data.taskStatus === 'done' || data.taskStatus === 'error') {
-          isRunningRef.current = false;
           setIsRunning(false);
           setIsLogOpen(true);
-        }
-        if (data.cancelled && isRunningRef.current) {
-          isRunningRef.current = false;
-          setIsRunning(false);
-          void cancelTask();
         }
       }
       if (data.type === 'ZULORA_LOGIN_REQUIRED') {
@@ -354,9 +145,6 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     });
     return unsubscribe;
   }, []);
-
-  useEffect(() => { actionLogRef.current = actionLog; }, [actionLog]);
-  useEffect(() => { commandRef.current = command; }, [command]);
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -369,27 +157,12 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
       setShowPreview(false);
       return;
     }
-    const youtubeRequest = getYoutubeRequest(command);
-    const steps = youtubeRequest
-      ? [{ action: 'youtube_search', app: 'YouTube', params: youtubeRequest }]
-      : parseLocalComputerAction(command) || parseCommandToSteps(command);
+    const steps = parseCommandToSteps(command);
     setParsedPreview(steps);
     setShowPreview(steps.length > 0);
   }, [command]);
 
   // ── Web Speech API Live Voice Recognition ───────────────────────────────────
-  const scheduleVoiceExecution = useCallback(() => {
-    clearTimeout(voiceSilenceTimerRef.current);
-    voiceSilenceTimerRef.current = setTimeout(() => {
-      const transcript = voiceTranscriptRef.current.trim();
-      recognitionRef.current?.stop?.();
-      if (transcript) {
-        setCommand(transcript);
-        handleRunRef.current?.(transcript);
-      }
-    }, 1100);
-  }, []);
-
   const toggleVoice = useCallback(() => {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
       alert('Live voice command is not supported in this browser. Please use Chrome, Edge, or Brave.');
@@ -397,7 +170,6 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     }
 
     if (isListening) {
-      scheduleVoiceExecution();
       recognitionRef.current?.stop();
       setIsListening(false);
       return;
@@ -405,10 +177,9 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
 
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
     const rec = new SpeechRec();
-    rec.continuous = true;
+    rec.continuous = false;
     rec.interimResults = true;
     rec.lang = 'en-US';
-    voiceTranscriptRef.current = '';
 
     rec.onstart = () => {
       setIsListening(true);
@@ -418,9 +189,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
       const transcript = Array.from(event.results)
         .map(result => result[0].transcript)
         .join('');
-      voiceTranscriptRef.current = transcript;
       setCommand(transcript);
-      scheduleVoiceExecution();
     };
 
     rec.onend = () => {
@@ -434,14 +203,14 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
 
     recognitionRef.current = rec;
     rec.start();
-  }, [isListening, scheduleVoiceExecution]);
+  }, [isListening]);
 
   // ── Run Task & Gatekeeper ───────────────────────────────────────────────────
-  const handleRun = useCallback(async (voiceCommand) => {
-    const commandText = String(voiceCommand ?? command).trim();
-    if (!commandText || isRunning || isRunningRef.current) return;
+  const handleRun = useCallback(async () => {
+    if (!command.trim() || isRunning) return;
 
-    if (taskCount >= taskLimit) {
+    // Gatekeeper: Free users capped at 5 tasks
+    if (!isPro && taskCount >= FREE_TASK_LIMIT) {
       setShowUpgradeGate(true);
       return;
     }
@@ -453,61 +222,28 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     }
 
     setIsRunning(true);
-    isRunningRef.current = true;
     setTaskStatus('running');
     setActionLog([]);
     setLoginRequired(null);
     setIsLogOpen(true);
 
-    const nextCount = taskCount + 1;
-    setTaskCount(nextCount);
-    try { localStorage.setItem(dailyTaskStorageKey(currentUser?.uid), JSON.stringify({ day: localDayKey(), count: nextCount })); } catch {}
-
-    const tokenStart = sessionTokens;
-    const onTokens = (tokens) => {
-      const liveTotal = Math.max(tokenStart + tokens, readTokenUsage(currentUser?.uid));
-      setSessionTokens(liveTotal);
-      persistComputerTokens(liveTotal, tokenResetAt > tokenClock ? tokenResetAt : 0);
-    };
-    const youtubeRequest = getYoutubeRequest(commandText);
-    const result = youtubeRequest
-      ? await runTask([{ action: 'youtube_search', app: 'YouTube', params: youtubeRequest }])
-      : await executeCommand(commandText, (entry) => {
-        setActionLog(prev => [...prev, entry]);
-      }, currentUser, onTokens);
-
-    if (result.tokensUsed) {
-      const finalTotal = Math.max(tokenStart + result.tokensUsed, readTokenUsage(currentUser?.uid));
-      setSessionTokens(finalTotal);
-      persistComputerTokens(finalTotal, tokenResetAt > tokenClock ? tokenResetAt : 0, true);
-    } else persistComputerTokens(readTokenUsage(currentUser?.uid), tokenResetAt > tokenClock ? tokenResetAt : 0, true);
-
-    if (result.error === 'Task stopped.') return;
-
-    if (!result.ok && !result.success && /extension context|reload this page to reconnect|not connected|reconnect/i.test(result.error || '')) {
-      setTaskStatus('paused');
-      isRunningRef.current = false;
-      setIsRunning(false);
-      setShowInstallGuide(true);
-      setActionLog(prev => [...prev, {
-        index: prev.length + 1,
-        label: 'Extension connection needs to reconnect. Try again in a moment.',
-        status: 'paused',
-        timestamp: Date.now()
-      }]);
-      return;
+    // Increment task count for free users
+    if (!isPro) {
+      const nextCount = taskCount + 1;
+      setTaskCount(nextCount);
+      localStorage.setItem('zulora_plugin_task_count', String(nextCount));
     }
 
-    if (result.analysis) {
-      setTaskStatus('done');
-      isRunningRef.current = false;
-      setIsRunning(false);
-      setIsLogOpen(true);
+    const result = await executeCommand(command, (entry) => {
+      setActionLog(prev => [...prev, entry]);
+    }, currentUser);
+
+    if (result.tokensUsed) {
+      recordTokens(result.tokensUsed);
     }
 
     if (!result.ok && !result.success) {
       setTaskStatus('error');
-      isRunningRef.current = false;
       setIsRunning(false);
       setActionLog(prev => [...prev, {
         index: prev.length + 1,
@@ -516,9 +252,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
         timestamp: Date.now()
       }]);
     }
-  }, [command, isRunning, taskCount, taskLimit, checkConnection, currentUser, sessionTokens, tokenResetAt, tokenClock, persistComputerTokens]);
-
-  handleRunRef.current = handleRun;
+  }, [command, isRunning, isPro, taskCount, checkConnection, currentUser, recordTokens]);
 
   const handlePause = useCallback(async () => {
     await pauseTask();
@@ -533,7 +267,6 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   }, []);
 
   const handleStopAgent = useCallback(async () => {
-    isRunningRef.current = false;
     await cancelTask();
     setTaskStatus('idle');
     setIsRunning(false);
@@ -546,30 +279,13 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   }, []);
 
   const handleReset = useCallback(() => {
-    const archived = { command, actionLog, status: taskStatus, savedAt: Date.now() };
-    if (command.trim() || actionLog.length) {
-      try {
-        const history = JSON.parse(localStorage.getItem(TASK_HISTORY_KEY) || '[]');
-        localStorage.setItem(TASK_HISTORY_KEY, JSON.stringify([...history, archived].slice(-30)));
-      } catch { localStorage.setItem(TASK_HISTORY_KEY, JSON.stringify([archived])); }
-    }
-    void cancelTask();
     setTaskStatus('idle');
-    isRunningRef.current = false;
     setActionLog([]);
     setLoginRequired(null);
     setIsRunning(false);
     setCommand('');
     setParsedPreview([]);
     setShowPreview(false);
-  }, [command, actionLog, taskStatus]);
-
-  const handleContinueTask = useCallback(() => {
-    setTaskStatus('idle');
-    isRunningRef.current = false;
-    setIsRunning(false);
-    setLoginRequired(null);
-    inputRef.current?.focus();
   }, []);
 
   if (!isOpen) return null;
@@ -630,10 +346,10 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
             ) : (
               <button
                 onClick={() => setShowInstallGuide(v => !v)}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 text-[10px] font-bold border border-amber-200 dark:border-amber-800/60 hover:bg-amber-100 transition-colors"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-50 dark:bg-red-950/30 text-red-500 text-[10px] font-bold border border-red-200 dark:border-red-800/60 hover:bg-red-100 transition-colors"
               >
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                Reconnect
+                <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                Not Installed
               </button>
             )}
           </div>
@@ -651,10 +367,10 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
         <div className="flex items-center justify-between px-5 py-2.5 bg-slate-50 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800 text-[11px]">
           <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300 font-medium">
             <Zap className="w-3.5 h-3.5 text-sky-500 animate-pulse" />
-            <span>Tokens Used: <strong className="font-bold text-sky-600 dark:text-sky-400">{sessionTokens.toLocaleString()}</strong> / {tokenLimit.toLocaleString()} Tokens</span>
+            <span>Tokens Used: <strong className="font-bold text-sky-600 dark:text-sky-400">{sessionTokens.toLocaleString()}</strong> Tokens</span>
           </div>
-          <span className="text-[9px] text-slate-400 dark:text-slate-500 font-semibold text-right">
-            {tokenResetAt ? formatTokenReset(tokenResetAt, tokenClock) : 'Local DOM actions use no planner tokens'}
+          <span className="text-[10px] text-slate-400 dark:text-slate-500 font-semibold uppercase tracking-wider">
+            Session Usage
           </span>
         </div>
 
@@ -667,11 +383,11 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
               <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
                 <Crown className="w-5 h-5 text-amber-500" />
                 <h3 className="text-xs font-black uppercase tracking-wide">
-                  Daily Limit Reached ({taskCount}/{taskLimit} Tasks)
+                  Free Limit Reached (5/5 Tasks)
                 </h3>
               </div>
               <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
-                You've used today's {taskLimit} computer tasks. Your limit resets tomorrow; Zulora Pro includes 50 tasks per day.
+                You've completed all 5 free automation tasks. Upgrade to <strong>Zulora Pro</strong> for unlimited autonomous browser agent execution, rich Pearl/Azure templates, and WhatsApp/Gmail integration.
               </p>
               <div className="flex items-center gap-2">
                 <button
@@ -739,9 +455,11 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
                 {actionLog.filter(l => l.status === 'done').length} / {actionLog.length} steps done
               </span>
             )}
-            <span className="text-[10px] text-slate-400 ml-auto font-medium">
-              {taskCount}/{taskLimit} tasks used today
-            </span>
+            {!isPro && (
+              <span className="text-[10px] text-slate-400 ml-auto font-medium">
+                {taskCount}/{FREE_TASK_LIMIT} tasks used
+              </span>
+            )}
           </div>
 
           {/* Login Required Alert */}
@@ -890,7 +608,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
                     title="Stop Agent Task"
                   >
                     <Square className="w-3.5 h-3.5" />
-                    Stop Task
+                    Stop Agent
                   </button>
                 </>
               )}
@@ -965,13 +683,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
                 onClick={handleReset}
                 className="mt-1 px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-bold transition-colors shadow-sm"
               >
-                Next Task / Clean Session
-              </button>
-              <button
-                onClick={handleContinueTask}
-                className="ml-2 mt-1 px-4 py-2 rounded-xl bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-xs font-bold transition-colors"
-              >
-                Continue Current Task
+                Run Another Task
               </button>
             </div>
           )}
@@ -981,7 +693,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
 
         {/* ── Footer ──────────────────────────────────────────────────────── */}
         <div className="px-5 py-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-[10px] text-slate-400 bg-slate-50 dark:bg-slate-900/40">
-          <span>Zulora Computer Plugin v1.3.0</span>
+          <span>Zulora Computer Plugin v1.1</span>
           <div className="flex items-center gap-3">
             <button
               onClick={() => setIsPricingModalOpen(true)}
