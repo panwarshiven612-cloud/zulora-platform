@@ -1018,6 +1018,11 @@ export async function executeCommand(command, arg2, arg3) {
   logEntry(`📋 Agent 1 Plan: ${steps.length} step(s) queued`, 'done');
 
   let totalTokensUsed = plan.tokensUsed || 0;
+  if (totalTokensUsed > 0 && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('ZULORA_TOKEN_UPDATE', {
+      detail: { taskTokens: totalTokensUsed }
+    }));
+  }
 
   // 2. Pre-generate payloads for steps requiring dynamic content (Gmail, WhatsApp)
   for (const step of steps) {
@@ -1053,7 +1058,7 @@ export async function executeCommand(command, arg2, arg3) {
       // Dispatch incremental token update event
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('ZULORA_TOKEN_UPDATE', {
-          detail: { taskTokens: totalTokensUsed }
+          detail: { taskTokens: tokens } // emit only the delta
         }));
       }
     } else {
