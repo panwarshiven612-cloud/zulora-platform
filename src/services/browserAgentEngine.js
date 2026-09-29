@@ -226,7 +226,7 @@ export async function generateEmailPayload(rawPrompt, template = TEMPLATES.PEARL
   return {
     bodyText,
     bodyHtml,
-    tokensUsed: llmResult.success ? Math.ceil(bodyText.split(/\s+/).length * 1.3) : 0,
+    tokensUsed: llmResult.tokensUsed || (llmResult.success ? Math.ceil(bodyText.split(/\s+/).length * 1.3) : 0),
     provider: llmResult.provider || 'fallback'
   };
 }
@@ -476,7 +476,8 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
       if (!res.ok) return null;
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
-      return text ? { success: true, text, provider: 'groq' } : null;
+      const tokensUsed = data?.usage?.total_tokens || Math.ceil((prompt.length + (text?.length || 0)) / 4);
+      return text ? { success: true, text, provider: 'groq', tokensUsed } : null;
     });
     if (result) return result;
   }
@@ -500,7 +501,8 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
       if (!res.ok) return null;
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
-      return text ? { success: true, text, provider: 'cerebras' } : null;
+      const tokensUsed = data?.usage?.total_tokens || Math.ceil((prompt.length + (text?.length || 0)) / 4);
+      return text ? { success: true, text, provider: 'cerebras', tokensUsed } : null;
     });
     if (result) return result;
   }
@@ -531,7 +533,8 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
         if (!res.ok) return null;
         const data = await res.json();
         const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        return text ? { success: true, text, provider: `gemini/${model}` } : null;
+        const tokensUsed = data?.usageMetadata?.totalTokenCount || Math.ceil((prompt.length + (text?.length || 0)) / 4);
+        return text ? { success: true, text, provider: `gemini/${model}`, tokensUsed } : null;
       }, 1); // 1 attempt per model — rotate key on any failure
       if (result && result.success) return result;
     }
@@ -551,7 +554,8 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
       if (!res.ok) return null;
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
-      return text ? { success: true, text, provider: 'openrouter' } : null;
+      const tokensUsed = data?.usage?.total_tokens || Math.ceil((prompt.length + (text?.length || 0)) / 4);
+      return text ? { success: true, text, provider: 'openrouter', tokensUsed } : null;
     });
     if (result) return result;
   }
@@ -643,15 +647,15 @@ IMPORTANT ROUTING RULES:
 - Each step must be atomic (one action per step).
 - Use WAIT steps (500-2000ms) after navigation steps before interacting with page elements.${directUrlHint}
 
-Standard JSON Step Schema:
+Standard JSON Step Schema (Use [data-zulora-id="X"] for target if available in Screen Vision Memory):
 [
   { "step": 1, "action": "NAVIGATE", "url": "https://..." },
   { "step": 2, "action": "WAIT", "ms": 1500 },
-  { "step": 3, "action": "FILL_INPUT", "target": "search bar CSS selector or placeholder text", "value": "text to type" },
-  { "step": 4, "action": "CLICK", "target": "button text or CSS selector" },
-  { "step": 5, "action": "EXTRACT_DATA", "selector": "h1, p, .result", "variable": "varName" },
-  { "step": 6, "action": "NAVIGATE", "url": "https://second-site.com" },
-  { "step": 7, "action": "FILL_INPUT", "target": "input area", "value": "{{varName}}" }
+  { "step": 3, "action": "TYPE", "target": "[data-zulora-id='1'] or CSS selector", "value": "text to type" },
+  { "step": 4, "action": "CLICK", "target": "[data-zulora-id='2'] or CSS selector" },
+  { "step": 5, "action": "SCROLL", "direction": "down" },
+  { "step": 6, "action": "EXTRACT_DATA", "selector": "h1, p, .result", "variable": "varName" },
+  { "step": 7, "action": "DOWNLOAD_IMAGE", "target": "[data-zulora-id='3'] or img selector" }
 ]
 
 Specialized High-Level Actions (preferred for common apps):
@@ -696,7 +700,8 @@ Rules:
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((item, idx) => normalizeAgentStep(item, idx + 1));
+          const steps = parsed.map((item, idx) => normalizeAgentStep(item, idx + 1));
+          return { steps, tokensUsed: planResult.tokensUsed || 0 };
         }
       }
     } catch (e) {
@@ -705,7 +710,7 @@ Rules:
   }
 
   // Deterministic Local Fallback Planner
-  return parseCommandToSteps(prompt);
+  return { steps: parseCommandToSteps(prompt), tokensUsed: 0 };
 }
 
 function normalizeAgentStep(raw, stepNum) {
@@ -780,6 +785,12 @@ function normalizeAgentStep(raw, stepNum) {
   }
   if (action === 'WAIT') {
     return { step, action: ACTION_TYPES.WAIT, app: 'System', params: { ms: raw.ms || 1500 } };
+  }
+  if (action === 'SCROLL') {
+    return { step, action: 'scroll', app: 'Browser', params: { direction: raw.direction || 'down' } };
+  }
+  if (action === 'DOWNLOAD_IMAGE' || action === 'DOWNLOAD') {
+    return { step, action: 'download_image', app: 'Browser', params: { target: raw.target || raw.selector || 'img' } };
   }
 
   // Default passthrough
@@ -996,7 +1007,8 @@ export async function executeCommand(command, arg2, arg3) {
 
   // 1. AGENT 1: Master Planning & Task Decomposition
   logEntry('🧠 Agent 1: Planning action sequence...', 'running');
-  const steps = await agent1_MasterPlanner(command);
+  const plan = await agent1_MasterPlanner(command);
+  const steps = plan.steps;
 
   if (!steps || !steps.length) {
     logEntry('Could not parse task into executable steps', 'error');
@@ -1005,7 +1017,7 @@ export async function executeCommand(command, arg2, arg3) {
 
   logEntry(`📋 Agent 1 Plan: ${steps.length} step(s) queued`, 'done');
 
-  let totalTokensUsed = 0;
+  let totalTokensUsed = plan.tokensUsed || 0;
 
   // 2. Pre-generate payloads for steps requiring dynamic content (Gmail, WhatsApp)
   for (const step of steps) {
@@ -1023,7 +1035,7 @@ export async function executeCommand(command, arg2, arg3) {
     });
 
     if (result.success && result.text) {
-      const tokens = Math.floor(result.text.split(/\s+/).length * 1.3) + 20;
+      const tokens = result.tokensUsed || Math.floor(result.text.split(/\s+/).length * 1.3) + 20;
       totalTokensUsed += tokens;
 
       if (step.action === ACTION_TYPES.GMAIL_COMPOSE) {
@@ -1037,6 +1049,13 @@ export async function executeCommand(command, arg2, arg3) {
       }
 
       logEntry(`⚡ Generated payload via ${result.provider} (${tokens} tokens)`, 'done');
+      
+      // Dispatch incremental token update event
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('ZULORA_TOKEN_UPDATE', {
+          detail: { taskTokens: totalTokensUsed }
+        }));
+      }
     } else {
       // Direct text fallback
       if (step.action === ACTION_TYPES.WHATSAPP_SEND) step.params.message = step.params.rawPrompt;

@@ -227,6 +227,16 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [actionLog]);
 
+  useEffect(() => {
+    const handleTokenUpdate = (e) => {
+      if (e.detail?.taskTokens) {
+        recordTokens(e.detail.taskTokens);
+      }
+    };
+    window.addEventListener('ZULORA_TOKEN_UPDATE', handleTokenUpdate);
+    return () => window.removeEventListener('ZULORA_TOKEN_UPDATE', handleTokenUpdate);
+  }, [recordTokens]);
+
   // ── Live Action Plan Preview ────────────────────────────────────────────────
   useEffect(() => {
     if (!command.trim()) {
