@@ -125,6 +125,10 @@
     }).slice(0, MAX_ELEMENTS);
 
     const minifiedList = elements.map((el, idx) => {
+      // Inject smart ID for deterministic targeting
+      const zId = (idx + 1).toString();
+      el.setAttribute('data-zulora-id', zId);
+
       const tag = el.tagName.toLowerCase();
       let text = (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, MAX_TEXT);
       const placeholder = (el.placeholder || '').slice(0, 30);
@@ -133,18 +137,14 @@
       const type = el.type || '';
       const href = tag === 'a' ? (el.getAttribute('href') || '').slice(0, 80) : '';
 
-      let selector = tag;
-      if (el.id) {
-        selector = `#${el.id}`;
-      } else if (el.name) {
-        selector = `${tag}[name="${el.name}"]`;
-      } else if (placeholder) {
-        selector = `${tag}[placeholder*="${placeholder.slice(0, 15)}"]`;
-      } else if (ariaLabel) {
-        selector = `[aria-label*="${ariaLabel.slice(0, 15)}"]`;
-      }
+      let selector = `[data-zulora-id="${zId}"]`; // Primary resilient selector
+      
+      // Fallback selector string
+      let fallbackSelector = tag;
+      if (el.id) fallbackSelector = `#${el.id}`;
+      else if (el.name) fallbackSelector = `${tag}[name="${el.name}"]`;
 
-      return { i: idx, tag, type, name, placeholder, ariaLabel, text, href, selector };
+      return { id: zId, tag, type, name, placeholder, ariaLabel, text, href, selector, fallbackSelector };
     });
 
     const mainContainer = document.querySelector('article, main, [role="main"]') || document.body;
@@ -557,20 +557,26 @@
     }, { passive: true });
     document.addEventListener('touchend', stopDrag);
 
-    // ─── CONTINUOUS VOICE RECOGNITION (4.0s Silence Auto-Stop & Manual Stop) ───
+    // ─── BUGFIX 5: CONTINUOUS VOICE RECOGNITION (2.5s Silence Auto-Stop) ───
     let isListening = false;
     let recognition = null;
     let silenceTimer = null;
     let fullTranscript = '';
 
+    // Smart Voice Polisher - strips um, ah, stutters
+    function cleanInterimSpeech(text) {
+      return text.replace(/\b(um|uh|ah|like|you know|so|basically)\b/gi, '')
+                 .replace(/\s+/g, ' ').trim();
+    }
+
     function resetSilenceTimer() {
       clearTimeout(silenceTimer);
-      // Wait for 4.0 seconds of absolute silence before auto-finalizing task
+      // Wait for 2.5 seconds of absolute silence before auto-finalizing task
       silenceTimer = setTimeout(() => {
         if (isListening && fullTranscript.trim()) {
           finalizeVoiceCommand();
         }
-      }, 4000);
+      }, 2500);
     }
 
     function finalizeVoiceCommand() {
@@ -581,7 +587,7 @@
       isListening = false;
       mic.classList.remove('listening');
 
-      const command = fullTranscript.trim();
+      let command = cleanInterimSpeech(fullTranscript.trim());
       fullTranscript = '';
 
       if (!command) {
@@ -675,7 +681,8 @@
           fullTranscript += finalChunk;
         }
 
-        const currentDisplay = (fullTranscript + interimText).trim();
+        const rawDisplay = (fullTranscript + interimText).trim();
+        const currentDisplay = cleanInterimSpeech(rawDisplay);
         if (currentDisplay) {
           showToast(`🎙 "${currentDisplay.slice(-40)}"`, 0);
           resetSilenceTimer();

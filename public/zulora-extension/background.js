@@ -584,6 +584,38 @@ function __zuloraUniversalExecutor(action, payload) {
     return { success: true, filled: true, value: text };
   }
 
+  async function scrollPage(direction) {
+    const amount = window.innerHeight * 0.8;
+    window.scrollBy({ top: direction === 'up' ? -amount : amount, behavior: 'smooth' });
+    await sleep(800);
+    return { success: true, scrolled: direction };
+  }
+
+  async function downloadImage(target) {
+    let img = null;
+    if (target) img = await waitFor(target, 4000);
+    if (!img) img = document.querySelector('img[src]');
+    if (!img || !img.src) return { error: 'No image found to download.' };
+    
+    // Agent 2 Turtle Cursor Simulation
+    const rect = img.getBoundingClientRect();
+    const turtle = document.getElementById('zulora-turtle-cursor');
+    if (turtle) {
+      turtle.style.opacity = '1';
+      turtle.style.transform = `translate(${rect.left + rect.width / 2}px, ${rect.top + rect.height / 2}px)`;
+      await sleep(150);
+      turtle.style.opacity = '0';
+    }
+    
+    const a = document.createElement('a');
+    a.href = img.src;
+    a.download = 'zulora_image_download';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    return { success: true, downloaded: img.src };
+  }
+
   // ── Dispatcher ──
   switch (action) {
     case 'WHATSAPP':        return whatsapp(payload.contact, payload.message);
@@ -593,6 +625,8 @@ function __zuloraUniversalExecutor(action, payload) {
     case 'READ_SCREEN':     return readScreen(payload.deep);
     case 'CLICK':           return clickEl(payload.selector, payload.target);
     case 'TYPE':            return typeEl(payload.selector, payload.text, payload.target);
+    case 'SCROLL':          return scrollPage(payload.direction);
+    case 'DOWNLOAD_IMAGE':  return downloadImage(payload.target);
     case 'YOUTUBE':         return youtube(payload.query);
     case 'AUTOFILL':        return autofill();
     case 'EVAL_TOP_RESULT': return evaluateTopResult();
@@ -854,6 +888,27 @@ async function executeStep(step) {
         }
         if (res?.error) throw new Error(res.error);
         log(`Agent 2 Typed into: ${params.selector || params.target || 'input'}`, 'done');
+        result = res;
+        break;
+      }
+
+      case 'scroll': {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tab = tabs[0];
+        if (!tab?.id) throw new Error('No active tab');
+        await injectAndRun(tab.id, __zuloraUniversalExecutor, ['SCROLL', { direction: params.direction }]);
+        log(`Agent 2 Scrolled ${params.direction || 'down'}`, 'done');
+        result = { success: true };
+        break;
+      }
+
+      case 'download_image': {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tab = tabs[0];
+        if (!tab?.id) throw new Error('No active tab');
+        const res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['DOWNLOAD_IMAGE', { target: params.target }]);
+        if (res?.error) throw new Error(res.error);
+        log(`Agent 2 Downloaded image`, 'done');
         result = res;
         break;
       }
