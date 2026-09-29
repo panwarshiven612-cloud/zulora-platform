@@ -85,6 +85,76 @@
     }
   });
 
+  // ─── Fast DOM Minifier (never sends raw innerHTML to LLM) ────────────────────
+  // Extracts ONLY interactive elements into a lightweight JSON tree (<2KB).
+  // Used by the background agent for deterministic, zero-token action matching.
+  function getMinifiedDOM() {
+    const MAX_ELEMENTS = 40;
+    const MAX_TEXT = 60;
+    const elements = Array.from(
+      document.querySelectorAll('a, button, input, textarea, select, [role="button"], [role="link"], [role="textbox"]')
+    ).filter(el => {
+      const style = window.getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden' && el.offsetParent !== null;
+    }).slice(0, MAX_ELEMENTS);
+
+    return {
+      url: window.location.href,
+      title: document.title,
+      elements: elements.map(el => {
+        const tag = el.tagName.toLowerCase();
+        const text = (el.innerText || el.textContent || '').trim().slice(0, MAX_TEXT);
+        const placeholder = el.placeholder || '';
+        const ariaLabel = el.getAttribute('aria-label') || '';
+        const name = el.name || el.id || '';
+        const type = el.type || '';
+        const href = el.href || '';
+        return { tag, type, name, placeholder, ariaLabel, text, href };
+      }),
+      bodyPreview: (document.body?.innerText || '').slice(0, 1500)
+    };
+  }
+
+  // ─── Direct JS Executor (0 tokens, instant — for standard inputs) ─────────────
+  // Attempts to fill/click standard elements WITHOUT calling any LLM.
+  function tryDirectExecution(action, params) {
+    try {
+      if (action === 'TYPE' && params.selector && params.text) {
+        const el = document.querySelector(params.selector);
+        if (el) {
+          el.focus();
+          if (el.isContentEditable) { el.innerText = params.text; }
+          else { el.value = params.text; }
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return { success: true, method: 'direct-js' };
+        }
+        // Heuristic: find by placeholder or type
+        const byPlaceholder = Array.from(document.querySelectorAll('input, textarea'))
+          .find(i => (i.placeholder || '').toLowerCase().includes((params.selector || '').toLowerCase())
+                  || (i.type || '') === (params.selector || '').toLowerCase());
+        if (byPlaceholder) {
+          byPlaceholder.focus();
+          byPlaceholder.value = params.text;
+          byPlaceholder.dispatchEvent(new Event('input', { bubbles: true }));
+          byPlaceholder.dispatchEvent(new Event('change', { bubbles: true }));
+          return { success: true, method: 'direct-js-heuristic' };
+        }
+      }
+      if (action === 'CLICK' && params.selector) {
+        const el = document.querySelector(params.selector);
+        if (el) { el.click(); return { success: true, method: 'direct-js' }; }
+      }
+    } catch (e) { /* fall through */ }
+    return null; // Null = needs full LLM execution
+  }
+
+  // Expose DOM snapshot to background via message
+  window.addEventListener('ZULORA_GET_DOM_SNAPSHOT', () => {
+    const snap = getMinifiedDOM();
+    window.postMessage({ source: 'ZULORA_EXTENSION', type: 'ZULORA_DOM_SNAPSHOT', snapshot: snap }, '*');
+  });
+
   // ─── Login Detection ─────────────────────────────────────────────────────────
   try {
     const hasLogin = [

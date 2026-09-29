@@ -116,7 +116,7 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
         const body = {
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
+          generationConfig: { temperature: 0.7, maxOutputTokens: 1024 }
         };
         if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
 
