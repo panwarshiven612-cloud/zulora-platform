@@ -105,6 +105,8 @@ export const ImageGenerator = () => {
         aspectRatio,
         imageEngine,
         sourceImage: sourceImage?.dataUrl || '',
+        sourceImageBase64: sourceImage?.base64 || '',
+        operation: sourceImage ? 'edit' : 'generate',
         currentUser
       });
 
@@ -145,7 +147,9 @@ export const ImageGenerator = () => {
     if (!file || !file.type.startsWith('image/')) return;
     try {
       const dataUrl = await imageFileToDataUrl(file, { maxDimension: 1536, maxBytes: 1_200_000 });
-      setSourceImage({ name: file.name, dataUrl });
+      const [, base64 = ''] = dataUrl.split(',', 2);
+      setSourceImage({ name: file.name, dataUrl, base64, mimeType: file.type });
+      setImageEngine('flux-quick');
     } catch (error) {
       alert(error.message);
     }
@@ -185,9 +189,9 @@ export const ImageGenerator = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <label className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/70 text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer hover:border-sky-500">
+          <label className="inline-flex items-center gap-2 px-4 py-3 rounded-xl border border-sky-300 dark:border-sky-800 bg-sky-500/10 dark:bg-sky-950/40 text-xs font-bold text-sky-800 dark:text-sky-200 cursor-pointer hover:border-sky-500 hover:bg-sky-500/15">
             <ImageIcon className="w-4 h-4 text-sky-500" />
-            <span>{sourceImage ? 'Replace reference image' : 'Upload reference image'}</span>
+            <span>{sourceImage ? 'Replace Image from Gallery 🖼️' : 'Upload Image from Gallery 🖼️'}</span>
             <input type="file" accept="image/*" onChange={handleSourceImage} className="hidden" />
           </label>
           {sourceImage && (
@@ -222,13 +226,15 @@ export const ImageGenerator = () => {
         {/* Prompt Input */}
         <div>
           <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-2">
-            Image Prompt Description
+            {sourceImage ? 'Image Editing Prompt' : 'Image Prompt Description'}
           </label>
           <div className="relative">
             <textarea
               value={prompt}
               onChange={e => setPrompt(e.target.value)}
-              placeholder="e.g. A hyper-realistic glassmorphic cybernetic tiger perched on a crystal spire overlooking an azure futuristic metropolis, volumetric lighting, 8k..."
+              placeholder={sourceImage
+                ? 'Describe edits, e.g. Change the background to a neon city, preserve the subject, and add cyberpunk sunglasses...'
+                : 'e.g. A hyper-realistic glassmorphic cybernetic tiger perched on a crystal spire overlooking an azure futuristic metropolis, volumetric lighting, 8k...'}
               rows={3}
               className="w-full p-4 rounded-2xl bg-white/80 dark:bg-slate-900/80 border border-slate-300 dark:border-slate-700 text-xs sm:text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 resize-none transition-all shadow-inner"
             />
@@ -244,9 +250,11 @@ export const ImageGenerator = () => {
             onChange={event => setImageEngine(event.target.value)}
             className="w-full sm:max-w-sm px-3 py-2 rounded-xl bg-white/80 dark:bg-slate-900/80 border border-slate-300 dark:border-slate-700 text-sm text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500/30"
           >
-            {IMAGE_MODELS.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
+            {IMAGE_MODELS.map(model => <option key={model.id} value={model.id} disabled={Boolean(sourceImage && model.id !== 'flux-quick')}>{model.label}{sourceImage && model.id === 'flux-quick' ? ' · image editing' : ''}</option>)}
           </select>
-          {IMAGE_MODELS.find(model => model.id === imageEngine)?.pro && (
+          {sourceImage ? (
+            <span className="text-[11px] text-slate-500 dark:text-slate-400">Reference editing sends the selected image and your edit prompt to the configured Gemini or Pollinations image editing backend.</span>
+          ) : IMAGE_MODELS.find(model => model.id === imageEngine)?.pro && (
             <span className="text-[11px] text-slate-500 dark:text-slate-400">Generated securely with a server-side Hugging Face key.</span>
           )}
         </div>
@@ -357,7 +365,7 @@ export const ImageGenerator = () => {
             ) : (
               <>
                 <Sparkles className="w-4 h-4" />
-                <span>Generate Masterpiece</span>
+                <span>{sourceImage ? 'Generate Edited Image' : 'Generate Masterpiece'}</span>
               </>
             )}
           </button>

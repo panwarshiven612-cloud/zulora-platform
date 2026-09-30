@@ -44,7 +44,9 @@ export const ACTION_TYPES = {
   READ_DOM:        'read_page_dom',
   SUMMARIZE_PAGE:  'summarize_page',
   GMAIL_COMPOSE:   'gmail_compose',
+  GMAIL_ANALYZE_INBOX: 'gmail_analyze_inbox',
   GMAIL_READ:      'gmail_read_inbox',
+  EXPORT_DATA_TO_SHEETS: 'export_data_to_sheets',
   CHATGPT_PROMPT:  'chatgpt_prompt',
   GEMINI_PROMPT:   'gemini_prompt',
   WHATSAPP_SEND:   'whatsapp_send',
@@ -426,22 +428,48 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
   const env = import.meta.env || {};
   const get = (k) => String(env[k] || '').trim();
   const perProviderTimeoutMs = Math.min(Number(opts.timeoutMs) || 1800, 1800);
+  const groqTimeoutMs = Math.min(Number(opts.groqTimeoutMs) || 1500, 1500);
+  const failures = [];
+  const report = (name, status, detail = '') => {
+    const timestamp = Date.now();
+    console.info(`[Zulora Waterfall] ${name}: ${status}${detail ? ` — ${detail}` : ''}`);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ZULORA_ACTION_LOG_UPDATE', {
+        detail: { label: `LLM ${name}: ${status}`, status: status === 'complete' || status === 'skipped' ? 'done' : status === 'failed' ? 'error' : 'running', detail, timestamp }
+      }));
+    }
+  };
 
-  // Try each tier once. Rate limits immediately fall through to the next provider.
-  const tryProvider = async (name, callFn, retries = 1) => {
+  // Retry transient errors with bounded exponential backoff; rate limits go straight to the next tier.
+  const tryProvider = async (name, callFn, retries = 2) => {
+    let lastError = null;
     for (let attempt = 1; attempt <= retries; attempt++) {
+      report(name, 'running', `attempt ${attempt}/${retries}`);
       try {
         const result = await callFn(attempt);
-        if (result && result.success && result.text) return result;
-        // If we got a rate-limit status, skip immediately (no retry)
-        if (result && result._rateLimit) {
-          console.warn(`[Zulora Waterfall] ${name} rate-limited, skipping.`);
-          return null;
+        if (result && result.success && result.text) {
+          report(name, 'complete', `${result.tokensUsed || 0} tokens`);
+          return result;
         }
+        if (result && result._rateLimit) {
+          lastError = new Error(result.error || 'HTTP 429 rate limit');
+          break;
+        }
+        lastError = new Error(result?.error || 'Provider returned an empty response.');
       } catch (e) {
-        if (attempt < retries) await new Promise(r => setTimeout(r, 40));
+        lastError = e;
+        const status = Number(e?.status || e?.response?.status);
+        if (status >= 400 && status < 500 && status !== 429) break;
+      }
+      if (attempt < retries) {
+        const delay = Math.min(400, 100 * (2 ** (attempt - 1)));
+        report(name, 'retrying', `${lastError?.message || 'No response'}; retrying in ${delay}ms`);
+        await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
+    const reason = `${name}: ${lastError?.message || 'provider returned no response'}`;
+    failures.push(reason);
+    report(name, 'failed', reason.slice(name.length + 2));
     return null;
   };
 
@@ -474,16 +502,19 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
           temperature: opts.temperature ?? 0.2,
           messages
         },
-        perProviderTimeoutMs
+        groqTimeoutMs
       );
-      if (res.status === 429 || res.status === 403) return { _rateLimit: true };
-      if (!res.ok) return null;
+      if (res.status === 429) return { _rateLimit: true, error: 'HTTP 429 rate limit' };
+      if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
       const tokensUsed = Number(data?.usage?.total_tokens) || 0;
       return text ? { success: true, text, provider: 'groq', tokensUsed } : null;
-    });
+    }, 2);
     if (result) return result;
+  } else {
+    failures.push('Groq: API key not configured');
+    report('Groq', 'skipped', 'API key not configured');
   }
 
   // ── Priority 2: Cerebras Llama-3.1-70b (Ultra-fast <300ms) ──
@@ -501,20 +532,27 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
         },
         perProviderTimeoutMs
       );
-      if (res.status === 429 || res.status === 403) return { _rateLimit: true };
-      if (!res.ok) return null;
+      if (res.status === 429) return { _rateLimit: true, error: 'HTTP 429 rate limit' };
+      if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
       const tokensUsed = Number(data?.usage?.total_tokens) || 0;
       return text ? { success: true, text, provider: 'cerebras', tokensUsed } : null;
-    });
+    }, 2);
     if (result) return result;
+  } else {
+    failures.push('Cerebras: API key not configured');
+    report('Cerebras', 'skipped', 'API key not configured');
   }
 
   // ── Priority 3: Gemini REST API Key Pool (2.0 Flash / 1.5 Flash) ──
   const geminiKeys = Array.from({ length: 7 }, (_, i) =>
     get(`VITE_GEMINI_KEY_${i + 1}`) || get(`VITE_GEMINI_API_KEY_${i + 1}`)
   ).concat([get('VITE_GEMINI_API_KEY')]).filter(k => k && k.length > 20);
+  if (!geminiKeys.length) {
+    failures.push('Gemini: API key not configured');
+    report('Gemini', 'skipped', 'API key not configured');
+  }
 
   const geminiDeadline = Date.now() + perProviderTimeoutMs;
   for (const apiKey of geminiKeys) {
@@ -533,16 +571,16 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
           },
           remainingMs
         );
-        if (res.status === 429 || res.status === 403) {
+        if (res.status === 429) {
           keyRateLimited = true;
-          return { _rateLimit: true };
+          return { _rateLimit: true, error: 'HTTP 429 rate limit' };
         }
-        if (!res.ok) return null;
+        if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
         const data = await res.json();
         const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
         const tokensUsed = Number(data?.usageMetadata?.totalTokenCount) || 0;
         return text ? { success: true, text, provider: `gemini/${model}`, tokensUsed } : null;
-      }, 1); // 1 attempt per model — rotate key on any failure
+      }, 1); // Rotate to the next credential on failure.
       if (result && result.success) return result;
     }
   }
@@ -557,24 +595,22 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
         { model: 'mistralai/mistral-7b-instruct', max_tokens: 512, messages },
         perProviderTimeoutMs
       );
-      if (res.status === 429 || res.status === 403) return { _rateLimit: true };
-      if (!res.ok) return null;
+      if (res.status === 429) return { _rateLimit: true, error: 'HTTP 429 rate limit' };
+      if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
       const tokensUsed = Number(data?.usage?.total_tokens) || 0;
       return text ? { success: true, text, provider: 'openrouter', tokensUsed } : null;
-    });
+    }, 2);
     if (result) return result;
+  } else {
+    failures.push('OpenRouter: API key not configured');
+    report('OpenRouter', 'skipped', 'API key not configured');
   }
 
-  // ── Priority 5: Graceful Local Fallback — NEVER crash UI ──
-  console.warn('[Zulora Waterfall] All providers exhausted — using local fallback');
-  return {
-    success: false,
-    text: '',
-    provider: 'local_deterministic',
-    error: null
-  };
+  const message = failures.length ? failures.join(' | ') : 'No LLM API credentials are configured.';
+  report('Waterfall', 'failed', message);
+  throw new Error(`All LLM providers failed. ${message}`);
 }
 
 // ─── Persistent Screen State Memory Buffer ───────────────────────────────────
@@ -647,6 +683,11 @@ if (typeof window !== 'undefined') {
 export async function agent1_MasterPlanner(prompt, screenContext = '') {
   const cleanPrompt = cleanSearchIntent(prompt);
 
+  // Inbox analysis is deterministic so Gmail read/copy requests can never become compose actions.
+  if (isGmailInboxAnalysisIntent(prompt)) {
+    return { steps: parseCommandToSteps(prompt), tokensUsed: 0 };
+  }
+
   // BUGFIX 1: Pre-check for direct URL routing to guide the LLM planner
   const directUrlHint = (() => {
     const lower = prompt.toLowerCase();
@@ -681,6 +722,8 @@ Specialized High-Level Actions (preferred for common apps):
 - { "action": "YOUTUBE_PLAY", "query": "search term" }
 - { "action": "WHATSAPP_SEND", "recipient": "contact name", "message": "message text" }
 - { "action": "GMAIL_COMPOSE", "to": "email@domain.com", "subject": "subject", "body": "email body" }
+- { "action": "GMAIL_ANALYZE_INBOX", "limit": 10 } — use for Gmail read/analyze/extract/copy/summarize requests, never compose.
+- { "action": "EXPORT_DATA_TO_SHEETS", "filename": "gmail-inbox.csv" } — use after inbox analysis when requested.
 - { "action": "CHATGPT_PROMPT", "prompt": "your question" }
 - { "action": "GEMINI_PROMPT", "prompt": "your question" }
 - { "action": "CAPTURE_SCREENSHOT" }
@@ -703,14 +746,20 @@ Rules:
     ? `User Prompt: ${cleanPrompt}\nCurrent Screen Summary:\n${screenContext.slice(0, 1000)}${memoryContext}`
     : `User Prompt: ${cleanPrompt}${memoryContext}`;
 
-  const planResult = await callWaterfallLLM(contextPrompt, systemPrompt, {
-    maxTokens: 1200,
-    temperature: 0.1,
-    timeoutMs: 1800,
-    groqModel: 'llama-3.3-70b-versatile'
-  });
+  let planResult = null;
+  try {
+    planResult = await callWaterfallLLM(contextPrompt, systemPrompt, {
+      maxTokens: 1200,
+      temperature: 0.1,
+      timeoutMs: 1800,
+      groqTimeoutMs: 1500,
+      groqModel: 'llama-3.3-70b-versatile'
+    });
+  } catch (error) {
+    console.warn('[Agent 1 Planner] Provider waterfall exhausted; using deterministic parser:', error.message);
+  }
 
-  if (planResult.success && planResult.text) {
+  if (planResult?.success && planResult.text) {
     try {
       const sanitized = planResult.text
         .replace(/```json?|```/g, '')
@@ -809,6 +858,17 @@ function normalizeAgentStep(raw, stepNum) {
       llmType: 'email'
     };
   }
+  if (action === 'GMAIL_ANALYZE_INBOX' || action === 'GMAIL_READ_INBOX') {
+    return {
+      step,
+      action: ACTION_TYPES.GMAIL_ANALYZE_INBOX,
+      app: 'Gmail',
+      params: { limit: Math.max(1, Math.min(50, Number(raw.limit || raw.count || raw.params?.limit) || 10)) }
+    };
+  }
+  if (action === 'EXPORT_DATA_TO_SHEETS' || action === 'EXPORT_TO_SHEETS') {
+    return { step, action: ACTION_TYPES.EXPORT_DATA_TO_SHEETS, app: 'Google Sheets', params: { filename: raw.filename || raw.params?.filename || 'gmail-inbox.csv' } };
+  }
   if (action === 'CHATGPT_PROMPT') {
     return { step, action: ACTION_TYPES.CHATGPT_PROMPT, app: 'ChatGPT', params: { prompt: cleanSearchIntent(raw.prompt || '') } };
   }
@@ -896,6 +956,20 @@ export function agent3_ScreenVerifier(stepResult, step) {
 // ─── BUGFIX 1 & 3: Deterministic Step Parser with Direct App Routing ──────────
 export function parseCommandToSteps(command) {
   const cmd = command.toLowerCase().trim();
+
+  if (isGmailInboxAnalysisIntent(command)) {
+    const requestedCount = command.match(/\b(?:first|top)\s+(\d{1,2})\b/i)?.[1];
+    const limit = Math.max(1, Math.min(50, Number(requestedCount) || 10));
+    const steps = [
+      { action: ACTION_TYPES.OPEN_URL, app: 'Gmail', params: { url: 'https://mail.google.com' } },
+      { action: ACTION_TYPES.WAIT, app: 'System', params: { ms: 3000 } },
+      { action: ACTION_TYPES.GMAIL_ANALYZE_INBOX, app: 'Gmail', params: { limit } }
+    ];
+    if (/\b(?:google\s+sheets|sheets|spreadsheet|csv|export)\b/i.test(command)) {
+      steps.push({ action: ACTION_TYPES.EXPORT_DATA_TO_SHEETS, app: 'Google Sheets', params: { filename: 'gmail-inbox.csv' } });
+    }
+    return steps.map((step, index) => ({ ...step, step: index + 1 }));
+  }
 
   const phases = String(command)
     .split(/\s*(?:->|→|;|\bafter that\b|\band then\b|\bthen\b|\bnext\b)\s*/i)
@@ -1052,6 +1126,13 @@ export function parseCommandToSteps(command) {
   return [{ action: 'ai_reasoning', app: 'Web Agent', needsLlm: false, params: { prompt: cleanSearchIntent(command) } }];
 }
 
+function isGmailInboxAnalysisIntent(command) {
+  const text = String(command || '').toLowerCase();
+  const referencesInbox = /\b(?:gmail|inbox|emails)\b/.test(text);
+  const analysisIntent = /\b(?:analy[sz]e|read|extract|copy|summari[sz]e|first\s+\d+|top\s+\d+)\b/.test(text);
+  return referencesInbox && analysisIntent;
+}
+
 // ─── Task Control Commands ───────────────────────────────────────────────────
 export function pauseTask()  { return sendBridgeMessageWithRetry({ type: 'ZULORA_PAUSE' }, 1); }
 export function resumeTask() { return sendBridgeMessageWithRetry({ type: 'ZULORA_RESUME' }, 1); }
@@ -1081,6 +1162,13 @@ export async function executeCommand(command, arg2, arg3) {
     }
   };
 
+  const dispatchTokenUpdate = (stepTokens, total) => {
+    if (typeof window === 'undefined') return;
+    window.dispatchEvent(new CustomEvent('ZULORA_TOKEN_UPDATE', {
+      detail: { tokensUsed: Number(total) || 0, stepTokens: Number(stepTokens) || 0, taskTokens: Number(stepTokens) || 0, delta: Number(stepTokens) || 0, source: 'web' }
+    }));
+  };
+
   // 1. AGENT 1: Master Planning & Task Decomposition
   logEntry('🧠 Agent 1: Planning action sequence...', 'running');
   const plan = await agent1_MasterPlanner(command);
@@ -1094,11 +1182,7 @@ export async function executeCommand(command, arg2, arg3) {
   logEntry(`📋 Agent 1 Plan: ${steps.length} step(s) queued`, 'done');
 
   let totalTokensUsed = plan.tokensUsed || 0;
-  if (totalTokensUsed > 0 && typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('ZULORA_TOKEN_UPDATE', {
-      detail: { taskTokens: totalTokensUsed, delta: totalTokensUsed, source: 'web' }
-    }));
-  }
+  dispatchTokenUpdate(totalTokensUsed, totalTokensUsed);
 
   // 2. Pre-generate payloads for steps requiring dynamic content (Gmail, WhatsApp)
   for (const step of steps) {
@@ -1110,12 +1194,19 @@ export async function executeCommand(command, arg2, arg3) {
       ? 'Act as an intent and copywriting processor. Return ONLY JSON {"subject":"...","body":"...","isHtml":false}. Produce a polished email, not a rewrite of the instruction. Do not invent facts.'
       : 'Act as an intent and copywriting processor. Return ONLY JSON {"message":"..."}. Produce a concise, natural message fulfilling the intent. Never echo the instruction verbatim.';
 
-    const result = await callWaterfallLLM(step.params.rawPrompt, sysP, {
-      maxTokens: 700,
-      timeoutMs: 2500
-    });
+    let result;
+    try {
+      result = await callWaterfallLLM(step.params.rawPrompt, sysP, {
+        maxTokens: 700,
+        timeoutMs: 1800,
+        groqTimeoutMs: 1500
+      });
+    } catch (error) {
+      logEntry(`LLM content generation failed: ${error.message}`, 'error');
+      result = null;
+    }
 
-    if (result.success && result.text) {
+    if (result?.success && result.text) {
       const tokens = Number(result.tokensUsed) || 0;
       totalTokensUsed += tokens;
 
@@ -1140,11 +1231,7 @@ export async function executeCommand(command, arg2, arg3) {
       logEntry(`⚡ Generated payload via ${result.provider} (${tokens} tokens)`, 'done');
       
       // Dispatch incremental token update event
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('ZULORA_TOKEN_UPDATE', {
-          detail: { taskTokens: tokens, delta: tokens, source: 'web' }
-        }));
-      }
+      dispatchTokenUpdate(tokens, totalTokensUsed);
     } else {
       // Direct text fallback
       if (step.action === ACTION_TYPES.WHATSAPP_SEND) step.params.message = 'Hello! I wanted to get in touch. Please let me know when you have a moment.';
@@ -1158,6 +1245,12 @@ export async function executeCommand(command, arg2, arg3) {
 
   // 3. Sync Unified Token Counter to Firestore & localStorage
   const updatedTokens = await syncTokenUsage(totalTokensUsed, currentUser?.uid);
+  if (totalTokensUsed > 0) {
+    // Publish the persisted total for consumers that mounted after an incremental update.
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('ZULORA_TOKEN_UPDATE', {
+      detail: { tokensUsed: updatedTokens, stepTokens: 0, source: 'web' }
+    }));
+  }
 
   // 4. AGENT 2 & 3: Dispatch to Extension Bridge with Verification
   logEntry('⚡ Agent 2: Executing DOM & native browser steps...', 'running');

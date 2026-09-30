@@ -56,8 +56,32 @@
   if (isExtensionValid()) {
     try {
       chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+        if (message && message.type === 'ZULORA_GET_DOM_CONTEXT') {
+          const emailRows = Array.from(document.querySelectorAll('tr.zA, [role="main"] [role="row"], [role="main"] tr')).slice(0, 50).map(row => ({
+            text: (row.innerText || row.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 500),
+            sender: row.querySelector('.yW [email], [email], .yW')?.getAttribute('email') || row.querySelector('.yW')?.innerText?.trim() || '',
+            subject: row.querySelector('.bog, .bqe')?.innerText?.trim() || '',
+            date: row.querySelector('.xW span[title], .xW')?.getAttribute('title') || row.querySelector('.xW')?.innerText?.trim() || '',
+            preview: row.querySelector('.y2')?.innerText?.replace(/^\s*[-–—]\s*/, '').trim() || ''
+          })).filter(row => row.text);
+          const main = document.querySelector('main, [role="main"], article') || document.body;
+          sendResponse({
+            title: document.title,
+            url: location.href,
+            headings: Array.from(document.querySelectorAll('h1,h2,h3')).map(item => item.innerText?.trim()).filter(Boolean).slice(0, 10),
+            bodyText: (main?.innerText || '').slice(0, 15000),
+            emailRows
+          });
+          return true;
+        }
         if (message && message.type === 'ZULORA_TOKEN_UPDATE') {
-          window.dispatchEvent(new CustomEvent('ZULORA_TOKEN_UPDATE', { detail: { taskTokens: message.taskTokens, delta: message.delta, source: message.source || 'extension' } }));
+          window.dispatchEvent(new CustomEvent('ZULORA_TOKEN_UPDATE', { detail: {
+            tokensUsed: message.tokensUsed,
+            stepTokens: message.stepTokens ?? message.delta ?? message.taskTokens,
+            taskTokens: message.taskTokens,
+            delta: message.delta ?? message.stepTokens,
+            source: message.source || 'extension'
+          } }));
           if (sendResponse) sendResponse({ ok: true });
         }
         if (message && (message.type === 'ZULORA_STATUS_UPDATE' || message.type === 'ZULORA_AGENT_STEP_UPDATE' || message.type === 'ZULORA_SCREEN_STATE_UPDATE')) {

@@ -30,7 +30,9 @@ let isCancelled = false;
 let isQueueRunning = false;
 let hasReceivedTaskMessage = false;
 let latestScreenshotDataUrl = '';
-const QUEUE_STORAGE_KEYS = ['zulora_agent_queue', 'zulora_agent_queue_index', 'zulora_agent_status', 'zulora_agent_log'];
+let latestTaskOutput = null;
+let taskTokensUsed = 0;
+const QUEUE_STORAGE_KEYS = ['zulora_agent_queue', 'zulora_agent_queue_index', 'zulora_agent_status', 'zulora_agent_log', 'zulora_agent_output'];
 
 let cachedApiKeys = {
   geminiKeys: [],
@@ -78,7 +80,8 @@ function broadcastStatus() {
     taskStatus,
     actionLog: [...actionLog],
     currentStep: currentStepIndex,
-    totalSteps: taskQueue.length
+    totalSteps: taskQueue.length,
+    taskOutput: latestTaskOutput
   };
   try {
     chrome.tabs.query({}, (tabs) => {
@@ -92,11 +95,15 @@ function broadcastStatus() {
 
 function broadcastTokenUsage(tokens) {
   const amount = Number(tokens) || 0;
-  if (!amount || !safeRuntimeId()) return;
+  if (!safeRuntimeId()) return;
+  taskTokensUsed += amount;
   chrome.tabs.query({}, (tabs) => {
     (tabs || []).forEach(tab => {
       if (tab.id && tab.url && isZuloraOrigin(tab.url)) {
-        chrome.tabs.sendMessage(tab.id, { type: 'ZULORA_TOKEN_UPDATE', taskTokens: amount, delta: amount, source: 'extension' }).catch(() => {});
+        chrome.tabs.sendMessage(tab.id, {
+          type: 'ZULORA_TOKEN_UPDATE', tokensUsed: taskTokensUsed, stepTokens: amount,
+          taskTokens: amount, delta: amount, source: 'extension'
+        }).catch(() => {});
       }
     });
   });
@@ -125,7 +132,8 @@ function persistQueueState() {
     zulora_agent_queue: taskQueue,
     zulora_agent_queue_index: currentStepIndex,
     zulora_agent_status: taskStatus,
-    zulora_agent_log: actionLog.slice(-100)
+    zulora_agent_log: actionLog.slice(-100),
+    zulora_agent_output: latestTaskOutput
   }).catch(() => {});
 }
 
@@ -206,6 +214,8 @@ function resolveDirectUrlBg(phrase) {
 // ─── 5. API Key Waterfall Brain — BUGFIX 4: Exponential Backoff Retry Engine ──
 async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemini-2.0-flash') {
   const tierTimeoutMs = 1800;
+  const groqTimeoutMs = 1500;
+  const failures = [];
 
   const request = (url, options, timeoutMs = tierTimeoutMs) => {
     const controller = new AbortController();
@@ -213,17 +223,32 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
     return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
   };
 
-  // Each provider tier gets one bounded attempt. A rate limit falls through immediately.
-  const tryProvider = async (name, callFn, retries = 1) => {
+  const tryProvider = async (name, callFn, retries = 2) => {
+    let lastError = null;
     for (let attempt = 1; attempt <= retries; attempt++) {
+      log(`LLM ${name}: attempt ${attempt}/${retries}`, 'running');
       try {
         const result = await callFn(attempt);
-        if (result && result.success && result.text) return result;
-        if (result && result._rateLimit) return null; // 429 silent skip
+        if (result && result.success && result.text) {
+          log(`LLM ${name}: complete`, 'done', `${result.tokensUsed || 0} tokens`);
+          return result;
+        }
+        lastError = new Error(result?.error || 'Provider returned an empty response.');
+        if (result?._rateLimit) break;
       } catch (e) {
-        if (attempt < retries) await sleep(40);
+        lastError = e;
+        const status = Number(e?.status || e?.response?.status);
+        if (status >= 400 && status < 500) break;
+      }
+      if (attempt < retries) {
+        const delay = Math.min(400, 100 * (2 ** (attempt - 1)));
+        log(`LLM ${name}: retrying`, 'running', `${lastError?.message || 'No response'}; retrying in ${delay}ms`);
+        await sleep(delay);
       }
     }
+    const failure = `${name}: ${lastError?.message || 'provider returned no response'}`;
+    failures.push(failure);
+    log(`LLM ${name}: failed`, 'error', failure);
     return null;
   };
 
@@ -238,14 +263,17 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cachedApiKeys.groqKey}` },
         body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages, max_tokens: 1024, temperature: 0.2 })
-      }, tierTimeoutMs);
-      if (res.status === 429 || res.status === 403) return { _rateLimit: true };
-      if (!res.ok) return null;
+      }, groqTimeoutMs);
+      if (res.status === 429) return { _rateLimit: true, error: 'HTTP 429 rate limit' };
+      if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
       return text ? { success: true, text, provider: 'groq', tokensUsed: Number(data?.usage?.total_tokens) || 0 } : null;
     });
     if (result) return result;
+  } else {
+    failures.push('Groq: API key not configured');
+    log('LLM Groq skipped', 'done', 'API key not configured; proceeding to Cerebras.');
   }
 
   // ── Priority 2: Cerebras Llama-3.1-70b (<300ms ultra-fast) ──
@@ -256,17 +284,24 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cachedApiKeys.cerebrasKey}` },
         body: JSON.stringify({ model: 'llama3.1-70b', messages, max_tokens: 1024, temperature: 0.1 })
       }, tierTimeoutMs);
-      if (res.status === 429 || res.status === 403) return { _rateLimit: true };
-      if (!res.ok) return null;
+      if (res.status === 429) return { _rateLimit: true, error: 'HTTP 429 rate limit' };
+      if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
       return text ? { success: true, text, provider: 'cerebras', tokensUsed: Number(data?.usage?.total_tokens) || 0 } : null;
     });
     if (result) return result;
+  } else {
+    failures.push('Cerebras: API key not configured');
+    log('LLM Cerebras skipped', 'done', 'API key not configured; proceeding to Gemini.');
   }
 
   // ── Priority 3: Gemini REST key pool (2.0 Flash → 1.5 Flash) ──
   const keys = (cachedApiKeys.geminiKeys || []).filter(k => k && k.length > 20);
+  if (!keys.length) {
+    failures.push('Gemini: API key not configured');
+    log('LLM Gemini skipped', 'done', 'API key not configured; proceeding to OpenRouter.');
+  }
   const modelsToTry = ['gemini-2.0-flash'];
   const geminiDeadline = Date.now() + tierTimeoutMs;
 
@@ -288,8 +323,8 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
           { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
           requestTimeout
         );
-        if (res.status === 429 || res.status === 403) { keyRateLimited = true; return { _rateLimit: true }; }
-        if (!res.ok) return null;
+        if (res.status === 429) { keyRateLimited = true; return { _rateLimit: true, error: 'HTTP 429 rate limit' }; }
+        if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
         const data = await res.json();
         const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
         return text ? { success: true, text, provider: 'gemini', model: modelId, tokensUsed: Number(data?.usageMetadata?.totalTokenCount) || 0 } : null;
@@ -306,32 +341,37 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cachedApiKeys.openRouterKey}`, 'HTTP-Referer': 'https://zulora.in' },
         body: JSON.stringify({ model: 'mistralai/mistral-7b-instruct', max_tokens: 512, messages })
       }, tierTimeoutMs);
-      if (res.status === 429 || res.status === 403) return { _rateLimit: true };
-      if (!res.ok) return null;
+      if (res.status === 429) return { _rateLimit: true, error: 'HTTP 429 rate limit' };
+      if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
       return text ? { success: true, text, provider: 'openrouter', tokensUsed: Number(data?.usage?.total_tokens) || 0 } : null;
     });
     if (result) return result;
+  } else {
+    failures.push('OpenRouter: API key not configured');
+    log('LLM OpenRouter skipped', 'done', 'API key not configured.');
   }
 
-  // ── Priority 5: Graceful fallback — NEVER crash the agent UI ──
-  console.warn('[Zulora SW Waterfall] All providers exhausted, using local deterministic fallback');
-  return { success: false, text: '', error: null, provider: 'local_deterministic' };
+  const message = failures.length ? failures.join(' | ') : 'No LLM API credentials are configured.';
+  log('LLM Waterfall exhausted', 'error', message);
+  throw new Error(`All LLM providers failed. ${message}`);
 }
 
-async function executeGeminiVision(prompt, screenshotDataUrl) {
+async function executeGeminiVision(prompt, screenshotDataUrl, domText = '') {
   const keys = (cachedApiKeys.geminiKeys || []).filter(key => key && key.length > 20);
   if (!keys.length) return { success: false, error: 'Add a Gemini API key in the Zulora extension settings to analyze screenshots.' };
   const match = String(screenshotDataUrl || '').match(/^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i);
   if (!match) return { success: false, error: 'No valid screenshot is available to send to Gemini.' };
-  const deadline = Date.now() + 1800;
+  const deadline = Date.now() + 10_000;
+  const systemInstruction = 'You are a computer vision web agent. Analyze this browser screenshot, extract all relevant emails/table content, and structure them clearly.';
 
   for (const apiKey of keys) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
     try {
-      const response = await requestGeminiVision(apiKey, prompt, match[1], match[2], remaining);
+      const userPrompt = `${prompt || 'Describe the visible page.'}\n\nVisible DOM text nodes:\n${String(domText || '').slice(0, 12000)}`;
+      const response = await requestGeminiVision(apiKey, userPrompt, match[1], match[2], remaining, systemInstruction);
       if (response?.status === 429 || response?.status === 403) continue;
       if (!response?.ok) continue;
       const data = await response.json();
@@ -347,7 +387,7 @@ async function executeGeminiVision(prompt, screenshotDataUrl) {
   return { success: false, error: 'Gemini screenshot analysis failed or timed out.' };
 }
 
-function requestGeminiVision(apiKey, prompt, mimeType, imageData, timeoutMs) {
+function requestGeminiVision(apiKey, prompt, mimeType, imageData, timeoutMs, systemInstruction = '') {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
   return fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
@@ -355,6 +395,7 @@ function requestGeminiVision(apiKey, prompt, mimeType, imageData, timeoutMs) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt || 'Describe the screenshot.' }, { inline_data: { mime_type: mimeType, data: imageData } }] }],
+      systemInstruction: { parts: [{ text: systemInstruction || 'You are a computer vision web agent. Analyze this browser screenshot, extract all relevant emails/table content, and structure them clearly.' }] },
       generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
     }),
     signal: controller.signal
@@ -688,6 +729,31 @@ function __zuloraUniversalExecutor(action, payload) {
     return { selected: false };
   }
 
+  async function extractGmailInbox(limit = 10) {
+    await waitForPageReady(5000);
+    await waitFor(['tr.zA', '[role="main"] [role="row"]', '[role="main"] tr'], 3000);
+    const safeLimit = Math.max(1, Math.min(50, Number(limit) || 10));
+    const rowNodes = Array.from(document.querySelectorAll(
+      'tr.zA, [role="main"] [role="row"], [role="main"] tr, .Cp tr'
+    ));
+    const emails = rowNodes.map(row => {
+      const text = (row.innerText || row.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!text || row.getAttribute('role') === 'presentation') return null;
+      const senderNode = row.querySelector('.yW span[email], .yW span[email] span, [email], .yP, .yW');
+      const sender = senderNode?.getAttribute('email') || senderNode?.getAttribute('name') || senderNode?.innerText || '';
+      const subjectNode = row.querySelector('.bog, .bqe, [data-thread-id] .bog');
+      const snippetNode = row.querySelector('.y2');
+      const dateNode = row.querySelector('.xW span[title], .xW, [data-tooltip]');
+      const subject = (subjectNode?.innerText || '').trim();
+      const preview = (snippetNode?.innerText || '').replace(/^\s*[-–—]\s*/, '').trim();
+      const date = (dateNode?.getAttribute('title') || dateNode?.getAttribute('data-tooltip') || dateNode?.innerText || '').trim();
+      if (!sender && !subject && text.length < 12) return null;
+      return { sender: sender.trim(), subject, date, preview, rowText: text.slice(0, 500) };
+    }).filter(Boolean).slice(0, safeLimit);
+    const visibleRowsText = rowNodes.slice(0, safeLimit).map(row => (row.innerText || row.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+    return { emails, visibleRowsText, pageTitle: document.title, url: location.href };
+  }
+
   async function readScreen(deep) {
     return {
       title: document.title,
@@ -871,6 +937,7 @@ function __zuloraUniversalExecutor(action, payload) {
     case 'CHATGPT':         return chatgpt(payload.prompt, payload.waitResponse !== false);
     case 'GEMINI':          return gemini(payload.prompt, payload.waitResponse !== false);
     case 'GMAIL':           return gmail(payload.to, payload.subject, payload.bodyHtml);
+    case 'GMAIL_ANALYZE_INBOX': return extractGmailInbox(payload.limit);
     case 'READ_SCREEN':     return readScreen(payload.deep);
     case 'CLICK':           return clickEl(payload.selector, payload.target);
     case 'VISION_CLICK':    return clickVisionCoordinate(payload.x, payload.y);
@@ -947,6 +1014,8 @@ function humanLabel(action, params) {
     read_page_dom:            `Screen Reader`,
     capture_screenshot:       `Screenshot`,
     gmail_compose:            `Gmail Compose → ${params.to || 'recipient'}`,
+    gmail_analyze_inbox:      `Gmail Inbox: Analyze top ${params.limit || 10}`,
+    export_data_to_sheets:    `Export inbox data to Google Sheets`,
     whatsapp_send:            `WhatsApp → ${params.recipient || params.contact || 'contact'}`,
     chatgpt_prompt:           `ChatGPT prompt`,
     gemini_prompt:            `Gemini prompt`,
@@ -963,6 +1032,36 @@ function humanLabel(action, params) {
   return map[action] || action;
 }
 
+async function inspectScreenBeforeInteraction(tabId, actionLabel) {
+  if (!tabId) throw new Error(`Cannot inspect the screen before ${actionLabel}: no active tab.`);
+  const tab = await chrome.tabs.get(tabId);
+  if (tab?.active === false) await chrome.tabs.update(tabId, { active: true });
+  let screenshot;
+  try {
+    screenshot = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+  } catch (error) {
+    throw new Error(`Screen inspection failed before ${actionLabel}: screenshot capture failed (${error.message}).`);
+  }
+  const contentContext = await chrome.tabs.sendMessage(tabId, { type: 'ZULORA_GET_DOM_CONTEXT' }).catch(() => null);
+  const dom = contentContext || await injectAndRun(tabId, __zuloraUniversalExecutor, ['READ_SCREEN', { deep: true }], 1, 0);
+  const domText = [
+    `Page: ${dom?.title || tab?.title || ''}`,
+    `URL: ${dom?.url || tab?.url || ''}`,
+    `Headings: ${(dom?.headings || []).join(' | ')}`,
+    `Visible DOM text: ${String(dom?.bodyText || '').slice(0, 12000)}`
+  ].join('\n');
+  const vision = await executeGeminiVision(
+    `Inspect the current screen before the next browser interaction (${actionLabel}). Summarize the visible state and identify relevant controls.`,
+    screenshot,
+    domText
+  );
+  if (!vision.success) throw new Error(`Screen inspection failed before ${actionLabel}: ${vision.error || 'Gemini returned no response.'}`);
+  if (vision.success) broadcastTokenUsage(vision.tokensUsed || 0);
+  await setLatestScreenshot(screenshot);
+  log(`Vision inspected screen before ${actionLabel}`, 'done', String(vision.text || '').slice(0, 180));
+  return { screenshot, dom, vision };
+}
+
 async function executeStep(step) {
   const { action, params = {} } = step;
   if (isCancelled) throw new Error('Task stopped by user');
@@ -973,6 +1072,10 @@ async function executeStep(step) {
     let result = {};
 
     const act = (action || '').toLowerCase();
+    if (['click', 'click_element', 'type_text', 'fill_input', 'autofill_form', 'scroll', 'download_image'].includes(act)) {
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      await inspectScreenBeforeInteraction(activeTab?.id, humanLabel(act, params));
+    }
 
     switch (act) {
 
@@ -1008,6 +1111,7 @@ async function executeStep(step) {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
         const tabId = tabs[0]?.id;
         if (!tabId) throw new Error('No active tab');
+        await inspectScreenBeforeInteraction(tabId, 'open search result');
         const evalRes = await injectAndRun(tabId, __zuloraUniversalExecutor, ['EVAL_TOP_RESULT', {}], 3, 3000);
         if (evalRes?.error) throw new Error(evalRes.error);
         log(`Navigating to: ${evalRes.url}`, 'running');
@@ -1022,6 +1126,7 @@ async function executeStep(step) {
         const target = tabs.find(t => t.url && t.url.includes(params.urlContains || ''));
         if (target) {
           await chrome.tabs.update(target.id, { active: true });
+          await inspectScreenBeforeInteraction(target.id, 'switch tab');
           log(`Switched to: ${target.title}`, 'done');
           result = { tabId: target.id };
         } else {
@@ -1037,6 +1142,7 @@ async function executeStep(step) {
         log(`YouTube: Loading...`, 'running');
         const ytTabId = await openTabAndWait('https://www.youtube.com', 'youtube.com', 20000);
         await sleep(2000);
+        await inspectScreenBeforeInteraction(ytTabId, 'YouTube search');
         const ytRes = await injectAndRun(ytTabId, __zuloraUniversalExecutor, ['YOUTUBE', { query: safeQuery }], 3, 2000);
         if (ytRes?.error) throw new Error(ytRes.error);
         log(`YouTube: Playing "${ytRes.title}"`, 'done');
@@ -1057,7 +1163,7 @@ async function executeStep(step) {
             if (generated.success && json) fieldValues = JSON.parse(json);
           } catch {}
           const tokens = Number(generated.tokensUsed) || 0;
-          if (tokens) broadcastTokenUsage(tokens);
+          if (generated.success) broadcastTokenUsage(tokens);
         }
         const res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['AUTOFILL', { fieldValues }]);
         if (res?.error) throw new Error(res.error);
@@ -1089,11 +1195,12 @@ async function executeStep(step) {
           waTabId = await waitForTabComplete(matchingWa.id, 30000);
         } else waTabId = await openTabAndWait(waUrl, phone.length >= 7 ? null : 'web.whatsapp.com', 30000);
         await sleep(2500);
+        await inspectScreenBeforeInteraction(waTabId, 'WhatsApp message entry');
         let waRes = await injectAndRun(waTabId, __zuloraUniversalExecutor, ['WHATSAPP', { contact, message }], 3, 2000);
         if (waRes?.visionFallback) {
           const waTab = await chrome.tabs.get(waTabId);
           let screenshot = '';
-          try { screenshot = await chrome.tabs.captureVisibleTab(waTab.windowId, { format: 'jpeg', quality: 55 }); } catch {}
+          try { screenshot = await chrome.tabs.captureVisibleTab(null, { format: 'png' }); } catch {}
           if (screenshot) await setLatestScreenshot(screenshot);
           const coordinateMap = await injectAndRun(waTabId, __zuloraUniversalExecutor, ['SCREEN_COORDINATE_MAP', {}], 1, 0).catch(() => []);
           const inputs = (coordinateMap || []).filter(item => item.contentEditable || item.role === 'textbox' || ['input', 'textarea'].includes(item.tag));
@@ -1116,6 +1223,7 @@ async function executeStep(step) {
         log(`ChatGPT: Opening...`, 'running');
         const cgTabId = await openTabAndWait('https://chatgpt.com', 'chatgpt.com', 20000);
         await sleep(2000);
+        await inspectScreenBeforeInteraction(cgTabId, 'ChatGPT prompt entry');
         const cgRes = await injectAndRun(cgTabId, __zuloraUniversalExecutor, ['CHATGPT', { prompt, waitResponse: params.waitResponse !== false }], 3, 2000);
         if (cgRes?.error) throw new Error(cgRes.error);
         log(`ChatGPT: Prompt submitted`, 'done', cgRes?.response?.slice(0, 100) || '');
@@ -1127,23 +1235,21 @@ async function executeStep(step) {
         const prompt = params.prompt || '';
         if (params.includeScreenshot) {
           log('Gemini: Sending captured screenshot...', 'running');
-          let screenshot = await getLatestScreenshot();
-          if (!screenshot) {
-            const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-            if (tabs[0]?.windowId) {
-              screenshot = await chrome.tabs.captureVisibleTab(tabs[0].windowId, { format: 'jpeg', quality: 55 });
-              await setLatestScreenshot(screenshot);
-            }
-          }
-          const visionResult = await executeGeminiVision(prompt, screenshot);
+          const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (!activeTab?.id) throw new Error('No active tab is available for screenshot analysis.');
+          const dom = await injectAndRun(activeTab.id, __zuloraUniversalExecutor, ['READ_SCREEN', { deep: true }], 1, 0);
+          const screenshot = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+          await setLatestScreenshot(screenshot);
+          const visionResult = await executeGeminiVision(prompt, screenshot, JSON.stringify(dom || {}));
           if (!visionResult.success) throw new Error(visionResult.error || 'Gemini image request failed.');
-          if (visionResult.tokensUsed) broadcastTokenUsage(visionResult.tokensUsed);
+          if (visionResult.success) broadcastTokenUsage(visionResult.tokensUsed || 0);
           log('Gemini: Screenshot analyzed', 'done', visionResult.text.slice(0, 160));
           result = visionResult;
         } else {
           log(`Gemini: Opening...`, 'running');
           const gmTabId = await openTabAndWait('https://gemini.google.com/app', 'gemini.google.com', 20000);
           await sleep(2000);
+          await inspectScreenBeforeInteraction(gmTabId, 'Gemini prompt entry');
           const gmRes = await injectAndRun(gmTabId, __zuloraUniversalExecutor, ['GEMINI', { prompt, waitResponse: params.waitResponse !== false }], 3, 2000);
           if (gmRes?.error) throw new Error(gmRes.error);
           log(`Gemini: Prompt submitted`, 'done', gmRes?.response?.slice(0, 100) || '');
@@ -1157,12 +1263,84 @@ async function executeStep(step) {
         log(`Gmail: Opening compose...`, 'running');
         const gmTabId = await openTabAndWait(composeUrl, 'mail.google.com', 20000);
         await sleep(2500);
+        await inspectScreenBeforeInteraction(gmTabId, 'Gmail compose');
         const gmRes = await injectAndRun(gmTabId, __zuloraUniversalExecutor, [
           'GMAIL', { to: params.to, subject: params.subject, bodyHtml: params.bodyHtml || params.body || '' }
         ], 3, 2000);
         if (gmRes?.error) throw new Error(gmRes.error);
         log(`Gmail: Draft prepared → ${params.to || 'recipient'}`, 'done');
         result = { tabId: gmTabId };
+        break;
+      }
+
+      case 'gmail_analyze_inbox': {
+        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const gmTabId = activeTab?.url?.includes('mail.google.com')
+          ? activeTab.id
+          : await openTabAndWait('https://mail.google.com', 'mail.google.com', 25000);
+        const [contentContext, domResult] = await Promise.all([
+          chrome.tabs.sendMessage(gmTabId, { type: 'ZULORA_GET_DOM_CONTEXT' }).catch(() => null),
+          injectAndRun(gmTabId, __zuloraUniversalExecutor, ['GMAIL_ANALYZE_INBOX', { limit: params.limit || 10 }], 3, 1200)
+        ]);
+        if (domResult?.error) throw new Error(domResult.error);
+        const gmTab = await chrome.tabs.get(gmTabId);
+        if (gmTab?.active === false) await chrome.tabs.update(gmTabId, { active: true });
+        const screenshot = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+        const contentEmails = Array.isArray(contentContext?.emailRows) ? contentContext.emailRows.map(row => ({
+          sender: row.sender || '', subject: row.subject || '', date: row.date || '', preview: row.preview || '', rowText: row.text || ''
+        })) : [];
+        const domEmails = Array.isArray(domResult?.emails) ? domResult.emails : [];
+        const combinedDomEmails = domEmails.length ? domEmails : contentEmails;
+        const domText = JSON.stringify({ visibleRowsText: domResult?.visibleRowsText || contentEmails.map(row => row.rowText), emails: combinedDomEmails });
+        const vision = await executeGeminiVision(
+          `Extract the top ${Math.max(1, Number(params.limit) || 10)} visible Gmail inbox messages. Return ONLY a JSON array. Each row must contain sender, subject, date, and preview. Use the screenshot and DOM nodes; do not invent missing values.`,
+          screenshot,
+          domText
+        );
+        if (vision.success) broadcastTokenUsage(vision.tokensUsed || 0);
+        let visionEmails = [];
+        try {
+          const rawJson = String(vision.text || '').replace(/```json?|```/gi, '').match(/\[[\s\S]*\]/)?.[0];
+          const parsed = rawJson ? JSON.parse(rawJson) : [];
+          if (Array.isArray(parsed)) visionEmails = parsed.map(item => ({
+            sender: String(item.sender || item.from || ''),
+            subject: String(item.subject || ''),
+            date: String(item.date || item.receivedAt || ''),
+            preview: String(item.preview || item.snippet || item.previewSnippet || '')
+          }));
+        } catch (error) {
+          log('Gmail Vision: Could not parse structured rows', 'running', error.message);
+        }
+        const sourceEmails = visionEmails.length ? visionEmails : combinedDomEmails;
+        const emails = sourceEmails.slice(0, Math.max(1, Math.min(50, Number(params.limit) || 10))).map((email, index) => ({
+          sender: String(email.sender || domEmails[index]?.sender || ''),
+          subject: String(email.subject || domEmails[index]?.subject || ''),
+          date: String(email.date || domEmails[index]?.date || ''),
+          preview: String(email.preview || domEmails[index]?.preview || email.rowText || domEmails[index]?.rowText || '')
+        }));
+        if (!emails.length) {
+          throw new Error(vision.error || 'Gmail inbox rows were not found in the DOM or screenshot.');
+        }
+        const csv = ['Sender,Subject,Date,Preview', ...emails.map(email => [email.sender, email.subject, email.date, email.preview]
+          .map(value => `"${String(value || '').replace(/"/g, '""')}"`).join(','))].join('\r\n');
+        latestTaskOutput = { type: 'GMAIL_ANALYSIS_RESULT', emails, csv, source: visionEmails.length ? 'vision+dom' : 'dom', updatedAt: Date.now() };
+        await setLatestScreenshot(screenshot);
+        await persistQueueState();
+        broadcastStatus();
+        log(`Gmail: Analyzed ${emails.length} inbox email(s)`, 'done', `Structured fields: sender, subject, date, preview; ${latestTaskOutput.source}`);
+        result = latestTaskOutput;
+        break;
+      }
+
+      case 'export_data_to_sheets': {
+        if (!latestTaskOutput?.emails?.length) throw new Error('Analyze the Gmail inbox before exporting it to Sheets.');
+        const csv = latestTaskOutput.csv || '';
+        const filename = String(params.filename || 'gmail-inbox.csv').replace(/[\\/:*?"<>|]/g, '-') || 'gmail-inbox.csv';
+        const dataUrl = `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
+        await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
+        const tab = await chrome.tabs.create({ url: 'https://sheets.new', active: true });
+        log('Google Sheets: CSV prepared and downloaded', 'done', `Open ${filename} or paste its contents into the new sheet.`);
+        result = { filename, tabId: tab.id, url: 'https://sheets.new', csv };
         break;
       }
 
@@ -1185,7 +1363,7 @@ async function executeStep(step) {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
         const tab = tabs[0];
         if (!tab?.windowId) throw new Error('No active window');
-        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 70 });
+        const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
         await setLatestScreenshot(dataUrl);
         log(`Screenshot captured`, 'done');
         result = { screenshotCaptured: true, screenshot: dataUrl };
@@ -1208,7 +1386,7 @@ async function executeStep(step) {
 
         log(`AI Brain: Reasoning...`, 'running');
         const aiRes = await executeAiWaterfall(aiPrompt, params.systemInstruction);
-        if (aiRes?.tokensUsed) broadcastTokenUsage(aiRes.tokensUsed);
+        if (aiRes?.success) broadcastTokenUsage(aiRes.tokensUsed || 0);
         if (!aiRes.success) {
           // Graceful: log and continue rather than throwing and halting queue
           log(`AI Brain: No response from providers, skipping step`, 'done');
@@ -1233,7 +1411,7 @@ async function executeStep(step) {
         }
         if (res?.error) {
           let screenshot = '';
-          try { screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 55 }); } catch {}
+          try { screenshot = await chrome.tabs.captureVisibleTab(null, { format: 'png' }); } catch {}
           if (screenshot) await setLatestScreenshot(screenshot);
           const coordinateMap = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['SCREEN_COORDINATE_MAP', {}], 1, 0).catch(() => []);
           const wanted = String(params.target || params.selector || '').toLowerCase();
@@ -1260,7 +1438,7 @@ async function executeStep(step) {
         }
         if (res?.error) {
           let screenshot = '';
-          try { screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 55 }); } catch {}
+          try { screenshot = await chrome.tabs.captureVisibleTab(null, { format: 'png' }); } catch {}
           if (screenshot) await setLatestScreenshot(screenshot);
           const coordinateMap = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['SCREEN_COORDINATE_MAP', {}], 1, 0).catch(() => []);
           const wanted = String(params.target || params.selector || '').toLowerCase();
@@ -1373,7 +1551,7 @@ async function runQueue() {
           let screenshot = '';
           try {
             if (curTab.windowId) {
-              screenshot = await chrome.tabs.captureVisibleTab(curTab.windowId, { format: 'jpeg', quality: 50 });
+              screenshot = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
             }
           } catch {}
           if (screenshot) await setLatestScreenshot(screenshot);
@@ -1442,6 +1620,8 @@ function normalizeBackgroundStep(raw) {
   if (['gemini', 'gemini_prompt'].includes(action)) return { action: 'gemini_prompt', params: { prompt: stringValue(source.prompt, source.message), includeScreenshot: Boolean(source.includeScreenshot || source.screenshot || /screenshot|screen shot/i.test(source.prompt || '')) } };
   if (['chatgpt', 'chatgpt_prompt'].includes(action)) return { action: 'chatgpt_prompt', params: { prompt: stringValue(source.prompt, source.message) } };
   if (['gmail', 'gmail_compose'].includes(action)) return { action: 'gmail_compose', params: { to: stringValue(source.to, source.recipient), subject: stringValue(source.subject), body: stringValue(source.body, source.message) } };
+  if (['gmail_analyze_inbox', 'gmail_read_inbox'].includes(action)) return { action: 'gmail_analyze_inbox', params: { limit: Math.max(1, Math.min(50, Number(source.limit || source.count) || 10)) } };
+  if (['export_data_to_sheets', 'export_to_sheets'].includes(action)) return { action: 'export_data_to_sheets', params: { filename: stringValue(source.filename, 'gmail-inbox.csv') } };
   if (['capture_screenshot', 'screenshot', 'take_screenshot'].includes(action)) return { action: 'capture_screenshot', params: {} };
   if (['read_screen', 'read_page_dom', 'extract_data'].includes(action)) return { action: 'read_screen', params: { deep: true } };
   if (action === 'autofill_form') return { action: 'autofill_form', params: { intent: stringValue(source.intent, source.prompt, source.value) } };
@@ -1451,6 +1631,16 @@ function normalizeBackgroundStep(raw) {
 }
 
 function planSimpleVoiceCommand(command) {
+  if (/\b(?:gmail|inbox|emails)\b/i.test(command) && /\b(?:analy[sz]e|read|extract|copy|summari[sz]e|first\s+\d+|top\s+\d+)\b/i.test(command)) {
+    const limit = Math.max(1, Math.min(50, Number(command.match(/\b(?:first|top)\s+(\d{1,2})\b/i)?.[1]) || 10));
+    const pipeline = [
+      { action: 'open_url', params: { url: 'https://mail.google.com' } },
+      { action: 'wait', params: { ms: 3000 } },
+      { action: 'gmail_analyze_inbox', params: { limit } }
+    ];
+    if (/\b(?:google\s+sheets|sheets|spreadsheet|csv|export)\b/i.test(command)) pipeline.push({ action: 'export_data_to_sheets', params: { filename: 'gmail-inbox.csv' } });
+    return pipeline;
+  }
   const parts = String(command || '').split(/\s*(?:->|→|;|\bafter that\b|\band then\b|\bthen\b|\bnext\b)\s*/i).map(value => value.trim()).filter(Boolean);
   const steps = parts.map(phase => {
     const lower = phase.toLowerCase();
@@ -1478,9 +1668,17 @@ function planSimpleVoiceCommand(command) {
 }
 
 async function planVoiceCommand(command) {
-  const systemPrompt = 'Convert the command into a JSON array of atomic browser steps. Output only JSON. Allowed actions: OPEN_URL {url}, TYPE_TEXT {selector,target,text}, CLICK {selector,target}, AUTOFILL_FORM {intent}, CAPTURE_SCREENSHOT {}, GEMINI_PROMPT {prompt,includeScreenshot}, CHATGPT_PROMPT {prompt}, WHATSAPP_SEND {recipient,message}, GMAIL_COMPOSE {to,subject,body}, READ_SCREEN {}, WAIT {ms}. Preserve the requested order. Include a screenshot before GEMINI_PROMPT when the user asks to send a screenshot to Gemini.';
-  const result = await executeAiWaterfall(command, systemPrompt);
-  if (result.tokensUsed) broadcastTokenUsage(result.tokensUsed);
+  if (/\b(?:gmail|inbox|emails)\b/i.test(command) && /\b(?:analy[sz]e|read|extract|copy|summari[sz]e|first\s+\d+|top\s+\d+)\b/i.test(command)) {
+    return planSimpleVoiceCommand(command);
+  }
+  const systemPrompt = 'Convert the command into a JSON array of atomic browser steps. Output only JSON. Allowed actions: OPEN_URL {url}, TYPE_TEXT {selector,target,text}, CLICK {selector,target}, AUTOFILL_FORM {intent}, CAPTURE_SCREENSHOT {}, GEMINI_PROMPT {prompt,includeScreenshot}, CHATGPT_PROMPT {prompt}, WHATSAPP_SEND {recipient,message}, GMAIL_COMPOSE {to,subject,body}, GMAIL_ANALYZE_INBOX {limit}, EXPORT_DATA_TO_SHEETS {filename}, READ_SCREEN {}, WAIT {ms}. Gmail analyze/read/extract/copy/summarize requests must use GMAIL_ANALYZE_INBOX and must never become GMAIL_COMPOSE. Preserve order; inbox analysis must open https://mail.google.com, wait 3000ms, then analyze. Include a screenshot before GEMINI_PROMPT when the user asks to send a screenshot to Gemini.';
+  let result;
+  try { result = await executeAiWaterfall(command, systemPrompt); }
+  catch (error) {
+    log('LLM Planner: Using deterministic command parser', 'error', error.message);
+    return planSimpleVoiceCommand(command);
+  }
+  if (result.success) broadcastTokenUsage(result.tokensUsed || 0);
   if (result.success && result.text) {
     try {
       const json = result.text.replace(/```json?|```/gi, '').match(/\[[\s\S]*\]/)?.[0];
@@ -1511,14 +1709,20 @@ async function handleAgentTask(payload) {
 
   if (payload.type === 'ZULORA_RUN_TASK' || payload.steps) {
     hasReceivedTaskMessage = true;
+    actionLog = [];
+    latestTaskOutput = null;
+    taskTokensUsed = 0;
+    currentStepIndex = 0;
+    taskStatus       = 'running';
     taskQueue        = Array.isArray(payload.steps) ? payload.steps : [];
     if (!taskQueue.length && (payload.command || payload.voiceCommand)) {
       taskQueue = await planVoiceCommand(payload.command || payload.voiceCommand);
     }
-    if (!taskQueue.length) return { ok: false, success: false, error: 'No browser steps could be planned from this command.' };
-    actionLog        = [];
-    currentStepIndex = 0;
-    taskStatus       = 'idle';
+    if (!taskQueue.length) {
+      taskStatus = 'error';
+      log('No browser steps could be planned from this command.', 'error');
+      return { ok: false, success: false, error: 'No browser steps could be planned from this command.' };
+    }
     isCancelled      = false;
     await setLatestScreenshot('');
     await persistQueueState();
@@ -1628,6 +1832,7 @@ chrome.storage.local.get([...QUEUE_STORAGE_KEYS, 'zuloraApiKeys'], (saved) => {
   taskQueue = saved.zulora_agent_queue;
   currentStepIndex = Math.max(0, Number(saved.zulora_agent_queue_index) || 0);
   actionLog = Array.isArray(saved.zulora_agent_log) ? saved.zulora_agent_log : [];
+  latestTaskOutput = saved.zulora_agent_output || null;
   taskStatus = saved.zulora_agent_status || 'idle';
   if (taskStatus === 'running' && currentStepIndex < taskQueue.length) runQueue();
 });
