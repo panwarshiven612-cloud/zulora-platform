@@ -27,6 +27,10 @@ let taskStatus = 'idle';
 let actionLog = [];
 let currentStepIndex = 0;
 let isCancelled = false;
+let isQueueRunning = false;
+let hasReceivedTaskMessage = false;
+let latestScreenshotDataUrl = '';
+const QUEUE_STORAGE_KEYS = ['zulora_agent_queue', 'zulora_agent_queue_index', 'zulora_agent_status', 'zulora_agent_log'];
 
 let cachedApiKeys = {
   geminiKeys: [],
@@ -80,9 +84,7 @@ function broadcastStatus() {
     chrome.tabs.query({}, (tabs) => {
       if (!tabs) return;
       tabs.forEach(tab => {
-        if (tab.id && tab.url && isZuloraOrigin(tab.url)) {
-          chrome.tabs.sendMessage(tab.id, payload).catch(() => {});
-        }
+        if (tab.id && tab.url) chrome.tabs.sendMessage(tab.id, payload).catch(() => {});
       });
     });
   } catch {}
@@ -94,7 +96,7 @@ function broadcastTokenUsage(tokens) {
   chrome.tabs.query({}, (tabs) => {
     (tabs || []).forEach(tab => {
       if (tab.id && tab.url && isZuloraOrigin(tab.url)) {
-        chrome.tabs.sendMessage(tab.id, { type: 'ZULORA_TOKEN_UPDATE', taskTokens: amount, delta: amount }).catch(() => {});
+        chrome.tabs.sendMessage(tab.id, { type: 'ZULORA_TOKEN_UPDATE', taskTokens: amount, delta: amount, source: 'extension' }).catch(() => {});
       }
     });
   });
@@ -118,6 +120,52 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function persistQueueState() {
+  return chrome.storage.local.set({
+    zulora_agent_queue: taskQueue,
+    zulora_agent_queue_index: currentStepIndex,
+    zulora_agent_status: taskStatus,
+    zulora_agent_log: actionLog.slice(-100)
+  }).catch(() => {});
+}
+
+async function persistScreenMemory(entry) {
+  try {
+    const saved = await chrome.storage.local.get('zulora_session_memory');
+    const memory = Array.isArray(saved.zulora_session_memory) ? saved.zulora_session_memory : [];
+    memory.push({
+      timestamp: entry.timestamp || Date.now(),
+      url: entry.url || '',
+      title: entry.title || '',
+      summary: String(entry.summary || '').slice(0, 1500),
+      step: entry.step || null,
+      status: entry.status || 'captured'
+    });
+    await chrome.storage.local.set({ zulora_session_memory: memory.slice(-12) });
+  } catch {}
+}
+
+async function setLatestScreenshot(dataUrl) {
+  latestScreenshotDataUrl = dataUrl || '';
+  if (chrome.storage.session) {
+    try {
+      if (latestScreenshotDataUrl) await chrome.storage.session.set({ zulora_latest_screenshot: latestScreenshotDataUrl });
+      else await chrome.storage.session.remove('zulora_latest_screenshot');
+    } catch {}
+  }
+}
+
+async function getLatestScreenshot() {
+  if (latestScreenshotDataUrl) return latestScreenshotDataUrl;
+  if (chrome.storage.session) {
+    try {
+      const saved = await chrome.storage.session.get('zulora_latest_screenshot');
+      latestScreenshotDataUrl = saved.zulora_latest_screenshot || '';
+    } catch {}
+  }
+  return latestScreenshotDataUrl;
+}
+
 // ─── 4. Direct App Routing Matrix (BUGFIX 3) ──────────────────────────────────
 const APP_ROUTING_MATRIX = {
   'gemini': 'https://gemini.google.com/app', 'google gemini': 'https://gemini.google.com/app',
@@ -125,6 +173,7 @@ const APP_ROUTING_MATRIX = {
   'chatgpt': 'https://chatgpt.com', 'chat gpt': 'https://chatgpt.com',
   'claude': 'https://claude.ai', 'perplexity': 'https://www.perplexity.ai',
   'whatsapp': 'https://web.whatsapp.com', 'whats app': 'https://web.whatsapp.com',
+  'zulora school': 'https://school.zulora.in', 'zulora drive': 'https://drive.zulora.in',
   'telegram': 'https://web.telegram.org', 'discord': 'https://discord.com/app',
   'slack': 'https://app.slack.com', 'github': 'https://github.com',
   'notion': 'https://www.notion.so', 'figma': 'https://www.figma.com',
@@ -156,19 +205,23 @@ function resolveDirectUrlBg(phrase) {
 
 // ─── 5. API Key Waterfall Brain — BUGFIX 4: Exponential Backoff Retry Engine ──
 async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemini-2.0-flash') {
+  const tierTimeoutMs = 1800;
 
-  // Helper: per-provider retry with exponential backoff; 429 → silent skip
-  const tryProvider = async (name, callFn, retries = 2) => {
+  const request = (url, options, timeoutMs = tierTimeoutMs) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
+    return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+  };
+
+  // Each provider tier gets one bounded attempt. A rate limit falls through immediately.
+  const tryProvider = async (name, callFn, retries = 1) => {
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
         const result = await callFn(attempt);
         if (result && result.success && result.text) return result;
         if (result && result._rateLimit) return null; // 429 silent skip
       } catch (e) {
-        if (attempt < retries) {
-          const backoffMs = Math.min(80 * Math.pow(2, attempt - 1), 350);
-          await sleep(backoffMs);
-        }
+        if (attempt < retries) await sleep(40);
       }
     }
     return null;
@@ -181,11 +234,11 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
   // ── Priority 1: Groq Llama-3.3-70b (Fastest <400ms) ──
   if (cachedApiKeys.groqKey) {
     const result = await tryProvider('Groq', async () => {
-      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      const res = await request('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cachedApiKeys.groqKey}` },
         body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages, max_tokens: 1024, temperature: 0.2 })
-      });
+      }, tierTimeoutMs);
       if (res.status === 429 || res.status === 403) return { _rateLimit: true };
       if (!res.ok) return null;
       const data = await res.json();
@@ -198,11 +251,11 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
   // ── Priority 2: Cerebras Llama-3.1-70b (<300ms ultra-fast) ──
   if (cachedApiKeys.cerebrasKey) {
     const result = await tryProvider('Cerebras', async () => {
-      const res = await fetch('https://api.cerebras.ai/v1/chat/completions', {
+      const res = await request('https://api.cerebras.ai/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cachedApiKeys.cerebrasKey}` },
         body: JSON.stringify({ model: 'llama3.1-70b', messages, max_tokens: 1024, temperature: 0.1 })
-      });
+      }, tierTimeoutMs);
       if (res.status === 429 || res.status === 403) return { _rateLimit: true };
       if (!res.ok) return null;
       const data = await res.json();
@@ -214,21 +267,26 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
 
   // ── Priority 3: Gemini REST key pool (2.0 Flash → 1.5 Flash) ──
   const keys = (cachedApiKeys.geminiKeys || []).filter(k => k && k.length > 20);
-  const modelsToTry = [...new Set(['gemini-2.0-flash', model, 'gemini-1.5-flash'])];
+  const modelsToTry = ['gemini-2.0-flash'];
+  const geminiDeadline = Date.now() + tierTimeoutMs;
 
   for (const apiKey of keys) {
+    const remainingMs = geminiDeadline - Date.now();
+    if (remainingMs <= 0) break;
     let keyRateLimited = false;
     for (const modelId of modelsToTry) {
       if (keyRateLimited) break;
+      const requestTimeout = Math.max(1, Math.min(tierTimeoutMs, geminiDeadline - Date.now()));
       const result = await tryProvider(`Gemini/${modelId}`, async () => {
         const body = {
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
         };
         if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
-        const res = await fetch(
+        const res = await request(
           `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`,
-          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+          requestTimeout
         );
         if (res.status === 429 || res.status === 403) { keyRateLimited = true; return { _rateLimit: true }; }
         if (!res.ok) return null;
@@ -243,11 +301,11 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
   // ── Priority 4: OpenRouter fallback ──
   if (cachedApiKeys.openRouterKey) {
     const result = await tryProvider('OpenRouter', async () => {
-      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      const res = await request('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cachedApiKeys.openRouterKey}`, 'HTTP-Referer': 'https://zulora.in' },
         body: JSON.stringify({ model: 'mistralai/mistral-7b-instruct', max_tokens: 512, messages })
-      });
+      }, tierTimeoutMs);
       if (res.status === 429 || res.status === 403) return { _rateLimit: true };
       if (!res.ok) return null;
       const data = await res.json();
@@ -260,6 +318,47 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
   // ── Priority 5: Graceful fallback — NEVER crash the agent UI ──
   console.warn('[Zulora SW Waterfall] All providers exhausted, using local deterministic fallback');
   return { success: false, text: '', error: null, provider: 'local_deterministic' };
+}
+
+async function executeGeminiVision(prompt, screenshotDataUrl) {
+  const keys = (cachedApiKeys.geminiKeys || []).filter(key => key && key.length > 20);
+  if (!keys.length) return { success: false, error: 'Add a Gemini API key in the Zulora extension settings to analyze screenshots.' };
+  const match = String(screenshotDataUrl || '').match(/^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i);
+  if (!match) return { success: false, error: 'No valid screenshot is available to send to Gemini.' };
+  const deadline = Date.now() + 1800;
+
+  for (const apiKey of keys) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    try {
+      const response = await requestGeminiVision(apiKey, prompt, match[1], match[2], remaining);
+      if (response?.status === 429 || response?.status === 403) continue;
+      if (!response?.ok) continue;
+      const data = await response.json();
+      const text = data?.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('').trim();
+      if (text) return {
+        success: true,
+        text,
+        provider: 'gemini-2.0-flash-vision',
+        tokensUsed: Number(data?.usageMetadata?.totalTokenCount) || 0
+      };
+    } catch {}
+  }
+  return { success: false, error: 'Gemini screenshot analysis failed or timed out.' };
+}
+
+function requestGeminiVision(apiKey, prompt, mimeType, imageData, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
+  return fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt || 'Describe the screenshot.' }, { inline_data: { mime_type: mimeType, data: imageData } }] }],
+      generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
+    }),
+    signal: controller.signal
+  }).finally(() => clearTimeout(timer));
 }
 
 // ─── 5. Dynamic Tab Creator & Loader ──────────────────────────────────────────
@@ -320,6 +419,15 @@ async function injectAndRun(tabId, func, args = [], maxRetries = 3, retryDelay =
 function __zuloraUniversalExecutor(action, payload) {
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+  async function waitForPageReady(timeout = 5000) {
+    if (document.readyState === 'complete' || document.readyState === 'interactive') return true;
+    await Promise.race([
+      new Promise(resolve => window.addEventListener('DOMContentLoaded', resolve, { once: true })),
+      sleep(timeout)
+    ]);
+    return document.readyState !== 'loading';
+  }
+
   async function waitFor(selectors, timeout = 12000) {
     const list = Array.isArray(selectors) ? selectors : [selectors];
     const deadline = Date.now() + timeout;
@@ -339,12 +447,15 @@ function __zuloraUniversalExecutor(action, payload) {
       : String(text || '');
     if (el.isContentEditable) {
       el.focus();
-      el.innerText = safeText;
-      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.replaceChildren();
+      el.appendChild(document.createTextNode(safeText));
+      el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: safeText, bubbles: true }));
     } else {
       el.focus();
-      el.value = safeText;
-      el.dispatchEvent(new Event('input', { bubbles: true }));
+      const prototype = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      valueSetter ? valueSetter.call(el, safeText) : (el.value = safeText);
+      el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: safeText, bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     }
   }
@@ -384,26 +495,38 @@ function __zuloraUniversalExecutor(action, payload) {
   // ── Individual Action Handlers ──
 
   async function whatsapp(contactName, message) {
+    await waitForPageReady(5000);
     const phone = String(contactName || '').replace(/[^+\d]/g, '');
     if (phone.length >= 7 && /^[+\d\s().-]+$/.test(String(contactName || ''))) {
       location.href = `https://web.whatsapp.com/send?phone=${encodeURIComponent(phone.replace(/^\+/, ''))}`;
       await sleep(2500);
     }
-    const searchBox = await waitFor([
+    const whatsappSearchSelectors = [
       'div[contenteditable="true"][data-tab="3"]',
-      'div[contenteditable="true"][title*="Search"]',
-      '#side div[contenteditable="true"]'
-    ], 18000);
-    if (!searchBox) return { error: 'WhatsApp search box not found. Ensure WhatsApp Web is loaded & logged in.' };
+      'div[title="Search input box"]',
+      'div[role="textbox"]',
+      'p.selectable-text'
+    ];
+    let searchBox = await waitFor(whatsappSearchSelectors, 5000);
+    if (searchBox?.tagName === 'P' && !searchBox.isContentEditable) searchBox = searchBox.closest('[contenteditable="true"]');
+    if (searchBox?.getAttribute('role') === 'textbox') {
+      const bounds = searchBox.getBoundingClientRect();
+      if (bounds.left > innerWidth * 0.48 && !/search/i.test(`${searchBox.title} ${searchBox.getAttribute('aria-label') || ''}`)) searchBox = null;
+    }
+    if (!searchBox) return { error: 'WhatsApp search box not found after the 5 second page wait.', visionFallback: true };
 
     insertText(searchBox, contactName);
     await sleep(1500);
 
-    const contact = await waitFor([
+    let contact = await waitFor([
       '#pane-side div[role="listitem"]',
       '#pane-side [data-testid="cell-frame-container"]',
       'div[role="listitem"] div[tabindex="-1"]'
     ], 8000);
+    if (contactName && contact) {
+      const matches = Array.from(document.querySelectorAll('#pane-side [role="listitem"], #pane-side [data-testid="cell-frame-container"], [role="listitem"]'));
+      contact = matches.find(el => (el.innerText || el.getAttribute('aria-label') || '').toLowerCase().includes(String(contactName).toLowerCase())) || contact;
+    }
     if (!contact) return { error: `Contact "${contactName}" not found.` };
     contact.click();
     await sleep(1200);
@@ -418,8 +541,75 @@ function __zuloraUniversalExecutor(action, payload) {
     insertText(msgInput, message);
     await sleep(400);
     const sendBtn = document.querySelector('[data-icon="send"], button[aria-label*="Send" i], span[data-icon="send"]');
-    if (sendBtn) sendBtn.click(); else pressEnter(msgInput);
+    if (sendBtn) (sendBtn.closest('button') || sendBtn).click(); else pressEnter(msgInput);
     return { success: true, contact: contactName };
+  }
+
+  function screenCoordinateMap() {
+    return Array.from(document.querySelectorAll('a,button,input,textarea,[role="button"],[role="link"],[role="textbox"],[contenteditable="true"]')).map((el, index) => {
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height || r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) return null;
+      const label = (el.innerText || el.getAttribute('aria-label') || el.placeholder || el.title || el.getAttribute('data-testid') || '').trim().slice(0, 100);
+      return {
+        index, label, title: el.title || '', ariaLabel: el.getAttribute('aria-label') || '',
+        placeholder: el.getAttribute('placeholder') || '', role: el.getAttribute('role') || '',
+        x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
+        left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height),
+        tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || '', name: el.getAttribute('name') || '',
+        id: el.id || '', contentEditable: Boolean(el.isContentEditable), viewportWidth: innerWidth
+      };
+    }).filter(Boolean).slice(0, 120);
+  }
+
+  function elementAtPoint(x, y) {
+    const hit = document.elementFromPoint(Number(x), Number(y));
+    return hit?.closest('input,textarea,[contenteditable="true"],[role="textbox"]') || hit;
+  }
+
+  function typeAtCoordinate(x, y, text) {
+    const el = elementAtPoint(x, y);
+    if (!el) return { error: 'No input element at the recovered screen coordinate.' };
+    el.scrollIntoView({ block: 'center' });
+    el.focus?.();
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: Number(x), clientY: Number(y) }));
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: Number(x), clientY: Number(y) }));
+    el.click?.();
+    insertText(el, text);
+    return { success: true, typed: true, x: Number(x), y: Number(y) };
+  }
+
+  async function whatsappVisionFallback(contactName, message, searchPoint) {
+    await waitForPageReady(5000);
+    let searchBox = await waitFor([
+      'div[contenteditable="true"][data-tab="3"]', 'div[title="Search input box"]',
+      'div[role="textbox"]', 'p.selectable-text'
+    ], 1200);
+    if (!searchBox && searchPoint) searchBox = elementAtPoint(searchPoint.x, searchPoint.y);
+    if (!searchBox) return { error: 'Vision fallback could not locate a WhatsApp search input.' };
+    searchBox.focus?.();
+    searchBox.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: searchPoint?.x || 0, clientY: searchPoint?.y || 0 }));
+    searchBox.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: searchPoint?.x || 0, clientY: searchPoint?.y || 0 }));
+    searchBox.click?.();
+    insertText(searchBox, contactName);
+    await sleep(900);
+    const match = await waitFor([
+      '#pane-side [role="listitem"]', '#pane-side [data-testid="cell-frame-container"]', '[role="listitem"]'
+    ], 5000);
+    const candidates = Array.from(document.querySelectorAll('#pane-side [role="listitem"], #pane-side [data-testid="cell-frame-container"], [role="listitem"]'));
+    const contact = candidates.find(el => (el.innerText || el.getAttribute('aria-label') || '').toLowerCase().includes(String(contactName).toLowerCase())) || match;
+    if (!contact) return { error: `Vision fallback could not find contact "${contactName}".` };
+    contact.click();
+    await sleep(800);
+    const messageInput = await waitFor([
+      'footer div[contenteditable="true"][data-tab="10"]',
+      'footer div[contenteditable="true"]', 'footer [role="textbox"]'
+    ], 5000);
+    if (!messageInput) return { error: 'Vision fallback could not locate the WhatsApp message box.' };
+    insertText(messageInput, message);
+    await sleep(300);
+    const sendBtn = document.querySelector('[data-icon="send"], button[aria-label*="Send" i], span[data-icon="send"]');
+    if (sendBtn) (sendBtn.closest('button') || sendBtn).click(); else pressEnter(messageInput);
+    return { success: true, contact: contactName, usedVisionFallback: true };
   }
 
   async function chatgpt(prompt, waitResponse) {
@@ -604,6 +794,8 @@ function __zuloraUniversalExecutor(action, payload) {
     if (!target) return { error: 'No interactive element at the requested screen coordinate.' };
     const clickable = target.closest('button,a,[role="button"],[role="link"],input[type="submit"],[onclick]') || target;
     clickable.focus?.();
+    clickable.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: Number(x), clientY: Number(y) }));
+    clickable.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: Number(x), clientY: Number(y) }));
     clickable.click();
     return { success: true, clicked: true, x: Number(x), y: Number(y), label: (clickable.innerText || clickable.getAttribute('aria-label') || '').trim().slice(0, 80) };
   }
@@ -675,12 +867,14 @@ function __zuloraUniversalExecutor(action, payload) {
   // ── Dispatcher ──
   switch (action) {
     case 'WHATSAPP':        return whatsapp(payload.contact, payload.message);
+    case 'WHATSAPP_VISION': return whatsappVisionFallback(payload.contact, payload.message, payload.searchPoint);
     case 'CHATGPT':         return chatgpt(payload.prompt, payload.waitResponse !== false);
     case 'GEMINI':          return gemini(payload.prompt, payload.waitResponse !== false);
     case 'GMAIL':           return gmail(payload.to, payload.subject, payload.bodyHtml);
     case 'READ_SCREEN':     return readScreen(payload.deep);
     case 'CLICK':           return clickEl(payload.selector, payload.target);
     case 'VISION_CLICK':    return clickVisionCoordinate(payload.x, payload.y);
+    case 'VISION_TYPE':     return typeAtCoordinate(payload.x, payload.y, payload.text);
     case 'TYPE':            return typeEl(payload.selector, payload.text, payload.target);
     case 'SCROLL':          return scrollPage(payload.direction);
     case 'DOWNLOAD_IMAGE':  return downloadImage(payload.target);
@@ -688,13 +882,58 @@ function __zuloraUniversalExecutor(action, payload) {
     case 'AUTOFILL':        return autofill(payload.fieldValues || {});
     case 'EVAL_TOP_RESULT': return evaluateTopResult();
     case 'GOOGLE_SESSION_SELECT': return selectGoogleProfile();
-    case 'SCREEN_COORDINATE_MAP': return Array.from(document.querySelectorAll('a,button,input,textarea,[role="button"],[role="link"],[contenteditable="true"]')).map((el, index) => {
-      const r = el.getBoundingClientRect();
-      if (!r.width || !r.height || r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) return null;
-      return { index, label: (el.innerText || el.getAttribute('aria-label') || el.placeholder || el.title || '').trim().slice(0, 80), x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), tag: el.tagName.toLowerCase() };
-    }).filter(Boolean).slice(0, 80);
+    case 'SCREEN_COORDINATE_MAP': return screenCoordinateMap();
     default:                return { error: 'Unknown action: ' + action };
   }
+}
+
+function __zuloraDriveUpload(html, fileName) {
+  return new Promise(async resolve => {
+    const safeName = String(fileName || 'index.html').replace(/[\\/:*?"<>|]/g, '-').slice(0, 120) || 'index.html';
+    const isVisible = element => Boolean(element && element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
+    const loginControl = Array.from(document.querySelectorAll('a,button,[role="button"]')).find(element =>
+      isVisible(element) && /sign in|log in|login|continue with google/i.test(element.innerText || element.getAttribute('aria-label') || '')
+    );
+    const uploadButton = document.querySelector('#newUploadBtn, #emptyUploadBtn, #headerUploadBtn, #mobileBottomUploadBtn');
+    if (loginControl && !isVisible(uploadButton)) {
+      resolve({ error: 'Sign in to Zulora Drive in the opened tab, then try the export again.', requiresLogin: true });
+      return;
+    }
+    const input = document.querySelector('#fileUploadInput[type="file"]');
+    if (!input) {
+      resolve({ error: 'Zulora Drive upload control was not available on this page.' });
+      return;
+    }
+    const drawer = document.querySelector('#uploadDrawer');
+    const initiallyOpen = Boolean(drawer && isVisible(drawer));
+    const data = new DataTransfer();
+    const mimeType = safeName.toLowerCase().endsWith('.txt') ? 'text/plain;charset=utf-8' : 'text/html;charset=utf-8';
+    data.items.add(new File([String(html || '')], safeName, { type: mimeType, lastModified: Date.now() }));
+    input.files = data.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    const startedAt = Date.now();
+    const deadline = startedAt + 35000;
+    let observedOpen = initiallyOpen;
+    const poll = () => {
+      const status = document.querySelector('#uploadDrawerStatus')?.innerText || '';
+      const body = document.body?.innerText || '';
+      if (/upload failed|failed to upload|quota exceeded|not enough storage/i.test(`${status}\n${body.slice(-1600)}`)) {
+        resolve({ error: status.trim() || 'Zulora Drive reported an upload error.' });
+        return;
+      }
+      if (drawer && isVisible(drawer)) observedOpen = true;
+      if (observedOpen && drawer && !isVisible(drawer) && Date.now() - startedAt > 1200) {
+        resolve({ success: true, fileName: safeName, message: `Uploaded ${safeName} to Zulora Drive.` });
+        return;
+      }
+      if (Date.now() >= deadline) {
+        resolve({ success: true, queued: true, fileName: safeName, message: `Sent ${safeName} to Zulora Drive. Check the Drive upload panel for status.` });
+        return;
+      }
+      setTimeout(poll, 350);
+    };
+    setTimeout(poll, 350);
+  });
 }
 
 // ─── 7. Step Execution Engine ─────────────────────────────────────────────────
@@ -850,7 +1089,22 @@ async function executeStep(step) {
           waTabId = await waitForTabComplete(matchingWa.id, 30000);
         } else waTabId = await openTabAndWait(waUrl, phone.length >= 7 ? null : 'web.whatsapp.com', 30000);
         await sleep(2500);
-        const waRes = await injectAndRun(waTabId, __zuloraUniversalExecutor, ['WHATSAPP', { contact, message }], 3, 2000);
+        let waRes = await injectAndRun(waTabId, __zuloraUniversalExecutor, ['WHATSAPP', { contact, message }], 3, 2000);
+        if (waRes?.visionFallback) {
+          const waTab = await chrome.tabs.get(waTabId);
+          let screenshot = '';
+          try { screenshot = await chrome.tabs.captureVisibleTab(waTab.windowId, { format: 'jpeg', quality: 55 }); } catch {}
+          if (screenshot) await setLatestScreenshot(screenshot);
+          const coordinateMap = await injectAndRun(waTabId, __zuloraUniversalExecutor, ['SCREEN_COORDINATE_MAP', {}], 1, 0).catch(() => []);
+          const inputs = (coordinateMap || []).filter(item => item.contentEditable || item.role === 'textbox' || ['input', 'textarea'].includes(item.tag));
+          const searchPoint = inputs.find(item => /search/i.test(`${item.label} ${item.title} ${item.ariaLabel} ${item.placeholder}`))
+            || inputs.find(item => item.x < (item.viewportWidth || 1280) * 0.48);
+          if (screenshot && searchPoint) {
+            waRes = await injectAndRun(waTabId, __zuloraUniversalExecutor, ['WHATSAPP_VISION', {
+              contact, message, searchPoint: { x: searchPoint.x, y: searchPoint.y }
+            }], 1, 0);
+          }
+        }
         if (waRes?.error) throw new Error(waRes.error);
         log(`WhatsApp: Sent to "${contact}"`, 'done');
         result = { tabId: waTabId, ...waRes };
@@ -871,13 +1125,30 @@ async function executeStep(step) {
 
       case 'gemini_prompt': {
         const prompt = params.prompt || '';
-        log(`Gemini: Opening...`, 'running');
-        const gmTabId = await openTabAndWait('https://gemini.google.com/app', 'gemini.google.com', 20000);
-        await sleep(2000);
-        const gmRes = await injectAndRun(gmTabId, __zuloraUniversalExecutor, ['GEMINI', { prompt, waitResponse: params.waitResponse !== false }], 3, 2000);
-        if (gmRes?.error) throw new Error(gmRes.error);
-        log(`Gemini: Prompt submitted`, 'done', gmRes?.response?.slice(0, 100) || '');
-        result = { tabId: gmTabId, ...gmRes };
+        if (params.includeScreenshot) {
+          log('Gemini: Sending captured screenshot...', 'running');
+          let screenshot = await getLatestScreenshot();
+          if (!screenshot) {
+            const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (tabs[0]?.windowId) {
+              screenshot = await chrome.tabs.captureVisibleTab(tabs[0].windowId, { format: 'jpeg', quality: 55 });
+              await setLatestScreenshot(screenshot);
+            }
+          }
+          const visionResult = await executeGeminiVision(prompt, screenshot);
+          if (!visionResult.success) throw new Error(visionResult.error || 'Gemini image request failed.');
+          if (visionResult.tokensUsed) broadcastTokenUsage(visionResult.tokensUsed);
+          log('Gemini: Screenshot analyzed', 'done', visionResult.text.slice(0, 160));
+          result = visionResult;
+        } else {
+          log(`Gemini: Opening...`, 'running');
+          const gmTabId = await openTabAndWait('https://gemini.google.com/app', 'gemini.google.com', 20000);
+          await sleep(2000);
+          const gmRes = await injectAndRun(gmTabId, __zuloraUniversalExecutor, ['GEMINI', { prompt, waitResponse: params.waitResponse !== false }], 3, 2000);
+          if (gmRes?.error) throw new Error(gmRes.error);
+          log(`Gemini: Prompt submitted`, 'done', gmRes?.response?.slice(0, 100) || '');
+          result = { tabId: gmTabId, ...gmRes };
+        }
         break;
       }
 
@@ -914,9 +1185,10 @@ async function executeStep(step) {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
         const tab = tabs[0];
         if (!tab?.windowId) throw new Error('No active window');
-        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 70 });
+        await setLatestScreenshot(dataUrl);
         log(`Screenshot captured`, 'done');
-        result = { screenshot: dataUrl };
+        result = { screenshotCaptured: true, screenshot: dataUrl };
         break;
       }
 
@@ -959,12 +1231,13 @@ async function executeStep(step) {
           await sleep(1000);
           res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['CLICK', { target: params.target }]);
         }
-        if (res?.error && params.target) {
+        if (res?.error) {
           let screenshot = '';
           try { screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 55 }); } catch {}
+          if (screenshot) await setLatestScreenshot(screenshot);
           const coordinateMap = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['SCREEN_COORDINATE_MAP', {}], 1, 0).catch(() => []);
-          const wanted = String(params.target).toLowerCase();
-          const match = (coordinateMap || []).find(item => item.label?.toLowerCase().includes(wanted));
+          const wanted = String(params.target || params.selector || '').toLowerCase();
+          const match = (coordinateMap || []).find(item => `${item.label} ${item.ariaLabel} ${item.title}`.toLowerCase().includes(wanted));
           if (screenshot && match) res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['VISION_CLICK', { x: match.x, y: match.y }], 1, 0);
         }
         if (res?.error) throw new Error(res.error);
@@ -984,6 +1257,16 @@ async function executeStep(step) {
         if (res?.error && params.target) {
           await sleep(1000);
           res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['TYPE', { target: params.target, text: textToFill }]);
+        }
+        if (res?.error) {
+          let screenshot = '';
+          try { screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 55 }); } catch {}
+          if (screenshot) await setLatestScreenshot(screenshot);
+          const coordinateMap = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['SCREEN_COORDINATE_MAP', {}], 1, 0).catch(() => []);
+          const wanted = String(params.target || params.selector || '').toLowerCase();
+          const editable = (coordinateMap || []).filter(item => ['input', 'textarea'].includes(item.tag) || item.contentEditable || item.role === 'textbox');
+          const match = editable.find(item => `${item.label} ${item.ariaLabel} ${item.title} ${item.placeholder} ${item.name} ${item.id}`.toLowerCase().includes(wanted)) || editable[0];
+          if (screenshot && match) res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['VISION_TYPE', { x: match.x, y: match.y, text: textToFill }], 1, 0);
         }
         if (res?.error) throw new Error(res.error);
         log(`Agent 2 Typed into: ${params.selector || params.target || 'input'}`, 'done');
@@ -1068,14 +1351,18 @@ async function executeStep(step) {
 
 // ─── 8. Queue Runner ──────────────────────────────────────────────────────────
 async function runQueue() {
+  if (isQueueRunning) return;
+  isQueueRunning = true;
   isCancelled = false;
   taskStatus = 'running';
+  await persistQueueState();
   broadcastStatus();
 
   while (currentStepIndex < taskQueue.length) {
     if (taskStatus === 'paused' || taskStatus === 'error' || isCancelled) break;
     try {
-      const res = await executeStep(taskQueue[currentStepIndex]);
+      const stepIndex = currentStepIndex;
+      const res = await executeStep(taskQueue[stepIndex]);
       if (res?.paused) break;
 
       // ── Agent 3: Vision & Screen Reasoning Verifier ──
@@ -1089,19 +1376,26 @@ async function runQueue() {
               screenshot = await chrome.tabs.captureVisibleTab(curTab.windowId, { format: 'jpeg', quality: 50 });
             }
           } catch {}
+          if (screenshot) await setLatestScreenshot(screenshot);
 
+          const [domSnapshot, coordinateMap] = await Promise.all([
+            injectAndRun(curTab.id, __zuloraUniversalExecutor, ['READ_SCREEN', { deep: false }], 1, 0).catch(() => null),
+            injectAndRun(curTab.id, __zuloraUniversalExecutor, ['SCREEN_COORDINATE_MAP', {}], 1, 0).catch(() => [])
+          ]);
           const screenMemoryPayload = {
             type: 'ZULORA_SCREEN_STATE_UPDATE',
-            stepIndex: currentStepIndex + 1,
+            stepIndex: stepIndex + 1,
             totalSteps: taskQueue.length,
-            stepAction: taskQueue[currentStepIndex]?.action,
+            stepAction: taskQueue[stepIndex]?.action,
             url: curTab.url || '',
-            title: curTab.title || '',
+            title: curTab.title || domSnapshot?.title || '',
+            summary: String(domSnapshot?.bodyText || '').slice(0, 1500),
             screenshot,
-            coordinateMap: await injectAndRun(curTab.id, __zuloraUniversalExecutor, ['SCREEN_COORDINATE_MAP', {}], 1, 0).catch(() => []),
+            coordinateMap,
             status: 'verified',
             timestamp: Date.now()
           };
+          await persistScreenMemory(screenMemoryPayload);
 
           chrome.tabs.query({}, (tabs) => {
             tabs.forEach(t => {
@@ -1118,47 +1412,142 @@ async function runQueue() {
       await sleep(250);
     } catch {
       taskStatus = 'error';
+      await persistQueueState();
       broadcastStatus();
+      isQueueRunning = false;
       return;
     }
     currentStepIndex++;
+    await persistQueueState();
   }
 
   if (taskStatus === 'running') {
     taskStatus = 'done';
     safeNotify('✅ Zulora Task Complete', `Completed all ${taskQueue.length} step(s)!`);
-    broadcastStatus();
   }
+  await persistQueueState();
+  broadcastStatus();
+  isQueueRunning = false;
 }
 
 // ─── 9. Task Dispatcher ───────────────────────────────────────────────────────
+function normalizeBackgroundStep(raw) {
+  const action = String(raw?.action || raw?.type || '').toLowerCase();
+  const source = raw?.params && typeof raw.params === 'object' ? { ...raw, ...raw.params } : raw || {};
+  const stringValue = (...values) => String(values.find(value => value !== undefined && value !== null) || '');
+  if (['navigate', 'open_url', 'open', 'go_to'].includes(action)) return { action: 'open_url', params: { url: stringValue(source.url, resolveDirectUrlBg(source.target || source.app), 'https://www.google.com') } };
+  if (['type', 'type_text', 'fill_input'].includes(action)) return { action: 'type_text', params: { selector: source.selector, target: source.target, text: stringValue(source.text, source.value) } };
+  if (['click', 'click_element'].includes(action)) return { action: 'click_element', params: { selector: source.selector, target: source.target || source.label } };
+  if (['whatsapp', 'whatsapp_send'].includes(action)) return { action: 'whatsapp_send', params: { recipient: stringValue(source.recipient, source.contact, source.to), message: stringValue(source.message, source.text) } };
+  if (['gemini', 'gemini_prompt'].includes(action)) return { action: 'gemini_prompt', params: { prompt: stringValue(source.prompt, source.message), includeScreenshot: Boolean(source.includeScreenshot || source.screenshot || /screenshot|screen shot/i.test(source.prompt || '')) } };
+  if (['chatgpt', 'chatgpt_prompt'].includes(action)) return { action: 'chatgpt_prompt', params: { prompt: stringValue(source.prompt, source.message) } };
+  if (['gmail', 'gmail_compose'].includes(action)) return { action: 'gmail_compose', params: { to: stringValue(source.to, source.recipient), subject: stringValue(source.subject), body: stringValue(source.body, source.message) } };
+  if (['capture_screenshot', 'screenshot', 'take_screenshot'].includes(action)) return { action: 'capture_screenshot', params: {} };
+  if (['read_screen', 'read_page_dom', 'extract_data'].includes(action)) return { action: 'read_screen', params: { deep: true } };
+  if (action === 'autofill_form') return { action: 'autofill_form', params: { intent: stringValue(source.intent, source.prompt, source.value) } };
+  if (action === 'wait') return { action: 'wait', params: { ms: Math.max(100, Math.min(5000, Number(source.ms) || 1000)) } };
+  if (action === 'search_google') return { action: 'search_google', params: { query: stringValue(source.query, source.prompt) } };
+  return null;
+}
+
+function planSimpleVoiceCommand(command) {
+  const parts = String(command || '').split(/\s*(?:->|→|;|\bafter that\b|\band then\b|\bthen\b|\bnext\b)\s*/i).map(value => value.trim()).filter(Boolean);
+  const steps = parts.map(phase => {
+    const lower = phase.toLowerCase();
+    if (/\b(?:take|capture|save)\s+(?:a\s+)?screenshot\b/.test(lower)) return { action: 'capture_screenshot', params: {} };
+    if (/\b(?:send|share|show|analy[sz]e|describe)\s+(?:the\s+)?(?:screenshot|screen shot|image)\b/.test(lower) && /gemini/i.test(lower)) {
+      return { action: 'gemini_prompt', params: { prompt: 'Analyze the screenshot of the current page and describe its contents.', includeScreenshot: true } };
+    }
+    if (/\b(?:fill|autofill)\s+(?:the\s+)?form\b/i.test(phase)) return { action: 'autofill_form', params: { intent: phase } };
+    if (/\b(?:whatsapp|whats app)\b/i.test(phase)) {
+      const recipient = phase.match(/\bto\s+(.+?)(?:\s+(?:saying|with|message)\b|$)/i)?.[1]?.trim() || '';
+      const message = phase.match(/\b(?:saying|message)\s+["']?(.+?)["']?$/i)?.[1]?.trim() || '';
+      return { action: 'whatsapp_send', params: { recipient, message } };
+    }
+    if (/\b(?:open|go to|visit|launch|navigate to)\b/i.test(phase)) {
+      const target = phase.replace(/^.*?\b(?:open|go to|visit|launch|navigate to)\s+/i, '').trim();
+      const url = resolveDirectUrlBg(target);
+      if (url) return { action: 'open_url', params: { url } };
+    }
+    if (/\b(?:read|summari[sz]e)\s+(?:the\s+)?screen\b/i.test(phase)) return { action: 'read_screen', params: { deep: true } };
+    if (/\bgemini\b/i.test(phase)) return { action: 'gemini_prompt', params: { prompt: phase, includeScreenshot: /screenshot|screen shot/i.test(phase) } };
+    if (/\bchat\s*gpt\b|\bchatgpt\b/i.test(phase)) return { action: 'chatgpt_prompt', params: { prompt: phase } };
+    return { action: 'ai_reasoning', params: { prompt: phase } };
+  });
+  return steps.filter(Boolean);
+}
+
+async function planVoiceCommand(command) {
+  const systemPrompt = 'Convert the command into a JSON array of atomic browser steps. Output only JSON. Allowed actions: OPEN_URL {url}, TYPE_TEXT {selector,target,text}, CLICK {selector,target}, AUTOFILL_FORM {intent}, CAPTURE_SCREENSHOT {}, GEMINI_PROMPT {prompt,includeScreenshot}, CHATGPT_PROMPT {prompt}, WHATSAPP_SEND {recipient,message}, GMAIL_COMPOSE {to,subject,body}, READ_SCREEN {}, WAIT {ms}. Preserve the requested order. Include a screenshot before GEMINI_PROMPT when the user asks to send a screenshot to Gemini.';
+  const result = await executeAiWaterfall(command, systemPrompt);
+  if (result.tokensUsed) broadcastTokenUsage(result.tokensUsed);
+  if (result.success && result.text) {
+    try {
+      const json = result.text.replace(/```json?|```/gi, '').match(/\[[\s\S]*\]/)?.[0];
+      const parsed = JSON.parse(json || 'null');
+      if (Array.isArray(parsed) && parsed.length) {
+        const normalized = parsed.map(normalizeBackgroundStep).filter(Boolean).slice(0, 12);
+        if (normalized.length) return normalized;
+      }
+    } catch {}
+  }
+  return planSimpleVoiceCommand(command);
+}
+
 async function handleAgentTask(payload) {
   if (!payload) return { ok: true };
 
+  if (payload.type === 'EXPORT_TO_DRIVE_FILE') {
+    if (!String(payload.html || '').trim()) return { ok: false, success: false, error: 'There is no generated HTML to upload.' };
+    try {
+      const driveTabId = await openTabAndWait('https://drive.zulora.in', 'drive.zulora.in', 30000);
+      const result = await injectAndRun(driveTabId, __zuloraDriveUpload, [payload.html, payload.fileName || 'index.html'], 2, 800);
+      if (result?.error) return { ok: false, success: false, ...result };
+      return { ok: true, success: true, ...result };
+    } catch (error) {
+      return { ok: false, success: false, error: `Could not upload to Zulora Drive: ${error.message}` };
+    }
+  }
+
   if (payload.type === 'ZULORA_RUN_TASK' || payload.steps) {
+    hasReceivedTaskMessage = true;
     taskQueue        = Array.isArray(payload.steps) ? payload.steps : [];
+    if (!taskQueue.length && (payload.command || payload.voiceCommand)) {
+      taskQueue = await planVoiceCommand(payload.command || payload.voiceCommand);
+    }
+    if (!taskQueue.length) return { ok: false, success: false, error: 'No browser steps could be planned from this command.' };
     actionLog        = [];
     currentStepIndex = 0;
     taskStatus       = 'idle';
     isCancelled      = false;
+    await setLatestScreenshot('');
+    await persistQueueState();
     runQueue();
     return { ok: true, success: true, queued: taskQueue.length };
   }
 
   if (payload.type === 'ZULORA_CANCEL' || payload.type === 'STOP_TASK') {
+    hasReceivedTaskMessage = true;
     isCancelled = true; taskQueue = []; actionLog = []; currentStepIndex = 0; taskStatus = 'idle';
+    await setLatestScreenshot('');
+    await persistQueueState();
     broadcastStatus();
     return { ok: true, success: true, stopped: true };
   }
 
   if (payload.type === 'ZULORA_PAUSE') {
-    taskStatus = 'paused'; broadcastStatus();
+    taskStatus = 'paused'; await persistQueueState(); broadcastStatus();
     return { ok: true };
   }
 
   if (payload.type === 'ZULORA_RESUME') {
-    if (taskStatus === 'paused') { currentStepIndex++; taskStatus = 'running'; runQueue(); }
+    if (taskStatus === 'paused') { taskStatus = 'running'; await persistQueueState(); runQueue(); }
     return { ok: true };
+  }
+
+  if (payload.type === 'SET_CONTINUOUS_LISTENING') {
+    await chrome.storage.local.set({ continuousListening: Boolean(payload.enabled) });
+    return { ok: true, enabled: Boolean(payload.enabled) };
   }
 
   if (payload.type === 'SYNC_API_KEYS') {
@@ -1168,7 +1557,7 @@ async function handleAgentTask(payload) {
   }
 
   if (payload.type === 'ZULORA_STATUS') {
-    return { ok: true, taskStatus, actionLog: [...actionLog], currentStep: currentStepIndex, totalSteps: taskQueue.length };
+    return { ok: true, taskStatus, actionLog: [...actionLog], currentStep: currentStepIndex, totalSteps: taskQueue.length, steps: taskQueue };
   }
 
   if (payload.type === 'PING') {
@@ -1230,6 +1619,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     .then(r => sendResponse({ success: true, ok: true, ...r }))
     .catch(e => sendResponse({ success: false, error: e.message }));
   return true;
+});
+
+chrome.storage.local.get([...QUEUE_STORAGE_KEYS, 'zuloraApiKeys'], (saved) => {
+  if (hasReceivedTaskMessage) return;
+  if (saved?.zuloraApiKeys) cachedApiKeys = { ...cachedApiKeys, ...saved.zuloraApiKeys };
+  if (!Array.isArray(saved?.zulora_agent_queue)) return;
+  taskQueue = saved.zulora_agent_queue;
+  currentStepIndex = Math.max(0, Number(saved.zulora_agent_queue_index) || 0);
+  actionLog = Array.isArray(saved.zulora_agent_log) ? saved.zulora_agent_log : [];
+  taskStatus = saved.zulora_agent_status || 'idle';
+  if (taskStatus === 'running' && currentStepIndex < taskQueue.length) runQueue();
 });
 
 console.log('[Zulora Computer Plugin v1.4] Service worker running. Keep-alive active.');

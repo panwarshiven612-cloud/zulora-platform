@@ -10,6 +10,7 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useAuth } from '../context/AuthContext';
 import UsageLimitsModal from '../components/UsageLimitsModal';
 import PricingModal from '../components/PricingModal';
+import CodingStudio from '../components/CodingStudio';
 import apiRouter from '../services/apiRouter';
 import { buildAIStudioUserPrompt } from '../services/aiStudioPrompt';
 import { firestoreService } from '../services/firestoreService';
@@ -118,6 +119,10 @@ export default function AIStudio({ onExitDashboard }) {
   const activeCode = artifact?.[codeTab] || (codeTab === 'html' ? artifact?.html : '') || '';
   const viewportWidth = viewport === 'mobile' ? '390px' : viewport === 'tablet' ? '768px' : '100%';
   const fileName = useMemo(() => `${(artifact?.title || 'index').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'index'}.html`, [artifact?.title]);
+
+  const applyDesignPreset = preset => {
+    setPrompt(previous => `${String(previous || '').trim()}${String(previous || '').trim() ? '\n\n' : 'Build a complete single-file web app.\n\n'}${preset.guidance}`);
+  };
 
   const showToast = useCallback(message => {
     setToast(message);
@@ -433,6 +438,7 @@ export default function AIStudio({ onExitDashboard }) {
     </header>
 
     <main className="relative z-10 flex min-h-0 flex-1 flex-col p-3 sm:p-4 lg:p-5">
+      <CodingStudio html={artifact?.html || ''} fileName={fileName} onApplyPreset={applyDesignPreset} onToast={showToast} showExports={Boolean(artifact) && !isGenerating} />
       {!artifact && !isGenerating ? <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col justify-center pb-8">
         <div className="mb-8 text-center"><div className="mx-auto mb-5 grid h-16 w-16 place-items-center rounded-[22px] border border-cyan-200/20 bg-gradient-to-br from-cyan-300/15 to-violet-400/20 text-cyan-100 shadow-[0_0_50px_rgba(79,162,255,.2)]"><Globe2 size={30} /></div><p className="mb-3 text-xs font-bold uppercase tracking-[.28em] text-cyan-200/70">Your ideas, live on the web</p><h1 className="text-4xl font-black tracking-tight sm:text-6xl">Build something <span className="bg-gradient-to-r from-violet-300 via-blue-300 to-cyan-200 bg-clip-text text-transparent">remarkable.</span></h1><p className="mx-auto mt-4 max-w-xl text-sm leading-6 text-slate-400 sm:text-base">Describe a website, then watch the interface take shape in a live, editable preview.</p></div>
         <div onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFile(event.dataTransfer.files?.[0]); }} className="rounded-[28px] border border-white/10 bg-[#111522]/85 p-3 shadow-[0_24px_90px_rgba(0,0,0,.4)] backdrop-blur-2xl ring-1 ring-white/[.025] sm:p-4">

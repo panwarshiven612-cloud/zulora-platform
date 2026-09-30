@@ -16,7 +16,7 @@ import {
 } from '../services/browserAgentEngine';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../services/firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, increment } from 'firebase/firestore';
 
 // ─── Status Badge Config ──────────────────────────────────────────────────────
 const STATUS_CONFIG = {
@@ -106,6 +106,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   const [floatingMicEnabled, setFloatingMicEnabled] = useState(() => {
     return localStorage.getItem('zulora_floating_mic') !== 'false';
   });
+  const [autoListenEnabled, setAutoListenEnabled] = useState(() => localStorage.getItem('zulora_continuous_listening') === 'true');
 
   const logEndRef = useRef(null);
   const inputRef  = useRef(null);
@@ -136,7 +137,14 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
         const userRef = doc(db, 'users', currentUser.uid);
         const snap = await getDoc(userRef);
         if (snap.exists() && isMounted) {
-          const data = snap.data()?.dailyPluginUsage;
+          const userData = snap.data() || {};
+          const savedTokens = Math.max(0, Number(userData.tokensUsed ?? userData.tokenUsage) || 0);
+          setSessionTokens(previous => {
+            const total = Math.max(previous, savedTokens, parseInt(localStorage.getItem('zulora_total_tokens') || '0', 10));
+            localStorage.setItem('zulora_total_tokens', String(total));
+            return total;
+          });
+          const data = userData.dailyPluginUsage;
           const today = getTodayDateString();
           if (data && data.date === today && typeof data.count === 'number') {
             setDailyUsage(prev => {
@@ -178,8 +186,16 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
         window.chrome.storage.local.set({ floatingMicEnabled: enabled });
       }
     } catch {}
-    const el = document.getElementById('zulora-voice-overlay');
+    const el = document.getElementById('zulora-voice-mic');
     if (el) el.style.display = enabled ? 'flex' : 'none';
+  }, []);
+
+  const toggleAutoListen = useCallback((enabled) => {
+    setAutoListenEnabled(enabled);
+    localStorage.setItem('zulora_continuous_listening', enabled ? 'true' : 'false');
+    window.dispatchEvent(new CustomEvent('ZULORA_EXECUTE_AGENT_TASK', {
+      detail: { type: 'SET_CONTINUOUS_LISTENING', enabled }
+    }));
   }, []);
 
   // ── Extension Connection Check ──────────────────────────────────────────────
@@ -230,14 +246,24 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
 
   useEffect(() => {
     const handleTokenUpdate = (e) => {
-      if (e.detail?.taskTokens) {
-        setTokenDelta(e.detail.delta || e.detail.taskTokens);
-        window.setTimeout(() => setTokenDelta(0), 5000);
+      const delta = Math.max(0, Number(e.detail?.delta ?? e.detail?.taskTokens) || 0);
+      if (!delta) return;
+      setTokenDelta(previous => previous + delta);
+      setSessionTokens(previous => {
+        const next = Math.max(previous, parseInt(localStorage.getItem('zulora_total_tokens') || '0', 10)) + delta;
+        if (e.detail?.source === 'extension') localStorage.setItem('zulora_total_tokens', String(next));
+        return next;
+      });
+      window.setTimeout(() => setTokenDelta(0), 5000);
+      if (e.detail?.source === 'extension' && currentUser?.uid && db) {
+        const userRef = doc(db, 'users', currentUser.uid);
+        setDoc(userRef, { tokensUsed: increment(delta), tokenUsage: increment(delta) }, { merge: true })
+          .catch(error => console.warn('[ComputerPluginModal] Extension token sync warning:', error.message));
       }
     };
     window.addEventListener('ZULORA_TOKEN_UPDATE', handleTokenUpdate);
     return () => window.removeEventListener('ZULORA_TOKEN_UPDATE', handleTokenUpdate);
-  }, []);
+  }, [currentUser?.uid]);
 
   // ── Live Action Plan Preview ────────────────────────────────────────────────
   useEffect(() => {
@@ -359,8 +385,11 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     }, currentUser);
 
     if (result.newTotalTokens !== undefined && result.newTotalTokens !== null) {
-      setSessionTokens(result.newTotalTokens);
-      localStorage.setItem('zulora_total_tokens', String(result.newTotalTokens));
+      setSessionTokens(previous => {
+        const next = Math.max(previous, parseInt(localStorage.getItem('zulora_total_tokens') || '0', 10), Number(result.newTotalTokens) || 0);
+        localStorage.setItem('zulora_total_tokens', String(next));
+        return next;
+      });
     } else if (result.tokensUsed) {
       recordTokens(result.tokensUsed);
     }
@@ -496,19 +525,22 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
               {isPro ? 'Unlimited Pro Runs' : `${Math.max(0, DAILY_RUN_LIMIT - dailyUsage)}/10 Runs Left Today`}
             </span>
           </div>
-          {/* Floating Mic Toggle */}
-          <button
-            onClick={() => toggleFloatingMic(!floatingMicEnabled)}
-            className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold transition-colors ${
-              floatingMicEnabled
-                ? 'bg-sky-100 dark:bg-sky-900/40 text-sky-600 dark:text-sky-400'
-                : 'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400'
-            }`}
-            title="Toggle floating mic widget on browser tabs"
-          >
-            <Mic className="w-2.5 h-2.5" />
-            Floating Mic {floatingMicEnabled ? 'ON' : 'OFF'}
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => toggleAutoListen(!autoListenEnabled)}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold transition-colors ${autoListenEnabled ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400' : 'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400'}`}
+              title="Resume speech listening after each completed task"
+            >
+              <Mic className="w-2.5 h-2.5" /> Auto-listen {autoListenEnabled ? 'ON' : 'OFF'}
+            </button>
+            <button
+              onClick={() => toggleFloatingMic(!floatingMicEnabled)}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold transition-colors ${floatingMicEnabled ? 'bg-sky-100 dark:bg-sky-900/40 text-sky-600 dark:text-sky-400' : 'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400'}`}
+              title="Toggle floating mic widget on browser tabs"
+            >
+              <Mic className="w-2.5 h-2.5" /> Floating Mic {floatingMicEnabled ? 'ON' : 'OFF'}
+            </button>
+          </div>
         </div>
 
 

@@ -17,7 +17,7 @@
  */
 
 import { db } from './firebase';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc, increment } from 'firebase/firestore';
 
 export const EXTENSION_ID = 'emimeingkoocmgljpjkpdnlnbkpkfbff';
 
@@ -51,6 +51,7 @@ export const ACTION_TYPES = {
   EXPORT_PDF:      'export_pdf',
   EXPORT_CODE:     'export_code',
   DOWNLOAD_FILE:   'download_file',
+  CAPTURE_SCREENSHOT: 'capture_screenshot',
   NOTIFY_USER:     'notify_user',
   EVAL_TOP_RESULT: 'evaluate_and_open_top_result',
 };
@@ -88,6 +89,8 @@ export const APP_ROUTING_MATRIX = {
   // Communication
   'whatsapp':        'https://web.whatsapp.com',
   'whats app':       'https://web.whatsapp.com',
+  'zulora school':   'https://school.zulora.in',
+  'zulora drive':    'https://drive.zulora.in',
   'telegram':        'https://web.telegram.org',
   'discord':         'https://discord.com/app',
   'slack':           'https://app.slack.com',
@@ -237,21 +240,24 @@ export async function generateEmailPayload(rawPrompt, template = TEMPLATES.PEARL
 
 // ─── Token Synchronization Engine ───────────────────────────────────────────────
 export async function syncTokenUsage(tokensConsumed, userId) {
-  if (!tokensConsumed || typeof tokensConsumed !== 'number') {
+  if (!Number.isFinite(Number(tokensConsumed)) || Number(tokensConsumed) <= 0) {
     return parseInt(localStorage.getItem('zulora_total_tokens') || '0', 10);
   }
+  const amount = Math.floor(Number(tokensConsumed));
   let currentTotal = parseInt(localStorage.getItem('zulora_total_tokens') || '0', 10);
-  currentTotal += tokensConsumed;
+  currentTotal += amount;
   localStorage.setItem('zulora_total_tokens', currentTotal.toString());
 
   if (userId && db && typeof doc === 'function') {
     try {
       const userRef = doc(db, 'users', userId);
+      await setDoc(userRef, {
+        tokensUsed: increment(amount),
+        tokenUsage: increment(amount)
+      }, { merge: true });
       const snap = await getDoc(userRef);
-      const dbTokens = snap.exists() ? parseInt(snap.data()?.tokenUsage || '0', 10) : 0;
-      const newTotal = Math.max(dbTokens, currentTotal);
-      await setDoc(userRef, { tokenUsage: newTotal }, { merge: true });
-      localStorage.setItem('zulora_total_tokens', newTotal.toString());
+      const newTotal = Math.max(currentTotal, Number(snap.data()?.tokensUsed || snap.data()?.tokenUsage) || 0);
+      localStorage.setItem('zulora_total_tokens', String(newTotal));
       return newTotal;
     } catch (e) {
       console.warn('[Zulora Token Engine] Firebase sync warning:', e.message);
@@ -419,16 +425,10 @@ export async function sendBridgeMessageWithRetry(detail, maxAttempts = 3, delayM
 export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
   const env = import.meta.env || {};
   const get = (k) => String(env[k] || '').trim();
-  const perProviderTimeoutMs = opts.timeoutMs || 2500;
+  const perProviderTimeoutMs = Math.min(Number(opts.timeoutMs) || 1800, 1800);
 
-  const withTimeout = (promise, ms) =>
-    Promise.race([
-      promise,
-      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))
-    ]);
-
-  // Exponential backoff helper: 2 retries per provider, skips on 429/403 immediately
-  const tryProvider = async (name, callFn, retries = 2) => {
+  // Try each tier once. Rate limits immediately fall through to the next provider.
+  const tryProvider = async (name, callFn, retries = 1) => {
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
         const result = await callFn(attempt);
@@ -439,25 +439,22 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
           return null;
         }
       } catch (e) {
-        const isTimeout = e.message === 'timeout';
-        if (attempt < retries && !isTimeout) {
-          const backoffMs = Math.min(100 * Math.pow(2, attempt - 1), 400);
-          await new Promise(r => setTimeout(r, backoffMs));
-        }
+        if (attempt < retries) await new Promise(r => setTimeout(r, 40));
       }
     }
     return null;
   };
 
-  const postJSON = (url, headers, body, timeoutMs = perProviderTimeoutMs) =>
-    withTimeout(
-      fetch(url, {
+  const postJSON = (url, headers, body, timeoutMs = perProviderTimeoutMs) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    return fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify(body)
-      }),
-      timeoutMs
-    );
+        body: JSON.stringify(body),
+        signal: controller.signal
+      }).finally(() => clearTimeout(timer));
+  };
 
   const messages = [
     ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
@@ -477,7 +474,7 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
           temperature: opts.temperature ?? 0.2,
           messages
         },
-        1800
+        perProviderTimeoutMs
       );
       if (res.status === 429 || res.status === 403) return { _rateLimit: true };
       if (!res.ok) return null;
@@ -502,7 +499,7 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
           temperature: 0.1,
           messages
         },
-        1500
+        perProviderTimeoutMs
       );
       if (res.status === 429 || res.status === 403) return { _rateLimit: true };
       if (!res.ok) return null;
@@ -519,10 +516,13 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
     get(`VITE_GEMINI_KEY_${i + 1}`) || get(`VITE_GEMINI_API_KEY_${i + 1}`)
   ).concat([get('VITE_GEMINI_API_KEY')]).filter(k => k && k.length > 20);
 
+  const geminiDeadline = Date.now() + perProviderTimeoutMs;
   for (const apiKey of geminiKeys) {
     let keyRateLimited = false;
-    for (const model of ['gemini-2.0-flash', 'gemini-1.5-flash']) {
+    for (const model of ['gemini-2.0-flash']) {
       if (keyRateLimited) break;
+      const remainingMs = geminiDeadline - Date.now();
+      if (remainingMs <= 0) break;
       const result = await tryProvider(`Gemini/${model}`, async () => {
         const res = await postJSON(
           `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
@@ -531,7 +531,7 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
             contents: [{ parts: [{ text: systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt }] }],
             generationConfig: { temperature: opts.temperature ?? 0.2, maxOutputTokens: opts.maxTokens || 1024 }
           },
-          2500
+          remainingMs
         );
         if (res.status === 429 || res.status === 403) {
           keyRateLimited = true;
@@ -555,7 +555,7 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
         'https://openrouter.ai/api/v1/chat/completions',
         { Authorization: `Bearer ${openRouterKey}`, 'HTTP-Referer': 'https://zulora.in' },
         { model: 'mistralai/mistral-7b-instruct', max_tokens: 512, messages },
-        2000
+        perProviderTimeoutMs
       );
       if (res.status === 429 || res.status === 403) return { _rateLimit: true };
       if (!res.ok) return null;
@@ -582,7 +582,7 @@ export const screenMemoryBuffer = [];
 
 export function recordScreenMemory(entry) {
   if (!entry) return;
-  screenMemoryBuffer.push({
+  const memoryEntry = {
     timestamp: Date.now(),
     url: entry.url || '',
     title: entry.title || '',
@@ -590,18 +590,30 @@ export function recordScreenMemory(entry) {
     screenshot: entry.screenshot || '',
     step: entry.step || null,
     status: entry.status || 'captured'
-  });
+  };
+  screenMemoryBuffer.push(memoryEntry);
   if (screenMemoryBuffer.length > 25) {
     screenMemoryBuffer.shift();
   }
+  try {
+    const persisted = JSON.parse(localStorage.getItem('zulora_session_memory') || '[]');
+    localStorage.setItem('zulora_session_memory', JSON.stringify([...persisted, { ...memoryEntry, screenshot: '' }].slice(-12)));
+  } catch {}
 }
 
 export function getRecentScreenMemory(count = 3) {
+  if (!screenMemoryBuffer.length && typeof localStorage !== 'undefined') {
+    try {
+      const persisted = JSON.parse(localStorage.getItem('zulora_session_memory') || '[]');
+      if (Array.isArray(persisted)) screenMemoryBuffer.push(...persisted.slice(-12));
+    } catch {}
+  }
   return screenMemoryBuffer.slice(-count);
 }
 
 export function clearScreenMemory() {
   screenMemoryBuffer.length = 0;
+  try { localStorage.removeItem('zulora_session_memory'); } catch {}
 }
 
 // Listen for screen state memory updates from extension background
@@ -650,7 +662,7 @@ Output ONLY raw valid JSON array. Do NOT wrap in markdown code blocks. No commen
 IMPORTANT ROUTING RULES:
 - When user says "open [service]", ALWAYS use NAVIGATE with the direct URL from the routing hints.
 - NEVER type into Google search to open known web apps (Gmail, ChatGPT, Gemini, WhatsApp, etc.).
-- For multi-step tasks with "and then", "after that", "next", "then", generate SEPARATE steps.
+- For multi-step tasks with "and then", "after that", "next", "then", or arrows, generate a complete ordered queue with one atomic step per phase.
 - Each step must be atomic (one action per step).
 - Use WAIT steps (500-2000ms) after navigation steps before interacting with page elements.${directUrlHint}
 
@@ -671,6 +683,8 @@ Specialized High-Level Actions (preferred for common apps):
 - { "action": "GMAIL_COMPOSE", "to": "email@domain.com", "subject": "subject", "body": "email body" }
 - { "action": "CHATGPT_PROMPT", "prompt": "your question" }
 - { "action": "GEMINI_PROMPT", "prompt": "your question" }
+- { "action": "CAPTURE_SCREENSHOT" }
+- { "action": "GEMINI_PROMPT", "prompt": "analyze this screenshot", "includeScreenshot": true }
 - { "action": "READ_SCREEN" }
 - { "action": "AUTOFILL_FORM" }
 
@@ -682,7 +696,7 @@ Rules:
   // Weave persistent screen memory buffer into planning context
   const recentMemory = getRecentScreenMemory(2);
   const memoryContext = recentMemory.length > 0
-    ? `\nScreen Vision Memory History:\n` + recentMemory.map((m, i) => `[State ${i+1}: ${m.title || m.url}]`).join('\n')
+    ? `\nScreen Vision Memory History:\n` + recentMemory.map((m, i) => `[State ${i + 1}: ${m.title || m.url}] ${String(m.summary || '').slice(0, 400)}`).join('\n')
     : '';
 
   const contextPrompt = screenContext
@@ -692,7 +706,7 @@ Rules:
   const planResult = await callWaterfallLLM(contextPrompt, systemPrompt, {
     maxTokens: 1200,
     temperature: 0.1,
-    timeoutMs: 3000,
+    timeoutMs: 1800,
     groqModel: 'llama-3.3-70b-versatile'
   });
 
@@ -707,8 +721,11 @@ Rules:
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          const steps = parsed.slice(0, isComplexCommand(prompt) ? 6 : undefined).map((item, idx) => normalizeAgentStep(item, idx + 1));
-          if (isComplexCommand(prompt) && steps.length < 3) return { steps: ensureMinimumPlan(steps), tokensUsed: planResult.tokensUsed || 0 };
+          const steps = parsed.slice(0, 12).map((item, idx) => normalizeAgentStep(item, idx + 1));
+          if (isComplexCommand(prompt) && steps.length < 3) {
+            const fallback = parseCommandToSteps(prompt);
+            return { steps: fallback.length > steps.length ? fallback : steps, tokensUsed: planResult.tokensUsed || 0 };
+          }
           return { steps, tokensUsed: planResult.tokensUsed || 0 };
         }
       }
@@ -719,21 +736,11 @@ Rules:
 
   // Deterministic Local Fallback Planner
   const fallbackSteps = parseCommandToSteps(prompt);
-  return { steps: isComplexCommand(prompt) ? ensureMinimumPlan(fallbackSteps) : fallbackSteps, tokensUsed: 0 };
+  return { steps: fallbackSteps.slice(0, 12), tokensUsed: 0 };
 }
 
 function isComplexCommand(prompt) {
-  return /\b(and then|after that|then|next|also|multiple|several|step by step)\b/i.test(String(prompt || ''));
-}
-
-function ensureMinimumPlan(steps) {
-  const expanded = [...steps];
-  while (expanded.length < 3) {
-    expanded.push(expanded.length === 1
-      ? { action: ACTION_TYPES.WAIT, app: 'System', params: { ms: 700 } }
-      : { action: ACTION_TYPES.READ_DOM, app: 'Browser', params: { deep: false } });
-  }
-  return expanded.slice(0, 6).map((step, i) => ({ ...step, step: i + 1 }));
+  return /(?:->|→|;)|\b(and then|after that|then|next|also|multiple|several|step by step)\b/i.test(String(prompt || ''));
 }
 
 function normalizeAgentStep(raw, stepNum) {
@@ -806,7 +813,19 @@ function normalizeAgentStep(raw, stepNum) {
     return { step, action: ACTION_TYPES.CHATGPT_PROMPT, app: 'ChatGPT', params: { prompt: cleanSearchIntent(raw.prompt || '') } };
   }
   if (action === 'GEMINI_PROMPT') {
-    return { step, action: ACTION_TYPES.GEMINI_PROMPT, app: 'Gemini', params: { prompt: cleanSearchIntent(raw.prompt || '') } };
+    const prompt = String(raw.prompt || raw.params?.prompt || '');
+    return {
+      step,
+      action: ACTION_TYPES.GEMINI_PROMPT,
+      app: 'Gemini',
+      params: {
+        prompt: cleanSearchIntent(prompt),
+        includeScreenshot: Boolean(raw.includeScreenshot || raw.params?.includeScreenshot || /(?:send|share|show|analy[sz]e|describe).*(?:screenshot|screen shot|this image)/i.test(prompt))
+      }
+    };
+  }
+  if (action === 'CAPTURE_SCREENSHOT' || action === 'SCREENSHOT' || action === 'TAKE_SCREENSHOT') {
+    return { step, action: ACTION_TYPES.CAPTURE_SCREENSHOT, app: 'Browser', params: {} };
   }
   if (action === 'WAIT') {
     return { step, action: ACTION_TYPES.WAIT, app: 'System', params: { ms: raw.ms || 1500 } };
@@ -877,6 +896,32 @@ export function agent3_ScreenVerifier(stepResult, step) {
 // ─── BUGFIX 1 & 3: Deterministic Step Parser with Direct App Routing ──────────
 export function parseCommandToSteps(command) {
   const cmd = command.toLowerCase().trim();
+
+  const phases = String(command)
+    .split(/\s*(?:->|→|;|\bafter that\b|\band then\b|\bthen\b|\bnext\b)\s*/i)
+    .map(value => value.trim())
+    .filter(Boolean);
+  if (phases.length > 1) {
+    return phases.flatMap((phase) => {
+      const lower = phase.toLowerCase();
+      if (/\b(?:take|capture|save)\s+(?:a\s+)?screenshot\b/.test(lower) || /\bscreenshot this page\b/.test(lower)) {
+        return [{ action: ACTION_TYPES.CAPTURE_SCREENSHOT, app: 'Browser', params: {} }];
+      }
+      if (/\b(?:send|share|show|analy[sz]e|describe)\s+(?:the\s+)?(?:screenshot|screen shot|image)\b/.test(lower) && /\b(?:gemini|google gemini)\b/.test(lower)) {
+        const ask = phase.replace(/\b(?:send|share|show|analy[sz]e|describe)\s+(?:the\s+)?(?:screenshot|screen shot|image)\s+(?:to|with|in)\s+(?:google\s+)?gemini\b/i, '').trim();
+        return [{ action: ACTION_TYPES.GEMINI_PROMPT, app: 'Gemini', params: { prompt: ask || 'Analyze the screenshot of the page and describe its contents.', includeScreenshot: true } }];
+      }
+      return parseCommandToSteps(phase);
+    }).map((step, index) => ({ ...step, step: index + 1 }));
+  }
+
+  if (/\b(?:send|share|show|analy[sz]e|describe)\s+(?:the\s+)?(?:screenshot|screen shot|image)\b/i.test(command) && /\bgemini\b/i.test(command)) {
+    return [{ action: ACTION_TYPES.GEMINI_PROMPT, app: 'Gemini', params: { prompt: 'Analyze the screenshot of the current page and describe its contents.', includeScreenshot: true } }];
+  }
+
+  if (/\b(?:take|capture|save)\s+(?:a\s+)?screenshot\b/.test(cmd) || /\bscreenshot this page\b/.test(cmd)) {
+    return [{ action: ACTION_TYPES.CAPTURE_SCREENSHOT, app: 'Browser', params: {} }];
+  }
 
   // Screen reading
   if (cmd.includes('read screen') || cmd.includes('what is on this page') ||
@@ -1051,7 +1096,7 @@ export async function executeCommand(command, arg2, arg3) {
   let totalTokensUsed = plan.tokensUsed || 0;
   if (totalTokensUsed > 0 && typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('ZULORA_TOKEN_UPDATE', {
-      detail: { taskTokens: totalTokensUsed }
+      detail: { taskTokens: totalTokensUsed, delta: totalTokensUsed, source: 'web' }
     }));
   }
 
@@ -1097,7 +1142,7 @@ export async function executeCommand(command, arg2, arg3) {
       // Dispatch incremental token update event
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('ZULORA_TOKEN_UPDATE', {
-          detail: { taskTokens: tokens } // emit only the delta
+          detail: { taskTokens: tokens, delta: tokens, source: 'web' }
         }));
       }
     } else {
