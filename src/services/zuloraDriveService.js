@@ -134,11 +134,27 @@ export const zuloraDriveService = {
 
   async getStorageUsage() {
     const uid = currentDriveUid();
+    const snapshot = await getDocs(collection(driveDb, 'users', uid, FILES_COLLECTION));
+    const usedBytes = snapshot.docs.reduce((total, item) => total + (Number(item.data().size) || 0), 0);
+    return {
+      usedBytes,
+      totalBytes: usedBytes,
+      remainingBytes: null,
+      capacityBytes: null,
+      capacityAvailable: false,
+      filesCount: snapshot.size,
+      note: 'The Firebase web SDK does not expose a per-user remaining bucket quota.'
+    };
+  },
+
+  async listAllDriveFiles() {
+    const uid = currentDriveUid();
     const snapshot = await getDocs(query(
       collection(driveDb, 'users', uid, FILES_COLLECTION),
+      orderBy('createdAt', 'desc'),
       limit(MAX_SEARCH_FILES)
     ));
-    return snapshot.docs.reduce((total, item) => total + (Number(item.data().size) || 0), 0);
+    return snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
   },
 
   async deleteDriveFile(fileId) {
@@ -157,6 +173,7 @@ export const zuloraDriveService = {
 export const uploadFileToDrive = (...args) => zuloraDriveService.uploadFileToDrive(...args);
 export const listFilesFromDrive = (...args) => zuloraDriveService.listFilesFromDrive(...args);
 export const searchDriveFiles = (...args) => zuloraDriveService.searchDriveFiles(...args);
+export const listAllDriveFiles = (...args) => zuloraDriveService.listAllDriveFiles(...args);
 export const deleteDriveFile = (...args) => zuloraDriveService.deleteDriveFile(...args);
 
 export default zuloraDriveService;

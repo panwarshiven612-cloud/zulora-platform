@@ -59,7 +59,7 @@ export default function ConnectorsModal({ currentUser, onClose }) {
       catch (error) { setNotice(error.message); }
     } else setEvents([]);
     if (driveAuth.currentUser) {
-      try { setDriveBytes(await zuloraDriveService.getStorageUsage()); }
+      try { setDriveBytes((await zuloraDriveService.getStorageUsage()).usedBytes); }
       catch (error) { setNotice(error.message); }
     }
   }, [currentUser?.uid]);
@@ -69,7 +69,7 @@ export default function ConnectorsModal({ currentUser, onClose }) {
     refresh();
     const unsubscribe = onAuthStateChanged(driveAuth, user => {
       setDriveUser(user);
-      if (user) zuloraDriveService.getStorageUsage().then(setDriveBytes).catch(error => setNotice(error.message));
+      if (user) zuloraDriveService.getStorageUsage().then(usage => setDriveBytes(usage.usedBytes)).catch(error => setNotice(error.message));
       else { setDriveBytes(0); }
     });
     const onChanged = () => refresh();

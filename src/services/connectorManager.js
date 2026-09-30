@@ -1,7 +1,10 @@
 import { deleteDoc, doc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from './firebase';
 
-const GOOGLE_CLIENT_ID = String(import.meta.env?.VITE_GOOGLE_CLIENT_ID || '').trim();
+const GOOGLE_CLIENT_ID = String(
+  import.meta.env?.VITE_GOOGLE_CLIENT_ID
+  || '791256936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com'
+).trim();
 const GOOGLE_IDENTITY_SCRIPT = 'https://accounts.google.com/gsi/client';
 const TOKEN_REFRESH_MARGIN_MS = 60_000;
 const sessionTokens = new Map();
@@ -11,7 +14,7 @@ export const CONNECTOR_CONFIG = Object.freeze({
   gmail: {
     id: 'gmail', name: 'Gmail', icon: 'mail',
     scopes: [
-      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/gmail.modify',
       'https://www.googleapis.com/auth/gmail.send',
       'https://www.googleapis.com/auth/gmail.compose',
       'openid', 'email'

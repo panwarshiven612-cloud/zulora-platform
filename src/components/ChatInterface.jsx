@@ -48,12 +48,14 @@ import {
   Pencil,
   Radio,
   Link,
+  CloudUpload,
 } from 'lucide-react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { useAuth } from '../context/AuthContext';
 import { apiRouter } from '../services/apiRouter';
 import connectorManager from '../services/connectorManager';
 import { executeConnectorTask } from '../services/backgroundConnectorEngine';
+import { executeDriveChatIntent, getDriveSystemContext, uploadChatMediaToDrive } from '../services/driveChatTools';
 import { driveAuth } from '../config/firebaseDrive';
 import { isCodeGenerationPrompt } from '../services/aiModels';
 import { firestoreService, deriveChatTitle } from '../services/firestoreService';
@@ -497,6 +499,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showConnectorsModal, setShowConnectorsModal] = useState(false);
   const [connectorContext, setConnectorContext] = useState('');
+  const [driveUploadStatus, setDriveUploadStatus] = useState('');
+  const [driveUploadingFile, setDriveUploadingFile] = useState('');
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [queryTime, setQueryTime] = useState(null);
@@ -518,7 +522,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     let active = true;
     const refreshConnectorContext = () => {
       if (!active) return;
-      setConnectorContext(connectorManager.getActiveConnectorContext(Boolean(driveAuth.currentUser)));
+      const driveConnected = Boolean(driveAuth.currentUser);
+      setConnectorContext([
+        connectorManager.getActiveConnectorContext(driveConnected),
+        getDriveSystemContext(driveConnected)
+      ].join('\n\n'));
     };
     refreshConnectorContext();
     window.addEventListener('zulora-connectors-changed', refreshConnectorContext);
@@ -662,6 +670,24 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     setAttachments(previous => [...previous, ...incoming.slice(0, Math.max(0, 5 - previous.length))]);
   }, []);
 
+  const handleUploadAttachment = useCallback(async file => {
+    if (!driveAuth.currentUser) {
+      setDriveUploadStatus('Connect Zulora Drive to upload this attachment.');
+      setShowConnectorsModal(true);
+      return;
+    }
+    setDriveUploadingFile(file.name);
+    setDriveUploadStatus('');
+    try {
+      const saved = await uploadChatMediaToDrive(file, 'Chat Uploads');
+      setDriveUploadStatus(`Uploaded ${saved.name} to Zulora Drive.`);
+    } catch (error) {
+      setDriveUploadStatus(error.message || 'Could not upload this file to Zulora Drive.');
+    } finally {
+      setDriveUploadingFile('');
+    }
+  }, []);
+
   const getAttachmentDataUrl = useCallback(file => {
     let pending = preparedAttachmentDataRef.current.get(file);
     if (!pending) {
@@ -746,26 +772,30 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     let fullPrompt = basePrompt;
     let attachmentPayloads = [];
     try {
-      const imageFiles = attachments.filter(isImageAttachment);
-      const pdfFiles = attachments.filter(isPdfAttachment);
-      const textFiles = attachments.filter(file => !isImageAttachment(file) && !isPdfAttachment(file));
-      attachmentPayloads = await Promise.all([...imageFiles, ...pdfFiles].map(async file => {
-        if (isPdfAttachment(file) && file.size > 3 * 1024 * 1024) {
-          throw new Error('PDFs must be 3 MB or smaller to attach. Save a smaller copy and try again.');
-        }
-        const base64 = await getAttachmentDataUrl(file);
-        const mimeType = base64.match(/^data:([^;]+);base64,/)?.[1] || attachmentMimeType(file);
-        return { name: file.name, mimeType, base64 };
-      }));
-      if (pdfFiles.length) {
-        fullPrompt += `\n\nAttached PDF document${pdfFiles.length === 1 ? '' : 's'}: ${pdfFiles.map(file => file.name).join(', ')}. Use the document content to answer the user's question.`;
-      }
-      if (textFiles.length > 0) {
-        const fileContents = await Promise.all(textFiles.map(async file => {
-          const content = await apiRouter.readFileContent(file);
-          return `\n\n**File: ${file.name}**\n\`\`\`\n${content}\n\`\`\``;
+      const uploadDirectlyToDrive = /\b(?:zulora\s+)?drive\b/i.test(basePrompt)
+        && /\b(upload|save|store|back\s*up)\b/i.test(basePrompt);
+      if (!uploadDirectlyToDrive) {
+        const imageFiles = attachments.filter(isImageAttachment);
+        const pdfFiles = attachments.filter(isPdfAttachment);
+        const textFiles = attachments.filter(file => !isImageAttachment(file) && !isPdfAttachment(file));
+        attachmentPayloads = await Promise.all([...imageFiles, ...pdfFiles].map(async file => {
+          if (isPdfAttachment(file) && file.size > 3 * 1024 * 1024) {
+            throw new Error('PDFs must be 3 MB or smaller to attach. Save a smaller copy and try again.');
+          }
+          const base64 = await getAttachmentDataUrl(file);
+          const mimeType = base64.match(/^data:([^;]+);base64,/)?.[1] || attachmentMimeType(file);
+          return { name: file.name, mimeType, base64 };
         }));
-        fullPrompt = basePrompt + fileContents.join('');
+        if (pdfFiles.length) {
+          fullPrompt += `\n\nAttached PDF document${pdfFiles.length === 1 ? '' : 's'}: ${pdfFiles.map(file => file.name).join(', ')}. Use the document content to answer the user's question.`;
+        }
+        if (textFiles.length > 0) {
+          const fileContents = await Promise.all(textFiles.map(async file => {
+            const content = await apiRouter.readFileContent(file);
+            return `\n\n**File: ${file.name}**\n\`\`\`\n${content}\n\`\`\``;
+          }));
+          fullPrompt = basePrompt + fileContents.join('');
+        }
       }
     } catch (error) {
       sendingRef.current = false;
@@ -834,17 +864,23 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       const connectorTask = await executeConnectorTask(basePrompt, {
         onStatus: status => setShowThinking(Boolean(status))
       });
-      const result = connectorTask?.handled
+      const driveTask = connectorTask?.handled
+        ? null
+        : await executeDriveChatIntent(basePrompt, { files: attachments });
+      const directTask = connectorTask?.handled
+        ? connectorTask
+        : driveTask?.handled && !driveTask.useLLM ? driveTask : null;
+      const result = directTask
         ? {
-          text: connectorTask.text,
-          model: 'Zulora Connectors',
-          provider: 'Native API Connectors',
-          connectorData: connectorTask.data,
+          text: directTask.text,
+          model: connectorTask?.handled ? 'Zulora Connectors' : 'Zulora Drive',
+          provider: connectorTask?.handled ? 'Native API Connectors' : 'Zulora Drive Tools',
+          connectorData: directTask.data,
           usage: { tracked: false, processedTokens: 0 },
           tokenUsage: { totalTokens: 0 }
         }
         : await apiRouter.generateChat(
-        fullPrompt,
+        driveTask?.useLLM ? `${fullPrompt}\n\n${driveTask.context}` : fullPrompt,
         contextMessages,
         {
           model: modelPreference,
@@ -855,7 +891,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           aiBrain,
           userVault,
           connectorContext,
-          attachments: attachmentPayloads,
+          attachments: [...attachmentPayloads, ...(driveTask?.attachments || [])],
           onToken: token => {
             if (!token) return;
             streamedText += token;
@@ -912,7 +948,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       const finalMessages = [...newMessages, aiMsg];
       setMessages(finalMessages);
       const estimatedTokens = Math.max(512, Math.ceil((fullPrompt.length + String(result.text || '').length) / 4));
-      const processedTokens = connectorTask?.handled
+      const processedTokens = directTask
         ? 0
         : Number(result.tokenUsage?.totalTokens || result.usage?.processedTokens) || estimatedTokens;
       await recordUsage('chat', Boolean(result.usage?.tracked), processedTokens);
@@ -1039,16 +1075,27 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 px-3 pt-3" aria-label="Attached files">
+              {driveUploadStatus && <div role="status" className="basis-full rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-2 text-[11px] text-sky-800 dark:border-sky-900/60 dark:bg-sky-950/40 dark:text-sky-300">{driveUploadStatus}</div>}
               {attachments.map((file, i) => {
                 const previewUrl = isImageAttachment(file) ? attachmentPreviewUrls.get(file) : null;
                 return (
-                  <div key={`${file.name}-${file.lastModified}-${i}`} className="group relative flex h-14 max-w-[13rem] items-center gap-2 overflow-hidden rounded-xl border border-sky-200/60 bg-sky-50/80 pr-8 text-xs text-sky-800 dark:border-sky-800/50 dark:bg-sky-950/30 dark:text-sky-300">
+                  <div key={`${file.name}-${file.lastModified}-${i}`} className="group relative flex h-14 max-w-[16rem] items-center gap-2 overflow-hidden rounded-xl border border-sky-200/60 bg-sky-50/80 pr-16 text-xs text-sky-800 dark:border-sky-800/50 dark:bg-sky-950/30 dark:text-sky-300">
                     {previewUrl ? (
                       <img src={previewUrl} alt={`Preview of ${file.name}`} className="h-14 w-14 shrink-0 object-cover" />
                     ) : (
                       <span className="grid h-14 w-14 shrink-0 place-items-center bg-sky-100 dark:bg-sky-900/50"><Paperclip className="h-4 w-4" /></span>
                     )}
                     <span className="max-w-[7rem] truncate">{file.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleUploadAttachment(file)}
+                      disabled={Boolean(driveUploadingFile)}
+                      aria-label={`Upload ${file.name} to Zulora Drive`}
+                      title="Upload to Zulora Drive"
+                      className="absolute right-8 top-1 grid h-6 w-6 place-items-center rounded-full bg-sky-700/90 text-white transition hover:bg-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-400 disabled:opacity-60"
+                    >
+                      {driveUploadingFile === file.name ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <CloudUpload className="h-3.5 w-3.5" />}
+                    </button>
                     <button
                       type="button"
                       onClick={() => removeAttachment(i)}
