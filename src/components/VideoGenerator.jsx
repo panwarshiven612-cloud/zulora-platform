@@ -81,12 +81,14 @@ export const VideoGenerator = () => {
     }
 
     setGenerationError('');
-    setGenerationProgress({ provider: 'Zulora Video API', phase: 'Connecting', message: 'Connecting to the text-to-video service.' });
+    setGenerationProgress({ provider: 'Video model pipeline', phase: 'Connecting', message: 'Connecting to configured Luma, Hugging Face Video, Replicate, or Pollinations video providers.' });
     setLoading(true);
 
     try {
       const result = await aiRouter.generateVideo({
         prompt: prompt.trim(),
+        generationType: 'text-to-video',
+        model: 'video',
         motionSpeed,
         cameraAngle,
         duration,

@@ -56,6 +56,25 @@
   if (isExtensionValid()) {
     try {
       chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+        if (message?.type === 'ZULORA_CONTENT_HELLO') {
+          sendResponse({ ready: true, url: location.href });
+          return true;
+        }
+        if (message?.type === 'ZULORA_RUN_AGENT_STEP') {
+          const step = message.step || {};
+          const action = String(step.action || '').toUpperCase();
+          const params = step.params || {};
+          Promise.resolve(tryDirectExecution(action, params)).then(result => {
+            if (!result) throw new Error(`Content script could not execute ${action || 'the requested action'}.`);
+            sendResponse({ type: 'STEP_COMPLETE', stepId: message.stepId, success: true, result });
+          }).catch(error => sendResponse({ type: 'STEP_COMPLETE', stepId: message.stepId, success: false, error: error.message }));
+          return true;
+        }
+        if (message?.type === 'ZULORA_STEP_SYNC') {
+          window.postMessage({ source: 'ZULORA_EXTENSION', type: 'ZULORA_AGENT_STEP_UPDATE', stepId: message.stepId, step: message.step, result: message.result }, '*');
+          sendResponse({ type: 'STEP_COMPLETE', stepId: message.stepId, success: true });
+          return true;
+        }
         if (message && message.type === 'ZULORA_GET_DOM_CONTEXT') {
           const emailRows = Array.from(document.querySelectorAll('tr.zA, [role="main"] [role="row"], [role="main"] tr')).slice(0, 50).map(row => ({
             text: (row.innerText || row.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 500),
@@ -236,6 +255,29 @@
   }
 
   // ─── Direct JS Executor Engine (Agent 2 - <300ms Latency) ───────────────────
+  function dispatchTypingEvents(el, text) {
+    el.focus();
+    if (el.isContentEditable) {
+      el.replaceChildren(document.createTextNode(text));
+      el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: text, bubbles: true }));
+    } else {
+      const prototype = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      setter ? setter.call(el, text) : (el.value = text);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+
+  function submitAfterTyping(el, params) {
+    const searchTarget = el.matches('input[type="search"], [role="searchbox"]') ||
+      /search|query/i.test(`${el.getAttribute('placeholder') || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('name') || ''}`);
+    if (params.submit !== true && !searchTarget) return;
+    ['keydown', 'keypress', 'keyup'].forEach(type => el.dispatchEvent(new KeyboardEvent(type, {
+      key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true
+    })));
+  }
+
   function tryDirectExecution(action, params = {}) {
     try {
       if ((action === 'TYPE' || action === 'FILL_INPUT') && params.text !== undefined) {
@@ -252,17 +294,10 @@
         }
 
         if (el) {
+          dispatchTypingEvents(el, text);
+          submitAfterTyping(el, params);
           const rect = el.getBoundingClientRect();
-          animateTurtleCursorTo(rect.left + rect.width / 2, rect.top + rect.height / 2, () => {
-            el.focus();
-            if (el.isContentEditable) {
-              el.innerText = text;
-            } else {
-              el.value = text;
-            }
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-          });
+          animateTurtleCursorTo(rect.left + rect.width / 2, rect.top + rect.height / 2);
           return { success: true, method: 'direct_js', target: el.tagName };
         }
       }

@@ -269,12 +269,17 @@ const blobToDataUrl = blob => new Promise((resolve, reject) => {
   reader.readAsDataURL(blob);
 });
 
-async function browserHuggingFaceImage(prompt, modelId) {
+async function browserHuggingFaceImage(prompt, modelId, sourceImage = '') {
   if (!HF_IMAGE_KEY) throw new Error('No Hugging Face browser key is configured.');
+  const imageMatch = String(sourceImage || '').match(/^data:(image\/(?:png|jpe?g|webp));base64,([A-Za-z0-9+/=]+)$/i);
+  if (sourceImage && !imageMatch) throw new Error('Reference image must be a PNG, JPEG, or WebP data URL.');
+  const body = imageMatch
+    ? { inputs: imageMatch[2], parameters: { prompt, guidance_scale: 3.5, num_inference_steps: 28 } }
+    : { inputs: prompt };
   const response = await fetchWithTimeout(`https://router.huggingface.co/hf-inference/models/${modelId.split('/').map(encodeURIComponent).join('/')}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${HF_IMAGE_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ inputs: prompt })
+    body: JSON.stringify(body)
   }, 30_000);
   if (!response.ok) throw new Error(`Hugging Face image request failed (HTTP ${response.status}).`);
   const contentType = response.headers.get('content-type') || '';
@@ -991,7 +996,8 @@ export const apiRouter = {
         imageEngine,
         width,
         height,
-        sourceImage: options.sourceImage || ''
+        sourceImage: options.sourceImage || '',
+        operation: options.operation || (options.sourceImage ? 'edit' : 'generate')
       }, currentUser);
       if (serverResult?.url) return await syncUsage(serverResult, 'image', currentUser);
     } catch (error) {
@@ -1014,6 +1020,18 @@ export const apiRouter = {
     // Keep each generation call isolated to the current Image Studio prompt.
     const styledPrompt = buildImagePrompt(prompt, options.style, options.negativePrompt);
     const encoded = encodeURIComponent(styledPrompt);
+
+    const referenceImage = options.sourceImage || (options.sourceImageBase64
+      ? `data:${options.sourceImageMimeType || 'image/png'};base64,${options.sourceImageBase64}`
+      : '');
+    if (referenceImage) {
+      const model = 'black-forest-labs/FLUX.1-Kontext-dev';
+      const imageUrl = await browserHuggingFaceImage(styledPrompt, model, referenceImage);
+      return await syncUsage({
+        url: imageUrl, imageUrl, provider: 'Hugging Face Image-to-Image API', model,
+        prompt: prompt.trim(), enhancedPrompt: styledPrompt, seed
+      }, 'image', currentUser);
+    }
 
     if (imageEngine === 'hf-flux-dev' || imageEngine === 'hf-sdxl') {
       const model = imageEngine === 'hf-sdxl'

@@ -943,10 +943,15 @@ async function cloudflareImage(prompt, aspectRatio) {
   return `data:image/png;base64,${image}`;
 }
 
-async function huggingfaceImage(prompt, modelId = 'black-forest-labs/FLUX.1-schnell') {
+async function huggingfaceImage(prompt, modelId = 'black-forest-labs/FLUX.1-schnell', sourceImage = '') {
   if (!providerKeys.huggingface) return null;
+  const source = sourceImage ? parseDataImage(sourceImage) : null;
+  if (sourceImage && !source) throw new Error('Reference image must be PNG, JPEG, or WebP.');
+  const requestBody = source
+    ? { inputs: source.data, parameters: { prompt, guidance_scale: 3.5, num_inference_steps: 28 } }
+    : { inputs: prompt };
   const response = await fetchWithTimeout(`https://router.huggingface.co/hf-inference/models/${modelId.split('/').map(encodeURIComponent).join('/')}`, {
-    method: 'POST', headers: { Authorization: `Bearer ${providerKeys.huggingface}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ inputs: prompt })
+    method: 'POST', headers: { Authorization: `Bearer ${providerKeys.huggingface}`, 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody)
   }, 25_000);
   if (!response.ok) throw new Error('Hugging Face image generation failed.');
   return responseImage(response);
@@ -986,18 +991,25 @@ async function generateImage(body) {
   const imageEngine = String(body.imageEngine || 'flux-quick');
   if (!prompt) throw new Error('Write a prompt before generating an image.');
   const hasImageProvider = sourceImage
-    ? availableProviders().includes('gemini') || Boolean(providerKeys.pollinations)
+    ? availableProviders().includes('gemini') || Boolean(providerKeys.pollinations || providerKeys.huggingface)
     : Boolean(providerKeys.pollinations || providerKeys.huggingface || providerKeys.fal || (providerKeys.cloudflareAccountId && providerKeys.cloudflareToken) || providerKeys.replicate);
   if (!hasImageProvider) throw new Error(`No image-${sourceImage ? 'editing' : 'generation'} providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.`);
   const fullPrompt = buildImagePrompt(prompt, body.style, body.negativePrompt);
   const attempts = [];
   const selectedHfModel = imageEngine === 'hf-sdxl'
     ? 'stabilityai/stable-diffusion-xl-base-1.0'
-    : 'black-forest-labs/FLUX.1-dev';
+    : imageEngine === 'hf-image-edit'
+      ? 'black-forest-labs/FLUX.1-Kontext-dev'
+      : 'black-forest-labs/FLUX.1-dev';
   if (sourceImage) {
     if (imageEngine === 'pollinations-hd' || imageEngine === 'hf-flux-dev' || imageEngine === 'hf-sdxl') {
       throw new Error('The selected model supports text-to-image generation, not reference-image editing.');
     }
+    if (imageEngine === 'hf-image-edit') attempts.push([
+      'Hugging Face Image-to-Image',
+      'black-forest-labs/FLUX.1-Kontext-dev',
+      () => huggingfaceImage(fullPrompt, 'black-forest-labs/FLUX.1-Kontext-dev', sourceImage)
+    ]);
     attempts.push(['Gemini 3.1 Flash Image', 'gemini-3.1-flash-image', () => geminiImageEdit(fullPrompt, sourceImage, body.aspectRatio)]);
     attempts.push(['Pollinations', 'kontext', () => pollinationsImage(fullPrompt, sourceImage, body.aspectRatio, body.seed)]);
   } else {
@@ -1097,10 +1109,7 @@ async function pollinationsVideo(prompt, duration, aspectRatio, deadline) {
   if (remaining() < 2_000) return null;
   const encodedPrompt = encodeURIComponent(prompt);
   const common = `duration=${Math.min(Number(duration) || 4, 8)}&aspectRatio=${encodeURIComponent(aspectRatio || '16:9')}`;
-  const urls = [
-    ...(key ? [`https://gen.pollinations.ai/video/${encodedPrompt}?model=google/veo-3.1-fast&${common}`] : []),
-    `https://image.pollinations.ai/prompt/${encodedPrompt}?model=video&${common}`
-  ];
+  const urls = key ? [`https://gen.pollinations.ai/video/${encodedPrompt}?model=google/veo-3.1-fast&${common}`] : [];
   let lastError;
   for (const url of urls) {
     if (remaining() < 2_000) break;

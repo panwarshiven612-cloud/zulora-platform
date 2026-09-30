@@ -23,6 +23,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 // ─── 2. State & Storage ───────────────────────────────────────────────────────
 let taskQueue = [];
+let agentExecutionQueue = [];
 let taskStatus = 'idle';
 let actionLog = [];
 let currentStepIndex = 0;
@@ -32,7 +33,7 @@ let hasReceivedTaskMessage = false;
 let latestScreenshotDataUrl = '';
 let latestTaskOutput = null;
 let taskTokensUsed = 0;
-const QUEUE_STORAGE_KEYS = ['zulora_agent_queue', 'zulora_agent_queue_index', 'zulora_agent_status', 'zulora_agent_log', 'zulora_agent_output'];
+const QUEUE_STORAGE_KEYS = ['agentExecutionQueue', 'zulora_agent_queue', 'zulora_agent_queue_index', 'zulora_agent_status', 'zulora_agent_log', 'zulora_agent_output'];
 
 let cachedApiKeys = {
   geminiKeys: [],
@@ -128,7 +129,9 @@ function sleep(ms) {
 }
 
 function persistQueueState() {
+  agentExecutionQueue = taskQueue;
   return chrome.storage.local.set({
+    agentExecutionQueue,
     zulora_agent_queue: taskQueue,
     zulora_agent_queue_index: currentStepIndex,
     zulora_agent_status: taskStatus,
@@ -409,34 +412,67 @@ async function openTabAndWait(url, matchPattern = null, timeout = 25000) {
     const existing = tabs.find(t => t.url && t.url.includes(matchPattern));
     if (existing) {
       await chrome.tabs.update(existing.id, { active: true });
-      if (existing.status === 'complete') return existing.id;
-      return waitForTabComplete(existing.id, timeout);
+      await waitForTabComplete(existing.id, timeout);
+      await ensureContentScript(existing.id);
+      return existing.id;
     }
   }
   const tab = await chrome.tabs.create({ url, active: true });
-  return waitForTabComplete(tab.id, timeout);
+  await waitForTabComplete(tab.id, timeout);
+  await ensureContentScript(tab.id);
+  return tab.id;
 }
 
 function waitForTabComplete(tabId, timeout = 25000) {
-  return new Promise((resolve) => {
-    let resolved = false;
-    const timer = setTimeout(() => {
-      if (resolved) return;
-      resolved = true;
-      try { chrome.tabs.onUpdated.removeListener(listener); } catch {}
-      resolve(tabId);
-    }, timeout);
-
-    const listener = (id, info) => {
-      if (id !== tabId || info.status !== 'complete') return;
-      if (resolved) return;
-      resolved = true;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       try { chrome.tabs.onUpdated.removeListener(listener); } catch {}
-      resolve(tabId);
+      error ? reject(error) : resolve(tabId);
+    };
+    const timer = setTimeout(() => finish(new Error(`Timed out waiting for tab ${tabId} to finish loading.`)), timeout);
+    const listener = (id, info) => {
+      if (id !== tabId || info.status !== 'complete') return;
+      finish();
     };
     chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs.get(tabId).then(tab => {
+      if (tab.status === 'complete') finish();
+    }).catch(finish);
   });
+}
+
+async function ensureContentScript(tabId) {
+  try {
+    const ready = await chrome.tabs.sendMessage(tabId, { type: 'ZULORA_CONTENT_HELLO' });
+    if (ready?.ready) return true;
+  } catch {}
+  await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+  await sleep(100);
+  const ready = await chrome.tabs.sendMessage(tabId, { type: 'ZULORA_CONTENT_HELLO' });
+  if (!ready?.ready) throw new Error(`Zulora content script did not become ready in tab ${tabId}.`);
+  return true;
+}
+
+async function executeContentStep(tabId, step, stepId) {
+  await ensureContentScript(tabId);
+  const response = await chrome.tabs.sendMessage(tabId, { type: 'ZULORA_RUN_AGENT_STEP', step, stepId });
+  if (response?.type !== 'STEP_COMPLETE') throw new Error(`Tab ${tabId} did not acknowledge step ${stepId}.`);
+  if (!response.success) throw new Error(response.error || `Step ${stepId} failed in the content script.`);
+  return response.result || { success: true };
+}
+
+async function awaitStepComplete(tabId, step, result, stepId) {
+  await ensureContentScript(tabId);
+  const { screenshot: _screenshot, ...resultSummary } = result || {};
+  const response = await chrome.tabs.sendMessage(tabId, { type: 'ZULORA_STEP_SYNC', step, result: resultSummary, stepId });
+  if (response?.type !== 'STEP_COMPLETE' || response.stepId !== stepId || !response.success) {
+    throw new Error(`Tab ${tabId} did not confirm completion of step ${stepId}.`);
+  }
+  return response;
 }
 
 async function injectAndRun(tabId, func, args = [], maxRetries = 3, retryDelay = 1500) {
@@ -866,7 +902,7 @@ function __zuloraUniversalExecutor(action, payload) {
     return { success: true, clicked: true, x: Number(x), y: Number(y), label: (clickable.innerText || clickable.getAttribute('aria-label') || '').trim().slice(0, 80) };
   }
 
-  async function typeEl(selector, text, target) {
+  async function typeEl(selector, text, target, submit = false) {
     let el = selector ? await waitFor(selector, 4000) : null;
     if (!el && target) {
       const inputs = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]'));
@@ -895,6 +931,9 @@ function __zuloraUniversalExecutor(action, payload) {
     }
 
     insertText(el, text);
+    const isSearchField = el.matches('input[type="search"], [role="searchbox"]') ||
+      /search|query/i.test(`${el.placeholder || ''} ${el.getAttribute('aria-label') || ''} ${el.name || ''}`);
+    if (submit || isSearchField) pressEnter(el);
     return { success: true, filled: true, value: text };
   }
 
@@ -942,7 +981,7 @@ function __zuloraUniversalExecutor(action, payload) {
     case 'CLICK':           return clickEl(payload.selector, payload.target);
     case 'VISION_CLICK':    return clickVisionCoordinate(payload.x, payload.y);
     case 'VISION_TYPE':     return typeAtCoordinate(payload.x, payload.y, payload.text);
-    case 'TYPE':            return typeEl(payload.selector, payload.text, payload.target);
+    case 'TYPE':            return typeEl(payload.selector, payload.text, payload.target, payload.submit === true);
     case 'SCROLL':          return scrollPage(payload.direction);
     case 'DOWNLOAD_IMAGE':  return downloadImage(payload.target);
     case 'YOUTUBE':         return youtube(payload.query);
@@ -1403,7 +1442,12 @@ async function executeStep(step) {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
         const tab = tabs[0];
         if (!tab?.id) throw new Error('No active tab');
-        let res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['CLICK', { selector: params.selector, target: params.target }]);
+        let res;
+        try {
+          res = await executeContentStep(tab.id, { action: 'CLICK', params: { selector: params.selector, target: params.target } }, `click-${currentStepIndex}`);
+        } catch {
+          res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['CLICK', { selector: params.selector, target: params.target }]);
+        }
         // Agent 3 Auto-Retry Verification
         if (res?.error && params.target) {
           await sleep(1000);
@@ -1430,7 +1474,17 @@ async function executeStep(step) {
         const tab = tabs[0];
         if (!tab?.id) throw new Error('No active tab');
         const textToFill = params.text !== undefined ? params.text : (params.value || '');
-        let res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['TYPE', { selector: params.selector, text: textToFill, target: params.target }]);
+        let res;
+        try {
+          res = await executeContentStep(tab.id, {
+            action: 'TYPE',
+            params: { selector: params.selector, text: textToFill, target: params.target, submit: params.submit === true }
+          }, `type-${currentStepIndex}`);
+        } catch {
+          res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['TYPE', {
+            selector: params.selector, text: textToFill, target: params.target, submit: params.submit === true
+          }]);
+        }
         // Agent 3 Auto-Retry Verification
         if (res?.error && params.target) {
           await sleep(1000);
@@ -1540,8 +1594,15 @@ async function runQueue() {
     if (taskStatus === 'paused' || taskStatus === 'error' || isCancelled) break;
     try {
       const stepIndex = currentStepIndex;
-      const res = await executeStep(taskQueue[stepIndex]);
+      const step = taskQueue[stepIndex];
+      const res = await executeStep(step);
       if (res?.paused) break;
+
+      const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const activeTabId = Number(res?.tabId) || activeTabs[0]?.id;
+      if (activeTabId) {
+        await awaitStepComplete(activeTabId, step, res, `task-${Date.now()}-${stepIndex}`);
+      }
 
       // ── Agent 3: Vision & Screen Reasoning Verifier ──
       try {
@@ -1588,8 +1649,9 @@ async function runQueue() {
       }
 
       await sleep(250);
-    } catch {
+    } catch (error) {
       taskStatus = 'error';
+      log(`Task stopped at step ${currentStepIndex + 1}`, 'error', error?.message || 'Step execution failed.');
       await persistQueueState();
       broadcastStatus();
       isQueueRunning = false;
@@ -1614,7 +1676,7 @@ function normalizeBackgroundStep(raw) {
   const source = raw?.params && typeof raw.params === 'object' ? { ...raw, ...raw.params } : raw || {};
   const stringValue = (...values) => String(values.find(value => value !== undefined && value !== null) || '');
   if (['navigate', 'open_url', 'open', 'go_to'].includes(action)) return { action: 'open_url', params: { url: stringValue(source.url, resolveDirectUrlBg(source.target || source.app), 'https://www.google.com') } };
-  if (['type', 'type_text', 'fill_input'].includes(action)) return { action: 'type_text', params: { selector: source.selector, target: source.target, text: stringValue(source.text, source.value) } };
+  if (['type', 'type_text', 'fill_input'].includes(action)) return { action: 'type_text', params: { selector: source.selector, target: source.target, text: stringValue(source.text, source.value), submit: Boolean(source.submit || source.enter || source.pressEnter) } };
   if (['click', 'click_element'].includes(action)) return { action: 'click_element', params: { selector: source.selector, target: source.target || source.label } };
   if (['whatsapp', 'whatsapp_send'].includes(action)) return { action: 'whatsapp_send', params: { recipient: stringValue(source.recipient, source.contact, source.to), message: stringValue(source.message, source.text) } };
   if (['gemini', 'gemini_prompt'].includes(action)) return { action: 'gemini_prompt', params: { prompt: stringValue(source.prompt, source.message), includeScreenshot: Boolean(source.includeScreenshot || source.screenshot || /screenshot|screen shot/i.test(source.prompt || '')) } };
@@ -1715,6 +1777,7 @@ async function handleAgentTask(payload) {
     currentStepIndex = 0;
     taskStatus       = 'running';
     taskQueue        = Array.isArray(payload.steps) ? payload.steps : [];
+    agentExecutionQueue = taskQueue;
     if (!taskQueue.length && (payload.command || payload.voiceCommand)) {
       taskQueue = await planVoiceCommand(payload.command || payload.voiceCommand);
     }
@@ -1828,8 +1891,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 chrome.storage.local.get([...QUEUE_STORAGE_KEYS, 'zuloraApiKeys'], (saved) => {
   if (hasReceivedTaskMessage) return;
   if (saved?.zuloraApiKeys) cachedApiKeys = { ...cachedApiKeys, ...saved.zuloraApiKeys };
-  if (!Array.isArray(saved?.zulora_agent_queue)) return;
-  taskQueue = saved.zulora_agent_queue;
+  const persistedQueue = Array.isArray(saved?.agentExecutionQueue) ? saved.agentExecutionQueue : saved?.zulora_agent_queue;
+  if (!Array.isArray(persistedQueue)) return;
+  taskQueue = persistedQueue;
+  agentExecutionQueue = persistedQueue;
   currentStepIndex = Math.max(0, Number(saved.zulora_agent_queue_index) || 0);
   actionLog = Array.isArray(saved.zulora_agent_log) ? saved.zulora_agent_log : [];
   latestTaskOutput = saved.zulora_agent_output || null;

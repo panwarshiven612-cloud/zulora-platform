@@ -809,7 +809,9 @@ function normalizeAgentStep(raw, stepNum) {
       app: 'Browser',
       params: {
         selector: raw.target || raw.selector || raw.params?.selector || 'input',
-        text: raw.value || raw.text || raw.params?.text || ''
+        text: raw.value || raw.text || raw.params?.text || '',
+        submit: Boolean(raw.submit || raw.pressEnter || raw.params?.submit || raw.params?.pressEnter ||
+          /search|query/i.test(String(raw.target || raw.selector || raw.params?.selector || '')))
       }
     };
   }

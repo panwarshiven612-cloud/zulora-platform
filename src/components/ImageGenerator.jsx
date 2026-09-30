@@ -149,7 +149,7 @@ export const ImageGenerator = () => {
       const dataUrl = await imageFileToDataUrl(file, { maxDimension: 1536, maxBytes: 1_200_000 });
       const [, base64 = ''] = dataUrl.split(',', 2);
       setSourceImage({ name: file.name, dataUrl, base64, mimeType: file.type });
-      setImageEngine('flux-quick');
+      setImageEngine('hf-image-edit');
     } catch (error) {
       alert(error.message);
     }
@@ -198,7 +198,7 @@ export const ImageGenerator = () => {
             <div className="flex items-center gap-2 text-xs text-slate-500">
               <img src={sourceImage.dataUrl} alt="Reference" className="w-10 h-10 rounded-lg object-cover" />
               <span className="max-w-[14rem] truncate">{sourceImage.name}</span>
-              <button type="button" onClick={() => setSourceImage(null)} className="p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-800" title="Remove reference image">
+              <button type="button" onClick={() => { setSourceImage(null); setImageEngine('flux-quick'); }} className="p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-800" title="Remove reference image">
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -250,10 +250,10 @@ export const ImageGenerator = () => {
             onChange={event => setImageEngine(event.target.value)}
             className="w-full sm:max-w-sm px-3 py-2 rounded-xl bg-white/80 dark:bg-slate-900/80 border border-slate-300 dark:border-slate-700 text-sm text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500/30"
           >
-            {IMAGE_MODELS.map(model => <option key={model.id} value={model.id} disabled={Boolean(sourceImage && model.id !== 'flux-quick')}>{model.label}{sourceImage && model.id === 'flux-quick' ? ' · image editing' : ''}</option>)}
+            {[...IMAGE_MODELS, { id: 'hf-image-edit', label: 'Hugging Face FLUX.1 Kontext Edit', pro: true }].map(model => <option key={model.id} value={model.id} disabled={Boolean(sourceImage ? model.id !== 'hf-image-edit' : model.id === 'hf-image-edit')}>{model.label}</option>)}
           </select>
           {sourceImage ? (
-            <span className="text-[11px] text-slate-500 dark:text-slate-400">Reference editing sends the selected image and your edit prompt to the configured Gemini or Pollinations image editing backend.</span>
+            <span className="text-[11px] text-slate-500 dark:text-slate-400">The selected image and edit prompt go to Hugging Face FLUX.1 Kontext, with configured image-edit providers as fallback.</span>
           ) : IMAGE_MODELS.find(model => model.id === imageEngine)?.pro && (
             <span className="text-[11px] text-slate-500 dark:text-slate-400">Generated securely with a server-side Hugging Face key.</span>
           )}
