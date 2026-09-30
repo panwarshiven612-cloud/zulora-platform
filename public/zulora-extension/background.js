@@ -88,6 +88,18 @@ function broadcastStatus() {
   } catch {}
 }
 
+function broadcastTokenUsage(tokens) {
+  const amount = Number(tokens) || 0;
+  if (!amount || !safeRuntimeId()) return;
+  chrome.tabs.query({}, (tabs) => {
+    (tabs || []).forEach(tab => {
+      if (tab.id && tab.url && isZuloraOrigin(tab.url)) {
+        chrome.tabs.sendMessage(tab.id, { type: 'ZULORA_TOKEN_UPDATE', taskTokens: amount, delta: amount }).catch(() => {});
+      }
+    });
+  });
+}
+
 function isZuloraOrigin(url) {
   try {
     const u = new URL(url);
@@ -178,7 +190,7 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
       if (!res.ok) return null;
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
-      return text ? { success: true, text, provider: 'groq' } : null;
+      return text ? { success: true, text, provider: 'groq', tokensUsed: Number(data?.usage?.total_tokens) || 0 } : null;
     });
     if (result) return result;
   }
@@ -195,7 +207,7 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
       if (!res.ok) return null;
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
-      return text ? { success: true, text, provider: 'cerebras' } : null;
+      return text ? { success: true, text, provider: 'cerebras', tokensUsed: Number(data?.usage?.total_tokens) || 0 } : null;
     });
     if (result) return result;
   }
@@ -222,7 +234,7 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
         if (!res.ok) return null;
         const data = await res.json();
         const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        return text ? { success: true, text, provider: 'gemini', model: modelId } : null;
+        return text ? { success: true, text, provider: 'gemini', model: modelId, tokensUsed: Number(data?.usageMetadata?.totalTokenCount) || 0 } : null;
       }, 1);
       if (result && result.success) return result;
     }
@@ -240,7 +252,7 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
       if (!res.ok) return null;
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
-      return text ? { success: true, text, provider: 'openrouter' } : null;
+      return text ? { success: true, text, provider: 'openrouter', tokensUsed: Number(data?.usage?.total_tokens) || 0 } : null;
     });
     if (result) return result;
   }
@@ -372,6 +384,11 @@ function __zuloraUniversalExecutor(action, payload) {
   // ── Individual Action Handlers ──
 
   async function whatsapp(contactName, message) {
+    const phone = String(contactName || '').replace(/[^+\d]/g, '');
+    if (phone.length >= 7 && /^[+\d\s().-]+$/.test(String(contactName || ''))) {
+      location.href = `https://web.whatsapp.com/send?phone=${encodeURIComponent(phone.replace(/^\+/, ''))}`;
+      await sleep(2500);
+    }
     const searchBox = await waitFor([
       'div[contenteditable="true"][data-tab="3"]',
       'div[contenteditable="true"][title*="Search"]',
@@ -444,6 +461,7 @@ function __zuloraUniversalExecutor(action, payload) {
   }
 
   async function gmail(to, subject, bodyHtml) {
+    await selectGoogleProfile();
     if (to) {
       const toField = await waitFor(['input[aria-label*="To" i]', 'input[name="to"]'], 8000);
       if (toField) {
@@ -456,12 +474,28 @@ function __zuloraUniversalExecutor(action, payload) {
       const subjField = await waitFor(['input[name="subjectbox"]', 'input[aria-label*="Subject" i]'], 6000);
       if (subjField) insertText(subjField, subject);
     }
-    const bodyField = await waitFor(['div[aria-label*="Message Body" i]', '.Am.Al.editable', 'div[g_editable="true"]'], 8000);
+    const bodyField = await waitFor(['div[aria-label*="Message Body" i][contenteditable="true"]', 'div[contenteditable="true"][g_editable="true"]', '.Am.Al.editable[contenteditable="true"]', 'div[contenteditable="true"]'], 8000);
     if (!bodyField) return { error: 'Gmail message body not found.' };
     bodyField.focus();
     bodyField.innerHTML = bodyHtml || '';
     bodyField.dispatchEvent(new Event('input', { bubbles: true }));
     return { success: true };
+  }
+
+  async function selectGoogleProfile() {
+    if (!location.hostname.includes('google.')) return { selected: false };
+    const desired = 'shivenpanwar412@gmail.com';
+    const signIn = Array.from(document.querySelectorAll('a[href*="accounts.google.com"],button,[role="button"]'))
+      .find(el => /sign in with google|choose an account|sign in/i.test(el.innerText || el.getAttribute('aria-label') || ''));
+    const exactProfile = Array.from(document.querySelectorAll('a,button,[role="button"]'))
+      .find(el => (el.innerText || el.getAttribute('aria-label') || '').toLowerCase().includes(desired));
+    if (exactProfile && !document.querySelector('input[type="password"]')) {
+      exactProfile.click();
+      await sleep(900);
+      return { selected: desired };
+    }
+    if (signIn && !document.querySelector('input[type="password"]')) signIn.click();
+    return { selected: false };
   }
 
   async function readScreen(deep) {
@@ -491,21 +525,21 @@ function __zuloraUniversalExecutor(action, payload) {
     return { success: true, title: firstVideo.innerText };
   }
 
-  async function autofill() {
-    const inputs = document.querySelectorAll('input:not([type="hidden"]):not([type="submit"])');
+  async function autofill(fieldValues = {}) {
+    const entries = Object.entries(fieldValues || {}).filter(([, value]) => ['string', 'number', 'boolean'].includes(typeof value));
+    const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="password"]),textarea,[contenteditable="true"]'));
+    let filled = 0;
     for (const input of inputs) {
-      if (!input.value) {
-        const idName = (input.name || input.id || '').toLowerCase();
-        if (input.type === 'email' || idName.includes('email')) insertText(input, 'test@zulora.in');
-        else if (input.type === 'password' || idName.includes('pass')) insertText(input, 'ZuloraSecure@123');
-        else if (input.type === 'tel' || idName.includes('phone') || idName.includes('mobile')) insertText(input, '9876543210');
-        else insertText(input, 'Zulora AI');
-        await sleep(150);
+      if (input.value || input.innerText?.trim()) continue;
+      const idName = [input.name, input.id, input.getAttribute('aria-label'), input.placeholder, input.labels?.[0]?.innerText].filter(Boolean).join(' ').toLowerCase();
+      const match = entries.find(([key]) => idName.includes(key.toLowerCase()));
+      if (match) {
+        insertText(input, String(match[1]));
+        filled++;
+        await sleep(100);
       }
     }
-    const submit = document.querySelector('button[type="submit"], input[type="submit"], form button');
-    if (submit) submit.click();
-    return { success: true };
+    return { success: true, filled, submitted: false };
   }
 
   async function evaluateTopResult() {
@@ -527,6 +561,19 @@ function __zuloraUniversalExecutor(action, payload) {
     if (!el && selector) {
       const allClickable = Array.from(document.querySelectorAll('button, a, [role="button"]'));
       el = allClickable.find(b => (b.innerText || b.textContent || '').toLowerCase().includes(selector.toLowerCase()));
+    }
+    if (!el && target) {
+      const label = String(target).toLowerCase();
+      const candidates = Array.from(document.querySelectorAll('button,a,[role="button"],[role="link"],input[type="submit"]'));
+      const visionTarget = candidates.find(candidate => {
+        const r = candidate.getBoundingClientRect();
+        const text = (candidate.innerText || candidate.getAttribute('aria-label') || candidate.title || '').toLowerCase();
+        return text.includes(label) && r.width && r.height && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+      });
+      if (visionTarget) {
+        const r = visionTarget.getBoundingClientRect();
+        el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) || visionTarget;
+      }
     }
     if (!el) return { error: `Element not found: ${selector || target}` };
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -550,6 +597,15 @@ function __zuloraUniversalExecutor(action, payload) {
     el.focus();
     el.click();
     return { success: true, clicked: true, tag: el.tagName };
+  }
+
+  function clickVisionCoordinate(x, y) {
+    const target = document.elementFromPoint(Number(x), Number(y));
+    if (!target) return { error: 'No interactive element at the requested screen coordinate.' };
+    const clickable = target.closest('button,a,[role="button"],[role="link"],input[type="submit"],[onclick]') || target;
+    clickable.focus?.();
+    clickable.click();
+    return { success: true, clicked: true, x: Number(x), y: Number(y), label: (clickable.innerText || clickable.getAttribute('aria-label') || '').trim().slice(0, 80) };
   }
 
   async function typeEl(selector, text, target) {
@@ -624,12 +680,19 @@ function __zuloraUniversalExecutor(action, payload) {
     case 'GMAIL':           return gmail(payload.to, payload.subject, payload.bodyHtml);
     case 'READ_SCREEN':     return readScreen(payload.deep);
     case 'CLICK':           return clickEl(payload.selector, payload.target);
+    case 'VISION_CLICK':    return clickVisionCoordinate(payload.x, payload.y);
     case 'TYPE':            return typeEl(payload.selector, payload.text, payload.target);
     case 'SCROLL':          return scrollPage(payload.direction);
     case 'DOWNLOAD_IMAGE':  return downloadImage(payload.target);
     case 'YOUTUBE':         return youtube(payload.query);
-    case 'AUTOFILL':        return autofill();
+    case 'AUTOFILL':        return autofill(payload.fieldValues || {});
     case 'EVAL_TOP_RESULT': return evaluateTopResult();
+    case 'GOOGLE_SESSION_SELECT': return selectGoogleProfile();
+    case 'SCREEN_COORDINATE_MAP': return Array.from(document.querySelectorAll('a,button,input,textarea,[role="button"],[role="link"],[contenteditable="true"]')).map((el, index) => {
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height || r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) return null;
+      return { index, label: (el.innerText || el.getAttribute('aria-label') || el.placeholder || el.title || '').trim().slice(0, 80), x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), tag: el.tagName.toLowerCase() };
+    }).filter(Boolean).slice(0, 80);
     default:                return { error: 'Unknown action: ' + action };
   }
 }
@@ -677,8 +740,15 @@ async function executeStep(step) {
       case 'open_url':
       case 'navigate': {
         let url = params.url || 'https://google.com';
-        if (!url.startsWith('http')) url = 'https://' + url;
-        const tabId = await openTabAndWait(url);
+        if (!/^(https?:|tel:|whatsapp:)/i.test(url)) url = 'https://' + url;
+        let tabId;
+        if (/^(tel|whatsapp):/i.test(url)) {
+          try { tabId = (await chrome.tabs.create({ url, active: true })).id; }
+          catch {
+            const fallback = /^tel:/i.test(url) ? 'https://meet.google.com' : 'https://web.whatsapp.com';
+            tabId = await openTabAndWait(fallback);
+          }
+        } else tabId = await openTabAndWait(url);
         log(`Opened: ${url}`, 'done');
         result = { tabId, url };
         break;
@@ -739,9 +809,20 @@ async function executeStep(step) {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
         const tab = tabs[0];
         if (!tab?.id) throw new Error('No active tab');
-        const res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['AUTOFILL', {}]);
+        const intent = String(params.intent || '');
+        let fieldValues = {};
+        if (intent) {
+          const generated = await executeAiWaterfall(intent, 'Extract only explicitly provided values that belong in form fields. Return ONLY JSON object mapping concise field labels to values. Do not invent identity, passwords, or other personal data. Do not copy the whole instruction into any field.');
+          try {
+            const json = generated.text?.replace(/```json?|```/gi, '').match(/\{[\s\S]*\}/)?.[0];
+            if (generated.success && json) fieldValues = JSON.parse(json);
+          } catch {}
+          const tokens = Number(generated.tokensUsed) || 0;
+          if (tokens) broadcastTokenUsage(tokens);
+        }
+        const res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['AUTOFILL', { fieldValues }]);
         if (res?.error) throw new Error(res.error);
-        log(`Auto-filled form`, 'done');
+        log(`Filled ${res.filled || 0} matching form field(s); review before submitting`, 'done');
         result = res;
         break;
       }
@@ -758,7 +839,16 @@ async function executeStep(step) {
           break;
         }
         log(`WhatsApp: Opening...`, 'running');
-        const waTabId = await openTabAndWait('https://web.whatsapp.com', 'web.whatsapp.com', 30000);
+        const phone = String(contact).replace(/[^+\d]/g, '');
+        const waUrl = phone.length >= 7 && /^[+\d\s().-]+$/.test(String(contact))
+          ? `https://web.whatsapp.com/send?phone=${encodeURIComponent(phone.replace(/^\+/, ''))}`
+          : 'https://web.whatsapp.com';
+        const matchingWa = phone.length >= 7 ? (await chrome.tabs.query({})).find(t => t.url?.includes('web.whatsapp.com')) : null;
+        let waTabId;
+        if (matchingWa?.id) {
+          await chrome.tabs.update(matchingWa.id, { url: waUrl, active: true });
+          waTabId = await waitForTabComplete(matchingWa.id, 30000);
+        } else waTabId = await openTabAndWait(waUrl, phone.length >= 7 ? null : 'web.whatsapp.com', 30000);
         await sleep(2500);
         const waRes = await injectAndRun(waTabId, __zuloraUniversalExecutor, ['WHATSAPP', { contact, message }], 3, 2000);
         if (waRes?.error) throw new Error(waRes.error);
@@ -846,6 +936,7 @@ async function executeStep(step) {
 
         log(`AI Brain: Reasoning...`, 'running');
         const aiRes = await executeAiWaterfall(aiPrompt, params.systemInstruction);
+        if (aiRes?.tokensUsed) broadcastTokenUsage(aiRes.tokensUsed);
         if (!aiRes.success) {
           // Graceful: log and continue rather than throwing and halting queue
           log(`AI Brain: No response from providers, skipping step`, 'done');
@@ -867,6 +958,14 @@ async function executeStep(step) {
         if (res?.error && params.target) {
           await sleep(1000);
           res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['CLICK', { target: params.target }]);
+        }
+        if (res?.error && params.target) {
+          let screenshot = '';
+          try { screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 55 }); } catch {}
+          const coordinateMap = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['SCREEN_COORDINATE_MAP', {}], 1, 0).catch(() => []);
+          const wanted = String(params.target).toLowerCase();
+          const match = (coordinateMap || []).find(item => item.label?.toLowerCase().includes(wanted));
+          if (screenshot && match) res = await injectAndRun(tab.id, __zuloraUniversalExecutor, ['VISION_CLICK', { x: match.x, y: match.y }], 1, 0);
         }
         if (res?.error) throw new Error(res.error);
         log(`Agent 2 Clicked: ${params.selector || params.target}`, 'done');
@@ -999,6 +1098,7 @@ async function runQueue() {
             url: curTab.url || '',
             title: curTab.title || '',
             screenshot,
+            coordinateMap: await injectAndRun(curTab.id, __zuloraUniversalExecutor, ['SCREEN_COORDINATE_MAP', {}], 1, 0).catch(() => []),
             status: 'verified',
             timestamp: Date.now()
           };

@@ -207,26 +207,30 @@ export function smartExtractEmailPayload(prompt) {
  * then wraps it in a Pearl or Azure template.
  */
 export async function generateEmailPayload(rawPrompt, template = TEMPLATES.PEARL, meta = {}) {
-  const systemPrompt = `You are an expert email writer. Write a concise, professional email body based on the following user instruction.
-- Output ONLY the email body text, no subject line, no greeting like "Dear..." unless explicitly requested.
-- Keep it under 200 words.
-- Use clean, professional language.
-- Output plain text only, no markdown.`;
+  const systemPrompt = 'Act as an intent and copywriting processor. Return ONLY JSON {"subject":"...","body":"...","isHtml":false}. Write a polished complete email based on the intent, not a verbatim copy of the instruction. Include greeting and sign-off. Do not invent facts.';
 
   const llmResult = await callWaterfallLLM(rawPrompt, systemPrompt, {
-    maxTokens: 400,
+    maxTokens: 600,
     temperature: 0.3,
     timeoutMs: 3000,
     groqModel: 'llama-3.3-70b-versatile'
   });
 
-  const bodyText = (llmResult.success && llmResult.text) ? llmResult.text.trim() : rawPrompt;
-  const bodyHtml = renderEmailTemplate(bodyText, template, { subject: meta.subject || '' });
+  let structured = {};
+  try {
+    const json = llmResult.text?.replace(/```json?|```/gi, '').match(/\{[\s\S]*\}/)?.[0];
+    if (llmResult.success && json) structured = JSON.parse(json);
+  } catch {}
+  const bodyText = String(structured.body || '').trim() || 'Hello,\n\nI wanted to share an update with you. Please let me know if you have any questions.\n\nBest regards,\nZulora AI';
+  const subject = String(meta.subject || structured.subject || 'A quick update').trim();
+  const bodyHtml = renderEmailTemplate(bodyText, template, { subject });
 
   return {
     bodyText,
     bodyHtml,
-    tokensUsed: llmResult.tokensUsed || (llmResult.success ? Math.ceil(bodyText.split(/\s+/).length * 1.3) : 0),
+    subject,
+    isHtml: true,
+    tokensUsed: Number(llmResult.tokensUsed) || 0,
     provider: llmResult.provider || 'fallback'
   };
 }
@@ -292,29 +296,32 @@ export function cleanSearchIntent(rawQuery) {
 export function renderEmailTemplate(bodyHtml, templateType = TEMPLATES.PEARL, meta = {}) {
   const currentDate = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
   const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-  const content = typeof bodyHtml === 'object' ? Object.values(bodyHtml).join('\n') : String(bodyHtml || '');
+  const rawContent = typeof bodyHtml === 'object' ? Object.values(bodyHtml).join('\n') : String(bodyHtml || '');
+  const escapeHtml = (value) => String(value || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const content = escapeHtml(rawContent).replace(/\n/g, '<br>');
+  const safeSubject = escapeHtml(meta.subject || 'Message from Zulora AI');
 
   if (templateType === TEMPLATES.AZURE || templateType === 'azure') {
     return `<div style="font-family:'Inter',-apple-system,sans-serif;background:linear-gradient(135deg,#0c1a2e,#0f2a4a);color:#e2e8f0;max-width:600px;margin:0 auto;border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,0.1)">
       <div style="padding:32px;border-bottom:1px solid rgba(255,255,255,0.1)">
-        <h2 style="margin:0;color:#38bdf8;font-size:24px;font-weight:600">${meta.subject || 'Message from Zulora AI'}</h2>
+        <h2 style="margin:0;color:#007AFF;font-size:24px;font-weight:600">${safeSubject}</h2>
         <p style="margin:8px 0 0;color:#94a3b8;font-size:13px">Sent on ${currentDate} at ${time}</p>
       </div>
-      <div style="padding:32px;font-size:15px;line-height:1.7">${content.replace(/\n/g, '<br>')}</div>
+      <div style="padding:32px;font-size:15px;line-height:1.7">${content}</div>
       <div style="padding:24px;border-top:1px solid rgba(255,255,255,0.1);text-align:center">
         <p style="margin:0;font-size:12px;color:#64748b">Automated by <span style="color:#38bdf8;font-weight:600">Zulora AI</span></p>
       </div></div>`;
   }
 
   // Default Pearl Template
-  return `<div style="font-family:'Inter',-apple-system,sans-serif;background:#fff;color:#1e293b;max-width:600px;margin:0 auto;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;box-shadow:0 4px 6px rgba(0,0,0,0.05)">
-    <div style="padding:32px;background:linear-gradient(135deg,#f8fafc,#f1f5f9);border-bottom:1px solid #e2e8f0">
-      <h2 style="margin:0;color:#0f172a;font-size:24px;font-weight:600">${meta.subject || 'Message from Zulora AI'}</h2>
+  return `<div style="font-family:'Inter',-apple-system,sans-serif;background:#F8F9FA;color:#1e293b;max-width:600px;margin:0 auto;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;box-shadow:0 4px 6px rgba(0,0,0,0.05)">
+    <div style="padding:32px;background:#F8F9FA;border-bottom:1px solid #e2e8f0">
+      <h2 style="margin:0;color:#007AFF;font-size:24px;font-weight:600">${safeSubject}</h2>
       <p style="margin:8px 0 0;color:#64748b;font-size:13px">Sent on ${currentDate} at ${time}</p>
     </div>
-    <div style="padding:32px;font-size:15px;line-height:1.6;color:#334155">${content.replace(/\n/g, '<br>')}</div>
-    <div style="padding:24px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;text-align:center">
-      <p style="margin:0;font-size:12px;color:#94a3b8">Automated by <span style="color:#0ea5e9;font-weight:600">Zulora AI</span></p>
+    <div style="padding:32px;font-size:15px;line-height:1.6;color:#334155">${content}</div>
+    <div style="padding:24px 32px;background:#F8F9FA;border-top:1px solid #e2e8f0;text-align:center">
+      <p style="margin:0;font-size:12px;color:#94a3b8">Automated by <span style="color:#007AFF;font-weight:600">Zulora AI</span></p>
     </div></div>`;
 }
 
@@ -476,7 +483,7 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
       if (!res.ok) return null;
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
-      const tokensUsed = data?.usage?.total_tokens || Math.ceil((prompt.length + (text?.length || 0)) / 4);
+      const tokensUsed = Number(data?.usage?.total_tokens) || 0;
       return text ? { success: true, text, provider: 'groq', tokensUsed } : null;
     });
     if (result) return result;
@@ -501,7 +508,7 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
       if (!res.ok) return null;
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
-      const tokensUsed = data?.usage?.total_tokens || Math.ceil((prompt.length + (text?.length || 0)) / 4);
+      const tokensUsed = Number(data?.usage?.total_tokens) || 0;
       return text ? { success: true, text, provider: 'cerebras', tokensUsed } : null;
     });
     if (result) return result;
@@ -533,7 +540,7 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
         if (!res.ok) return null;
         const data = await res.json();
         const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        const tokensUsed = data?.usageMetadata?.totalTokenCount || Math.ceil((prompt.length + (text?.length || 0)) / 4);
+        const tokensUsed = Number(data?.usageMetadata?.totalTokenCount) || 0;
         return text ? { success: true, text, provider: `gemini/${model}`, tokensUsed } : null;
       }, 1); // 1 attempt per model — rotate key on any failure
       if (result && result.success) return result;
@@ -554,7 +561,7 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
       if (!res.ok) return null;
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
-      const tokensUsed = data?.usage?.total_tokens || Math.ceil((prompt.length + (text?.length || 0)) / 4);
+      const tokensUsed = Number(data?.usage?.total_tokens) || 0;
       return text ? { success: true, text, provider: 'openrouter', tokensUsed } : null;
     });
     if (result) return result;
@@ -700,7 +707,8 @@ Rules:
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          const steps = parsed.map((item, idx) => normalizeAgentStep(item, idx + 1));
+          const steps = parsed.slice(0, isComplexCommand(prompt) ? 6 : undefined).map((item, idx) => normalizeAgentStep(item, idx + 1));
+          if (isComplexCommand(prompt) && steps.length < 3) return { steps: ensureMinimumPlan(steps), tokensUsed: planResult.tokensUsed || 0 };
           return { steps, tokensUsed: planResult.tokensUsed || 0 };
         }
       }
@@ -710,7 +718,22 @@ Rules:
   }
 
   // Deterministic Local Fallback Planner
-  return { steps: parseCommandToSteps(prompt), tokensUsed: 0 };
+  const fallbackSteps = parseCommandToSteps(prompt);
+  return { steps: isComplexCommand(prompt) ? ensureMinimumPlan(fallbackSteps) : fallbackSteps, tokensUsed: 0 };
+}
+
+function isComplexCommand(prompt) {
+  return /\b(and then|after that|then|next|also|multiple|several|step by step)\b/i.test(String(prompt || ''));
+}
+
+function ensureMinimumPlan(steps) {
+  const expanded = [...steps];
+  while (expanded.length < 3) {
+    expanded.push(expanded.length === 1
+      ? { action: ACTION_TYPES.WAIT, app: 'System', params: { ms: 700 } }
+      : { action: ACTION_TYPES.READ_DOM, app: 'Browser', params: { deep: false } });
+  }
+  return expanded.slice(0, 6).map((step, i) => ({ ...step, step: i + 1 }));
 }
 
 function normalizeAgentStep(raw, stepNum) {
@@ -764,8 +787,9 @@ function normalizeAgentStep(raw, stepNum) {
       step,
       action: ACTION_TYPES.WHATSAPP_SEND,
       app: 'WhatsApp',
-      params: { recipient: cleanSearchIntent(raw.recipient || ''), message: raw.message || '' },
-      needsLlm: !raw.message
+      params: { recipient: cleanSearchIntent(raw.recipient || raw.params?.recipient || ''), rawPrompt: String(raw.message || raw.params?.message || raw.intent || "Write a concise, friendly WhatsApp message fulfilling the user's intent.") },
+      needsLlm: true,
+      llmType: 'whatsapp'
     };
   }
   if (action === 'GMAIL_COMPOSE') {
@@ -773,8 +797,9 @@ function normalizeAgentStep(raw, stepNum) {
       step,
       action: ACTION_TYPES.GMAIL_COMPOSE,
       app: 'Gmail',
-      params: { to: raw.to || '', subject: raw.subject || '', body: raw.body || '' },
-      needsLlm: !raw.body
+      params: { to: raw.to || raw.params?.to || '', subject: 'A quick update', rawPrompt: String(raw.body || raw.params?.body || raw.intent || 'Write a professional email fulfilling the user intent.'), template: raw.template || raw.params?.template || TEMPLATES.PEARL },
+      needsLlm: true,
+      llmType: 'email'
     };
   }
   if (action === 'CHATGPT_PROMPT') {
@@ -860,6 +885,12 @@ export function parseCommandToSteps(command) {
     return [{ action: ACTION_TYPES.READ_DOM, app: 'Screen Reader', params: { readAloud: true, deep: true } }];
   }
 
+  // Phone calls use the operating-system handler when a number is present.
+  if (/\b(call|phone|dial)\b/i.test(cmd)) {
+    const phone = command.match(/(?:\+?\d[\d\s().-]{6,}\d)/)?.[0]?.replace(/[^+\d]/g, '');
+    return [{ action: ACTION_TYPES.OPEN_URL, app: phone ? 'Phone' : 'Google Meet', params: { url: phone ? `tel:${phone}` : 'https://meet.google.com' } }];
+  }
+
   // Multi-step: find best website
   if (cmd.includes('find best website for') && cmd.includes('open')) {
     const query = cleanSearchIntent(command.replace(/find best website for|open it/gi, ''));
@@ -898,7 +929,7 @@ export function parseCommandToSteps(command) {
       action: ACTION_TYPES.GMAIL_COMPOSE, app: 'Gmail', needsLlm: true, llmType: 'email',
       params: {
         to: extracted.recipient || '',
-        subject: extracted.subject || 'Message from Zulora AI',
+        subject: 'A quick update',
         rawPrompt: extracted.body || cleanSearchIntent(command),
         template: isAzure ? TEMPLATES.AZURE : TEMPLATES.PEARL
       }
@@ -907,13 +938,13 @@ export function parseCommandToSteps(command) {
 
   // WhatsApp
   if (cmd.includes('whatsapp') || cmd.includes('whats app')) {
-    const toMatch = command.match(/to\s+([A-Za-z0-9\s]+?)(?:\s+(?:saying|with|message)|$)/i);
-    const msgMatch = command.match(/(?:saying|message|with|text)[:\s]+["']?(.+?)["']?$/i);
+    const toMatch = command.match(/(?:\bto\s+|\bmessage\s+)([A-Za-z0-9+().\s-]+?)(?:\s+(?:saying|with|and send|and say)|$)/i);
+    const msgMatch = command.match(/(?:saying|with (?:the )?message|send (?:them )?a message)[:\s]+["']?(.+?)["']?$/i);
     return [{
       action: ACTION_TYPES.WHATSAPP_SEND, app: 'WhatsApp', needsLlm: true, llmType: 'whatsapp',
       params: {
         recipient: cleanSearchIntent(toMatch?.[1] || ''),
-        rawPrompt: msgMatch?.[1] || cleanSearchIntent(command)
+        rawPrompt: msgMatch?.[1] || 'Write a concise, friendly WhatsApp message that fulfills the user intent.'
       }
     }];
   }
@@ -1031,26 +1062,34 @@ export async function executeCommand(command, arg2, arg3) {
     logEntry(`🤖 Generating ${step.llmType || 'content'} payload...`, 'running');
 
     const sysP = step.llmType === 'email'
-      ? 'Write a professional email body. Output raw plain text only. No markdown code blocks.'
-      : 'Write a concise, friendly WhatsApp message. Output raw plain text only. No markdown.';
+      ? 'Act as an intent and copywriting processor. Return ONLY JSON {"subject":"...","body":"...","isHtml":false}. Produce a polished email, not a rewrite of the instruction. Do not invent facts.'
+      : 'Act as an intent and copywriting processor. Return ONLY JSON {"message":"..."}. Produce a concise, natural message fulfilling the intent. Never echo the instruction verbatim.';
 
     const result = await callWaterfallLLM(step.params.rawPrompt, sysP, {
-      maxTokens: 1024,
+      maxTokens: 700,
       timeoutMs: 2500
     });
 
     if (result.success && result.text) {
-      const tokens = result.tokensUsed || Math.floor(result.text.split(/\s+/).length * 1.3) + 20;
+      const tokens = Number(result.tokensUsed) || 0;
       totalTokensUsed += tokens;
 
+      let copy = {};
+      try {
+        const json = result.text.replace(/```json?|```/gi, '').match(/\{[\s\S]*\}/)?.[0];
+        if (json) copy = JSON.parse(json);
+      } catch {}
+
       if (step.action === ACTION_TYPES.GMAIL_COMPOSE) {
+        step.params.subject = String(copy.subject || step.params.subject || 'A quick update').trim();
+        const emailBody = String(copy.body || '').trim() || 'Hello,\n\nI wanted to share an update with you. Please let me know if you have any questions.\n\nBest regards,\nZulora AI';
         step.params.bodyHtml = renderEmailTemplate(
-          result.text,
+          emailBody,
           step.params.template || TEMPLATES.PEARL,
           { subject: step.params.subject }
         );
       } else if (step.action === ACTION_TYPES.WHATSAPP_SEND) {
-        step.params.message = result.text;
+        step.params.message = String(copy.message || '').trim() || 'Hello! I wanted to get in touch. Please let me know when you have a moment.';
       }
 
       logEntry(`⚡ Generated payload via ${result.provider} (${tokens} tokens)`, 'done');
@@ -1063,9 +1102,10 @@ export async function executeCommand(command, arg2, arg3) {
       }
     } else {
       // Direct text fallback
-      if (step.action === ACTION_TYPES.WHATSAPP_SEND) step.params.message = step.params.rawPrompt;
+      if (step.action === ACTION_TYPES.WHATSAPP_SEND) step.params.message = 'Hello! I wanted to get in touch. Please let me know when you have a moment.';
       if (step.action === ACTION_TYPES.GMAIL_COMPOSE) {
-        step.params.bodyHtml = renderEmailTemplate(step.params.rawPrompt, TEMPLATES.PEARL, { subject: step.params.subject });
+        step.params.subject = step.params.subject || 'A quick update';
+        step.params.bodyHtml = renderEmailTemplate('Hello,\n\nI wanted to share an update with you. Please let me know if you have any questions.\n\nBest regards,\nZulora AI', step.params.template || TEMPLATES.PEARL, { subject: step.params.subject });
       }
       logEntry('⚠️ Using direct text fallback', 'done');
     }

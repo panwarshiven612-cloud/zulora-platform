@@ -95,6 +95,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   const [parsedPreview, setParsedPreview] = useState([]);
   const [showPreview, setShowPreview] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [tokenDelta, setTokenDelta] = useState(0);
 
   // Token Tracking & Daily 10-Use Gatekeeper state
   const [sessionTokens, setSessionTokens] = useState(() => {
@@ -177,7 +178,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
         window.chrome.storage.local.set({ floatingMicEnabled: enabled });
       }
     } catch {}
-    const el = document.getElementById('zulora-floating-mic');
+    const el = document.getElementById('zulora-voice-overlay');
     if (el) el.style.display = enabled ? 'flex' : 'none';
   }, []);
 
@@ -230,12 +231,13 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   useEffect(() => {
     const handleTokenUpdate = (e) => {
       if (e.detail?.taskTokens) {
-        recordTokens(e.detail.taskTokens);
+        setTokenDelta(e.detail.delta || e.detail.taskTokens);
+        window.setTimeout(() => setTokenDelta(0), 5000);
       }
     };
     window.addEventListener('ZULORA_TOKEN_UPDATE', handleTokenUpdate);
     return () => window.removeEventListener('ZULORA_TOKEN_UPDATE', handleTokenUpdate);
-  }, [recordTokens]);
+  }, []);
 
   // ── Live Action Plan Preview ────────────────────────────────────────────────
   useEffect(() => {
@@ -488,7 +490,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
         <div className="flex items-center justify-between px-5 py-2.5 bg-slate-50 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800 text-[11px]">
           <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300 font-medium">
             <Zap className="w-3.5 h-3.5 text-sky-500 animate-pulse" />
-            <span>Tokens Used: <strong className="font-bold text-sky-600 dark:text-sky-400">{sessionTokens.toLocaleString()}</strong> Tokens</span>
+            <span>Tokens Used: <strong className="font-bold text-sky-600 dark:text-sky-400">{sessionTokens.toLocaleString()}</strong> Tokens{tokenDelta > 0 && <strong className="ml-1 text-emerald-600 dark:text-emerald-400">+{tokenDelta.toLocaleString()}</strong>}</span>
             <span className="text-slate-300 dark:text-slate-700 mx-1">|</span>
             <span className={isPro ? "text-amber-500 font-bold" : "text-slate-500 dark:text-slate-400 font-medium"}>
               {isPro ? 'Unlimited Pro Runs' : `${Math.max(0, DAILY_RUN_LIMIT - dailyUsage)}/10 Runs Left Today`}

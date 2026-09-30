@@ -56,6 +56,10 @@
   if (isExtensionValid()) {
     try {
       chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+        if (message && message.type === 'ZULORA_TOKEN_UPDATE') {
+          window.dispatchEvent(new CustomEvent('ZULORA_TOKEN_UPDATE', { detail: { taskTokens: message.taskTokens, delta: message.delta } }));
+          if (sendResponse) sendResponse({ ok: true });
+        }
         if (message && (message.type === 'ZULORA_STATUS_UPDATE' || message.type === 'ZULORA_AGENT_STEP_UPDATE' || message.type === 'ZULORA_SCREEN_STATE_UPDATE')) {
           window.postMessage({ ...message, source: 'ZULORA_EXTENSION' }, '*');
           if (sendResponse) sendResponse({ ok: true });
@@ -79,7 +83,7 @@
   window.addEventListener('ZULORA_EXECUTE_AGENT_TASK', (event) => {
     const detail = event.detail || {};
     if (detail.type === 'SET_FLOATING_MIC') {
-      const mic = document.getElementById('zulora-floating-mic');
+      const mic = document.getElementById('zulora-voice-overlay');
       if (mic) mic.style.display = detail.enabled ? 'flex' : 'none';
       return;
     }
@@ -309,7 +313,7 @@
 
   // ─── Draggable Pearl & Azure Floating Voice Widget ──────────────────────────
   function injectVoiceWidget() {
-    if (document.getElementById('zulora-floating-mic')) return;
+    if (document.getElementById('zulora-voice-overlay')) return;
 
     if (isExtensionValid()) {
       try {
@@ -324,7 +328,7 @@
   }
 
   function buildWidget() {
-    if (document.getElementById('zulora-floating-mic')) return;
+    if (document.getElementById('zulora-voice-overlay')) return;
 
     // Inject Styles for Mic & Turtle Cursor
     const style = document.createElement('style');
@@ -360,7 +364,7 @@
       }
 
       /* Pearl & Azure Glassmorphism Floating Mic */
-      #zulora-floating-mic {
+      #zulora-voice-overlay {
         position: fixed;
         bottom: 28px;
         right: 28px;
@@ -381,17 +385,17 @@
         touch-action: none;
         transition: transform 0.15s ease, box-shadow 0.2s ease;
       }
-      #zulora-floating-mic:hover {
+      #zulora-voice-overlay:hover {
         transform: scale(1.06);
         box-shadow: 0 10px 36px 0 rgba(2, 132, 199, 0.55), inset 0 1px 2px rgba(255, 255, 255, 0.9);
       }
-      #zulora-floating-mic.listening {
+      #zulora-voice-overlay.listening {
         background: linear-gradient(135deg, rgba(239, 68, 68, 0.92) 0%, rgba(220, 38, 38, 0.92) 100%);
         border: 1.5px solid rgba(255, 255, 255, 0.8);
         box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.8);
         animation: zuloraPulseRing 1.3s infinite cubic-bezier(0.4, 0, 0.6, 1);
       }
-      #zulora-floating-mic svg { pointer-events: none; }
+      #zulora-voice-overlay svg { pointer-events: none; }
       
       /* Visualizer waves inside mic while listening */
       .zulora-wave-bar {
@@ -401,14 +405,14 @@
         margin: 0 1.5px;
         display: none;
       }
-      #zulora-floating-mic.listening .zulora-mic-icon { display: none; }
-      #zulora-floating-mic.listening .zulora-wave-bar {
+      #zulora-voice-overlay.listening .zulora-mic-icon { display: none; }
+      #zulora-voice-overlay.listening .zulora-wave-bar {
         display: block;
         animation: zuloraWave 0.8s ease-in-out infinite alternate;
       }
-      #zulora-floating-mic .zulora-wave-bar:nth-child(2) { animation-delay: 0.15s; }
-      #zulora-floating-mic .zulora-wave-bar:nth-child(3) { animation-delay: 0.3s; }
-      #zulora-floating-mic .zulora-wave-bar:nth-child(4) { animation-delay: 0.45s; }
+      #zulora-voice-overlay .zulora-wave-bar:nth-child(2) { animation-delay: 0.15s; }
+      #zulora-voice-overlay .zulora-wave-bar:nth-child(3) { animation-delay: 0.3s; }
+      #zulora-voice-overlay .zulora-wave-bar:nth-child(4) { animation-delay: 0.45s; }
       @keyframes zuloraWave {
         0%   { height: 6px; }
         100% { height: 22px; }
@@ -471,7 +475,7 @@
 
     // Create Widget Button with Wave Visualizer
     const mic = document.createElement('div');
-    mic.id = 'zulora-floating-mic';
+    mic.id = 'zulora-voice-overlay';
     mic.setAttribute('title', 'Zulora AI Voice Agent (Click to speak / click to stop)');
     mic.innerHTML = `
       <svg class="zulora-mic-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
