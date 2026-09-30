@@ -47,14 +47,20 @@ import {
   Plus,
   Pencil,
   Radio,
+  Link,
 } from 'lucide-react';
+import { onAuthStateChanged } from 'firebase/auth';
 import { useAuth } from '../context/AuthContext';
 import { apiRouter } from '../services/apiRouter';
+import connectorManager from '../services/connectorManager';
+import { executeConnectorTask } from '../services/backgroundConnectorEngine';
+import { driveAuth } from '../config/firebaseDrive';
 import { isCodeGenerationPrompt } from '../services/aiModels';
 import { firestoreService, deriveChatTitle } from '../services/firestoreService';
 import { imageFileToDataUrl, readFileAsDataUrl } from '../services/imageUtils';
 import CodeArtifactRunner from './CodeArtifactRunner';
 import ModelSelector from './ModelSelector';
+import ConnectorsModal from './ConnectorsModal';
 
 /* ============================================================
    CONSTANTS
@@ -489,6 +495,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [isSpeakingIndex, setIsSpeakingIndex] = useState(null);
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const [showConnectorsModal, setShowConnectorsModal] = useState(false);
+  const [connectorContext, setConnectorContext] = useState('');
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [queryTime, setQueryTime] = useState(null);
@@ -505,6 +513,38 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const thinkingTimerRef = useRef(null);
 
   useEffect(() => () => clearTimeout(thinkingTimerRef.current), []);
+
+  useEffect(() => {
+    let active = true;
+    const refreshConnectorContext = () => {
+      if (!active) return;
+      setConnectorContext(connectorManager.getActiveConnectorContext(Boolean(driveAuth.currentUser)));
+    };
+    refreshConnectorContext();
+    window.addEventListener('zulora-connectors-changed', refreshConnectorContext);
+    const unsubscribe = onAuthStateChanged(driveAuth, refreshConnectorContext);
+    return () => {
+      active = false;
+      window.removeEventListener('zulora-connectors-changed', refreshConnectorContext);
+      unsubscribe();
+    };
+  }, [currentUser?.uid]);
+
+  useEffect(() => {
+    const onFormResponses = event => {
+      const responses = Array.isArray(event.detail?.responses) ? event.detail.responses : [];
+      const formId = String(event.detail?.formId || '');
+      const context = JSON.stringify(responses.slice(0, 20), null, 2).slice(0, 18_000);
+      setInputPrompt(previous => [
+        previous.trim(),
+        `Please summarize these Google Forms responses${formId ? ` (form ${formId})` : ''}:\n\n${context}`
+      ].filter(Boolean).join('\n\n'));
+      setShowConnectorsModal(false);
+      window.requestAnimationFrame(() => textareaRef.current?.focus());
+    };
+    window.addEventListener('zulora-form-responses', onFormResponses);
+    return () => window.removeEventListener('zulora-form-responses', onFormResponses);
+  }, []);
 
   useEffect(() => {
     const previews = new Map();
@@ -791,7 +831,19 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       const userVault = currentUser?.uid
         ? await firestoreService.getVault(currentUser.uid)
         : null;
-      const result = await apiRouter.generateChat(
+      const connectorTask = await executeConnectorTask(basePrompt, {
+        onStatus: status => setShowThinking(Boolean(status))
+      });
+      const result = connectorTask?.handled
+        ? {
+          text: connectorTask.text,
+          model: 'Zulora Connectors',
+          provider: 'Native API Connectors',
+          connectorData: connectorTask.data,
+          usage: { tracked: false, processedTokens: 0 },
+          tokenUsage: { totalTokens: 0 }
+        }
+        : await apiRouter.generateChat(
         fullPrompt,
         contextMessages,
         {
@@ -802,6 +854,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           contextMemory,
           aiBrain,
           userVault,
+          connectorContext,
           attachments: attachmentPayloads,
           onToken: token => {
             if (!token) return;
@@ -859,7 +912,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       const finalMessages = [...newMessages, aiMsg];
       setMessages(finalMessages);
       const estimatedTokens = Math.max(512, Math.ceil((fullPrompt.length + String(result.text || '').length) / 4));
-      const processedTokens = Number(result.tokenUsage?.totalTokens || result.usage?.processedTokens) || estimatedTokens;
+      const processedTokens = connectorTask?.handled
+        ? 0
+        : Number(result.tokenUsage?.totalTokens || result.usage?.processedTokens) || estimatedTokens;
       await recordUsage('chat', Boolean(result.usage?.tracked), processedTokens);
       if (currentUser?.uid) firestoreService.recordQueryContext(currentUser.uid, basePrompt, enableWebSearch ? 'search' : 'chat');
       const generatedCode = Array.from(String(result.text || '').matchAll(/```([^\r\n]*)\r?\n([\s\S]*?)```/g))
@@ -922,7 +977,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       setLoading(false);
       sendingRef.current = false;
     }
-  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, buildContextMessages, getAttachmentDataUrl, isPro, checkUsage, recordUsage, setIsUsageModalOpen, setIsPricingModalOpen, onUpdateSession]);
+  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, buildContextMessages, getAttachmentDataUrl, isPro, checkUsage, recordUsage, setIsUsageModalOpen, setIsPricingModalOpen, onUpdateSession, connectorContext]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1052,6 +1107,17 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
                 <span className="hidden sm:inline">Search</span>
               </button>
 
+              <button
+                type="button"
+                onClick={() => setShowConnectorsModal(true)}
+                className="flex min-h-9 items-center gap-1.5 rounded-lg border border-sky-200/70 bg-sky-50/70 px-2.5 py-1.5 text-xs font-semibold text-sky-700 transition hover:border-sky-300 hover:bg-sky-100 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-300 dark:hover:bg-sky-950/60"
+                title="Connect Gmail, Sheets, Calendar, Forms, or Zulora Drive"
+                aria-label="Open Connectors"
+              >
+                <Link className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Connectors</span>
+              </button>
+
               {/* Attach */}
               <button
                 onClick={() => fileInputRef.current?.click()}
@@ -1130,6 +1196,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       {showModelMenu && (
         <div aria-hidden="true" className="fixed inset-0 z-40" onClick={() => setShowModelMenu(false)} />
       )}
+      {showConnectorsModal && <ConnectorsModal currentUser={currentUser} onClose={() => setShowConnectorsModal(false)} />}
     </div>
   );
 };

@@ -52,6 +52,16 @@ service cloud.firestore {
       match /code_projects/{projectId} {
         allow read, write: if isOwner(uid);
       }
+
+      // OAuth metadata contains scopes and account labels only, never tokens.
+      match /connectors/{providerId} {
+        allow read, write: if isOwner(uid);
+      }
+
+      // Zulora Drive metadata is stored in the dedicated Drive Firebase project.
+      match /driveFiles/{fileId} {
+        allow read, write: if isOwner(uid);
+      }
     }
   }
 }

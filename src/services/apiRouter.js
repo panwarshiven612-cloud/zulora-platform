@@ -76,6 +76,7 @@ const geminiKeyPerformance = new Map();
 
 const providerSystemPrompt = options => [
   buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault),
+  options.connectorContext ? `NATIVE CONNECTORS CONTEXT:\n${options.connectorContext}` : '',
   options.flagship ? FLAGSHIP_SYSTEM_PROMPT : '',
   options.studioMode ? AI_STUDIO_SYSTEM_PROMPT : ''
 ].filter(Boolean).join('\n\n');

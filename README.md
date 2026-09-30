@@ -77,6 +77,16 @@ Stored and tracked dynamically in **Firebase Cloud Firestore** under `users/{uid
 - **Email Support**: `zulora.help@gmail.com`
 - **Founder**: Shiven Panwar (Young Entrepreneur)
 
+## Native Connectors & Zulora Drive setup
+
+The Connectors hub calls Google Workspace REST APIs from the signed-in web app; it does not use browser tabs or require the Zulora Computer Plugin extension. The extension remains the separate tool for explicitly requested page and DOM automation.
+
+Before enabling Gmail, Sheets, Calendar, or Forms, set `VITE_GOOGLE_CLIENT_ID` to a Google Cloud **Web application** OAuth client ID. Add the deployed app origins to its authorized JavaScript origins, configure the OAuth consent screen, and enable Gmail API, Google Sheets API, Google Calendar API, Google Forms API, and Google Drive API (spreadsheet name discovery uses read-only Drive metadata). The required scopes are requested per connector when the user connects it.
+
+Google Identity Services browser tokens are short-lived and kept in memory only. The app never writes OAuth access or refresh tokens to LocalStorage or Firestore; a user reconnects after the current token expires or the page session ends. Server-side unattended refresh would require a separately deployed authorization-code backend and secure refresh-token storage.
+
+Zulora Drive uses a second, named Firebase app for project `zulora-drive`, with its own Firebase Google sign-in. Enable Google as a sign-in provider and add the app's authorized domains in that project's Firebase console. The checked-in `firestore.rules` and `storage.rules` include owner-scoped Drive paths; deploy them to the Drive project with `firebase deploy --project zulora-drive --only firestore:rules,storage` after selecting that Firebase project. The Firebase client configuration in `src/config/firebaseDrive.js` is public app configuration; Firebase Security Rules enforce data access.
+
 ---
 
 ## 🛠️ Getting Started
