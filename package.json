@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@emailjs/browser": "^4.4.1",
+    "@zegocloud/zego-uikit-prebuilt": "^2.18.4",
     "canvas-confetti": "^1.9.4",
     "firebase": "^10.14.1",
     "lucide-react": "^0.460.0",

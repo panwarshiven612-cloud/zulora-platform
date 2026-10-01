@@ -62,6 +62,14 @@ service cloud.firestore {
       match /driveFiles/{fileId} {
         allow read, write: if isOwner(uid);
       }
+
+      match /files/{fileId} {
+        allow read, write: if isOwner(uid);
+      }
+
+      match /drive_files/{fileId} {
+        allow read, write: if isOwner(uid);
+      }
     }
   }
 }

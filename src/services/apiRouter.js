@@ -1026,12 +1026,31 @@ export const apiRouter = {
       ? `data:${options.sourceImageMimeType || 'image/png'};base64,${options.sourceImageBase64}`
       : '');
     if (referenceImage) {
-      const model = 'black-forest-labs/FLUX.1-Kontext-dev';
-      const imageUrl = await browserHuggingFaceImage(styledPrompt, model, referenceImage);
-      return await syncUsage({
-        url: imageUrl, imageUrl, provider: 'Hugging Face Image-to-Image API', model,
-        prompt: prompt.trim(), enhancedPrompt: styledPrompt, seed
-      }, 'image', currentUser);
+      if (HF_IMAGE_KEY) {
+        const model = 'black-forest-labs/FLUX.1-Kontext-dev';
+        try {
+          const imageUrl = await browserHuggingFaceImage(styledPrompt, model, referenceImage);
+          return await syncUsage({
+            url: imageUrl, imageUrl, provider: 'Hugging Face Image-to-Image API', model,
+            prompt: prompt.trim(), enhancedPrompt: styledPrompt, seed
+          }, 'image', currentUser);
+        } catch (error) {
+          console.warn('[Image] Hugging Face reference edit failed; falling back to text-prompt synthesis:', error.message);
+        }
+      }
+    }
+
+    if (!referenceImage && HF_IMAGE_KEY && imageEngine !== 'hf-flux-dev' && imageEngine !== 'hf-sdxl') {
+      try {
+        const model = 'black-forest-labs/FLUX.1-schnell';
+        const imageUrl = await browserHuggingFaceImage(styledPrompt, model);
+        return await syncUsage({
+          url: imageUrl, imageUrl, provider: 'Hugging Face Inference API', model,
+          prompt: prompt.trim(), enhancedPrompt: styledPrompt, seed
+        }, 'image', currentUser);
+      } catch (error) {
+        console.warn('[Image] Hugging Face primary failed; switching to Pollinations:', error.message);
+      }
     }
 
     if (imageEngine === 'hf-flux-dev' || imageEngine === 'hf-sdxl') {
@@ -1060,7 +1079,7 @@ export const apiRouter = {
       return await syncUsage({
         url: fluxUrl,
         imageUrl: fluxUrl,
-        provider: 'Pollinations FLUX',
+        provider: referenceImage ? 'Pollinations prompt-only edit fallback' : 'Pollinations FLUX',
         model: imageEngine === 'pollinations-hd' ? 'Pollinations HD FLUX' : 'FLUX.1-Schnell',
         prompt: prompt.trim(),
         enhancedPrompt: styledPrompt,
@@ -1177,7 +1196,7 @@ export const apiRouter = {
     return await syncUsage({
       url: fallbackPollinationsUrl,
       imageUrl: fallbackPollinationsUrl,
-      provider: 'Pollinations AI',
+      provider: referenceImage ? 'Pollinations prompt-only edit fallback' : 'Pollinations AI',
       model: 'FLUX.1-Schnell',
       prompt: prompt.trim(),
       enhancedPrompt: styledPrompt,

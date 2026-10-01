@@ -72,7 +72,7 @@ async function firebaseCertificates(forceRefresh = false) {
   return certificates;
 }
 
-async function verifyUser(req) {
+export async function verifyUser(req) {
   const token = bearer(req);
   if (!token) return null;
   const [encodedHeader, encodedPayload, encodedSignature, extra] = token.split('.');
@@ -872,8 +872,8 @@ async function geminiImageEdit(prompt, sourceImage, aspectRatio) {
 
 async function pollinationsImage(prompt, sourceImage, aspectRatio, seed, quality = 'quick') {
   const key = providerKeys.pollinations;
-  if (!key) return null;
   if (sourceImage) {
+    if (!key) return null;
     const source = parseDataImage(sourceImage);
     if (!source) throw new Error('Reference image must be PNG, JPEG, or WebP.');
     const form = new FormData();
@@ -890,8 +890,10 @@ async function pollinationsImage(prompt, sourceImage, aspectRatio, seed, quality
   const longest = quality === 'hd' ? 1536 : 1024;
   const width = ratioW >= ratioH ? longest : Math.round(longest * ratioW / ratioH);
   const height = ratioH >= ratioW ? longest : Math.round(longest * ratioH / ratioW);
-  const url = `https://gen.pollinations.ai/image/${encodeURIComponent(prompt)}?model=flux&width=${width}&height=${height}&seed=${encodeURIComponent(seed || 0)}`;
-  const response = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${key}` } }, 28_000);
+  const url = key
+    ? `https://gen.pollinations.ai/image/${encodeURIComponent(prompt)}?model=flux&width=${width}&height=${height}&seed=${encodeURIComponent(seed || 0)}`
+    : `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${width}&height=${height}&seed=${encodeURIComponent(seed || 0)}&nologo=true`;
+  const response = await fetchWithTimeout(url, { headers: key ? { Authorization: `Bearer ${key}` } : {} }, 28_000);
   if (!response.ok) throw new Error('Pollinations image generation failed.');
   return responseImage(response);
 }
@@ -992,7 +994,7 @@ async function generateImage(body) {
   if (!prompt) throw new Error('Write a prompt before generating an image.');
   const hasImageProvider = sourceImage
     ? availableProviders().includes('gemini') || Boolean(providerKeys.pollinations || providerKeys.huggingface)
-    : Boolean(providerKeys.pollinations || providerKeys.huggingface || providerKeys.fal || (providerKeys.cloudflareAccountId && providerKeys.cloudflareToken) || providerKeys.replicate);
+    : true; // The legacy Pollinations image endpoint is the no-key last resort.
   if (!hasImageProvider) throw new Error(`No image-${sourceImage ? 'editing' : 'generation'} providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.`);
   const fullPrompt = buildImagePrompt(prompt, body.style, body.negativePrompt);
   const attempts = [];
@@ -1015,12 +1017,12 @@ async function generateImage(body) {
   } else {
     if (imageEngine === 'hf-flux-dev' || imageEngine === 'hf-sdxl') {
       attempts.push(['Hugging Face Inference API', selectedHfModel, () => huggingfaceImage(fullPrompt, selectedHfModel)]);
-    } else if (imageEngine === 'pollinations-hd') {
-      attempts.push(['Pollinations HD', 'flux-hd', () => pollinationsImage(fullPrompt, '', body.aspectRatio, body.seed, 'hd')]);
     } else {
-      attempts.push(['Pollinations', 'flux', () => pollinationsImage(fullPrompt, '', body.aspectRatio, body.seed)]);
+      if (providerKeys.huggingface) attempts.push(['Hugging Face Inference API', 'black-forest-labs/FLUX.1-schnell', () => huggingfaceImage(fullPrompt, 'black-forest-labs/FLUX.1-schnell')]);
+      if (imageEngine === 'pollinations-hd') attempts.push(['Pollinations HD', 'flux-hd', () => pollinationsImage(fullPrompt, '', body.aspectRatio, body.seed, 'hd')]);
+      else attempts.push(['Pollinations', 'flux', () => pollinationsImage(fullPrompt, '', body.aspectRatio, body.seed)]);
     }
-    if (imageEngine !== 'hf-flux-dev' && imageEngine !== 'hf-sdxl') {
+    if (imageEngine !== 'hf-flux-dev' && imageEngine !== 'hf-sdxl' && !providerKeys.huggingface) {
       attempts.push(['Hugging Face Inference API', 'black-forest-labs/FLUX.1-schnell', () => huggingfaceImage(fullPrompt)]);
     }
     if (imageEngine !== 'pollinations-hd') attempts.push(['Pollinations HD', 'flux-hd', () => pollinationsImage(fullPrompt, '', body.aspectRatio, body.seed, 'hd')]);
@@ -1109,12 +1111,14 @@ async function pollinationsVideo(prompt, duration, aspectRatio, deadline) {
   if (remaining() < 2_000) return null;
   const encodedPrompt = encodeURIComponent(prompt);
   const common = `duration=${Math.min(Number(duration) || 4, 8)}&aspectRatio=${encodeURIComponent(aspectRatio || '16:9')}`;
-  const urls = key ? [`https://gen.pollinations.ai/video/${encodedPrompt}?model=google/veo-3.1-fast&${common}`] : [];
+  const urls = [
+    `https://gen.pollinations.ai/video/${encodedPrompt}?model=google/veo-3.1-fast&${common}`
+  ];
   let lastError;
   for (const url of urls) {
     if (remaining() < 2_000) break;
     try {
-      const headers = key && url.startsWith('https://gen.pollinations.ai/') ? { Authorization: `Bearer ${key}` } : {};
+      const headers = key ? { Authorization: `Bearer ${key}` } : {};
       const response = await fetchWithTimeout(url, { headers }, Math.min(key ? 28_000 : 20_000, remaining()));
       if (!response.ok) throw new Error(`Pollinations video generation failed (HTTP ${response.status}).`);
       const contentType = response.headers.get('content-type') || '';
@@ -1195,10 +1199,10 @@ async function generateVideo(body, onProgress = () => {}) {
     ['fal-ai/hunyuan-video-v1.5/text-to-video', 'HunyuanVideo 1.5']
   ];
   const attempts = [
-    ['Pollinations', 'veo-3.1-fast', () => pollinationsVideo(enriched, body.duration, body.aspectRatio, deadline)],
+    ...falModels.map(([modelId, model]) => ['Fal AI', model, () => falVideo(enriched, body.duration, modelId, deadline)]),
     ['Replicate', 'minimax-video-01', () => replicateVideo(enriched, Math.min(deadline, Date.now() + 20_000))],
-    ['Hugging Face Video API', process.env.HUGGINGFACE_VIDEO_MODEL || 'Lightricks/LTX-Video', () => huggingfaceVideo(enriched, body.duration, body.aspectRatio, Math.min(deadline, Date.now() + 16_000))],
-    ...falModels.map(([modelId, model]) => ['Fal AI', model, () => falVideo(enriched, body.duration, modelId, deadline)])
+    ['Pollinations', 'veo-3.1-fast', () => pollinationsVideo(enriched, body.duration, body.aspectRatio, deadline)],
+    ['Hugging Face Video API', process.env.HUGGINGFACE_VIDEO_MODEL || 'Lightricks/LTX-Video', () => huggingfaceVideo(enriched, body.duration, body.aspectRatio, Math.min(deadline, Date.now() + 16_000))]
   ];
   for (const [provider, model, run] of attempts) {
     if (Date.now() >= deadline) break;

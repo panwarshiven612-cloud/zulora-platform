@@ -3,7 +3,7 @@ import {
   Sparkles, MessageSquare, Image as ImageIcon, Film,
   Sun, Moon, LogOut, ChevronDown, Menu, Zap, BarChart3,
   User, Crown, Settings, Clock,
-  Code2, Plus, Radio, Mic, Plug
+  Code2, Plus, Radio, Mic, Plug, FolderOpen
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -14,6 +14,7 @@ const TAB_CONFIG = [
   { id: 'image', label: 'Image Studio',  icon: ImageIcon,     description: 'AI image generation' },
   { id: 'video', label: 'Video Studio',  icon: Film,          description: 'AI video synthesis' },
   { id: 'studio', label: 'Code Editor',  icon: Code2,         description: 'AI website builder' },
+  { id: 'library', label: 'Library',     icon: FolderOpen,    description: 'Generated and uploaded assets' },
 ];
 
 const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, onNewChat, onOpenVoiceAssistant, onOpenComputerPlugin }) => {

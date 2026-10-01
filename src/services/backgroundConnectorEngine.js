@@ -5,17 +5,20 @@ import { uploadFileToDrive } from './zuloraDriveService';
 const escapeQuery = value => encodeURIComponent(value);
 const getHeader = (headers = [], name) => headers.find(header => header.name?.toLowerCase() === name)?.value || '';
 
-function extractMessageCount(prompt) {
-  const match = String(prompt).match(/\b(?:last|top|recent|latest)\s+(\d{1,2})\b/i)
-    || String(prompt).match(/\b(\d{1,2})\s+(?:latest|recent)\s+(?:emails?|messages?)\b/i);
+export function extractMessageCount(prompt) {
+  const text = String(prompt);
+  const match = text.match(/\b(?:last|top|recent|latest|first)\s+(\d{1,2})\b/i)
+    || text.match(/\b(\d{1,2})\s+(?:latest|recent|first)\s+(?:e-?mails?|gmails?|messages?)\b/i);
+  if (/\b(?:few|several)\s+(?:latest|recent|newest)\b/i.test(text)) return 5;
+  if (/\b(?:couple|two)\s+(?:latest|recent|newest)\b/i.test(text)) return 2;
   return Math.min(20, Math.max(1, Number(match?.[1]) || 5));
 }
 
 export function detectConnectorTask(prompt) {
   const text = String(prompt || '').trim();
-  const asksGmail = ( /\b(gmail|inbox|emails?)\b/i.test(text)
+  const asksGmail = ( /\b(gmails?|inbox|e-?mails?|mail messages?)\b/i.test(text)
     || /\b(send|draft|compose)\b.{0,50}\bemail\b/i.test(text) )
-    && /\b(read|review|summari[sz]e|check|find|search|last|recent|latest|send|draft|inbox)\b/i.test(text);
+    && /\b(read|review|summari[sz]e|check|find|search|fetch|get|retrieve|extract|tell|show|last|recent|latest|first|send|draft|inbox)\b/i.test(text);
   const asksCalendar = ( /\b(calendar|events?)\b/i.test(text)
     || /\b(schedule|book|create)\b.{0,40}\b(meeting|appointment)\b/i.test(text) )
     && /\b(list|show|view|upcoming|schedule|create|add|book)\b/i.test(text);
@@ -93,6 +96,15 @@ async function appendRows(spreadsheetId, rows) {
   );
 }
 
+async function writeSheetRange(spreadsheetId, range, rows) {
+  const encodedRange = encodeURIComponent(range);
+  return connectorManager.apiFetch(
+    'sheets',
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodedRange}?valueInputOption=USER_ENTERED`,
+    { method: 'PUT', body: JSON.stringify({ values: rows }) }
+  );
+}
+
 async function autoSaveReport(provider, data, prompt) {
   // Google API results stay in the requested connector workflow unless the user
   // explicitly asks to copy or export the report to Zulora Drive.
@@ -137,21 +149,58 @@ export async function listGoogleFormResponses(formId, maxResults = 20) {
   return result.responses || [];
 }
 
-function parseCalendarEvent(prompt) {
-  const explicitDateTime = String(prompt).match(/\b(20\d{2}-\d{2}-\d{2})[T\s]+(\d{1,2}:\d{2})(?::\d{2})?\b/);
-  if (!explicitDateTime) return null;
-  const startDate = new Date(`${explicitDateTime[1]}T${explicitDateTime[2]}:00`);
+export function parseCalendarEvent(prompt) {
+  const text = String(prompt || '');
+  const explicitDateTime = text.match(/\b(20\d{2}-\d{2}-\d{2})[T\s]+(\d{1,2}):(\d{2})(?::\d{2})?\b/);
+  const startDate = explicitDateTime
+    ? new Date(`${explicitDateTime[1]}T${explicitDateTime[2].padStart(2, '0')}:${explicitDateTime[3]}:00`)
+    : new Date();
+
+  let dateExpression = explicitDateTime?.[0] || '';
+  if (!explicitDateTime) {
+    const relativeDay = text.match(/\b(day\s+after\s+tomorrow|tomorrow|today)\b/i)?.[0]?.toLowerCase();
+    if (relativeDay === 'tomorrow') startDate.setDate(startDate.getDate() + 1);
+    else if (relativeDay === 'day after tomorrow') startDate.setDate(startDate.getDate() + 2);
+
+    const weekdayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const weekdayMatch = text.match(/\b(?:next\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i);
+    if (weekdayMatch && !relativeDay) {
+      const target = weekdayNames.indexOf(weekdayMatch[1].toLowerCase());
+      const days = (target - startDate.getDay() + 7) % 7 || 7;
+      startDate.setDate(startDate.getDate() + days);
+    }
+    dateExpression = relativeDay || weekdayMatch?.[0] || '';
+  }
+
+  const timeMatch = explicitDateTime
+    ? null
+    : text.match(/\b(?:at\s*)?(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b/i)
+      || text.match(/\bat\s+(\d{1,2}):(\d{2})\b/i)
+      || text.match(/\bat\s+(\d{1,2})\b/i);
+  if (!explicitDateTime && !timeMatch) return null;
+  if (!explicitDateTime) {
+    let hour = Number(timeMatch[1]);
+    const minute = Number(timeMatch[2] || 0);
+    const meridiem = String(timeMatch[3] || '').toLowerCase().replace(/\./g, '');
+    if (hour > 23 || minute > 59) return null;
+    if (meridiem === 'pm' && hour < 12) hour += 12;
+    if (meridiem === 'am' && hour === 12) hour = 0;
+    startDate.setHours(hour, minute, 0, 0);
+  }
   if (Number.isNaN(startDate.getTime())) return null;
-  const title = String(prompt)
-    .replace(/\b(?:please\s+)?(?:schedule|create|add|book)\b/i, '')
-    .replace(/\b(?:calendar|event|meeting|appointment)\b/ig, '')
-    .replace(/\b20\d{2}-\d{2}-\d{2}[T\s]+\d{1,2}:\d{2}(?::\d{2})?\b/, '')
-    .replace(/\b(?:on|at|for|in my)\b/ig, '')
+
+  const timeExpression = timeMatch?.[0] || '';
+  const title = text
+    .replace(/\b(?:please|can you|could you|would you|book|schedule|create|add|set up|put)\b/ig, ' ')
+    .replace(/\b(?:my|a|an|the|google|calendar|event|meeting|appointment)\b/ig, ' ')
+    .replace(dateExpression ? new RegExp(dateExpression.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : /$^/, ' ')
+    .replace(timeExpression ? new RegExp(timeExpression.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : /$^/, ' ')
+    .replace(/\b(?:on|at|for|in|tomorrow|today|next)\b/ig, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
   return {
-    summary: title || 'Zulora calendar event',
+    summary: title || 'Calendar meeting',
     start: { dateTime: startDate.toISOString() },
     end: { dateTime: endDate.toISOString() }
   };
@@ -209,11 +258,12 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
     }
 
     if (provider === 'sheets') {
-      const id = spreadsheetIdFromPrompt(request);
+      let id = spreadsheetIdFromPrompt(request);
       if (!id) {
         const files = await getRecentSpreadsheets();
         if (!files.length) return { handled: true, provider, data: [], text: 'I could not find any spreadsheets. Include a Google Sheets link or create a spreadsheet, then try again.' };
-        return { handled: true, provider, data: files, text: `Your recently modified spreadsheets:\n${files.map(file => `- [${file.name}](${file.webViewLink || `https://docs.google.com/spreadsheets/d/${file.id}`})`).join('\n')}\n\nInclude one of these links when you want me to update a sheet.` };
+        if (files.length === 1 && /\b(?:append|add|write|update|put|save)\b/i.test(request)) id = files[0].id;
+        else return { handled: true, provider, data: files, text: `Your recently modified spreadsheets:\n${files.map(file => `- [${file.name}](${file.webViewLink || `https://docs.google.com/spreadsheets/d/${file.id}`})`).join('\n')}\n\nInclude a spreadsheet link when you want me to update a particular sheet.` };
       }
       if (/\b(read|show|view)\b/i.test(request)) {
         const metadata = await connectorManager.apiFetch('sheets', `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(id)}?fields=sheets.properties.title`);
@@ -224,7 +274,22 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
         const driveNote = await autoSaveReport('Sheets', values, request);
         return { handled: true, provider, data: values, text: `Spreadsheet data:\n\n${values.map(row => row.join(' | ')).join('\n') || '(No values in the first 30 rows.)'}${driveNote}` };
       }
-      return { handled: true, provider, data: [], text: 'I found the spreadsheet. To append data, ask me to include or export specific information from this chat; the source data was not specified.' };
+      if (/\b(?:append|add|write|insert|update|put|save)\b/i.test(request)) {
+        const quoted = request.match(/["“]([^"”]+)["”]/)?.[1]?.trim();
+        const range = request.match(/\b(?:range|cell)\s+([A-Z]+\d+(?::[A-Z]+\d+)?)\b/i)?.[1];
+        const textToWrite = quoted || request.match(/\b(?:append|add|write|insert|update|put|save)\s+([\s\S]+?)(?=\s+to\s+(?:the\s+)?(?:google\s+)?(?:sheet|spreadsheet)|$)/i)?.[1]
+          ?.replace(/\b(?:range|cell)\s+[A-Z]+\d+(?::[A-Z]+\d+)?\b/i, '')
+          ?.replace(/\s+/g, ' ').trim();
+        if (!textToWrite) return { handled: true, provider, data: [], text: 'No spreadsheet cell was changed. Include the exact text to write, optionally in quotes; I will append a row unless you provide a cell range.' };
+        const rows = [textToWrite.split(/\s*\|\s*|\t|\s*,\s*/).map(value => value.trim()).filter(Boolean)];
+        if (range) {
+          await writeSheetRange(id, range, rows);
+          return { handled: true, provider, data: rows, text: `Updated ${range} in the requested spreadsheet.` };
+        }
+        await appendRows(id, rows);
+        return { handled: true, provider, data: rows, text: 'Appended the requested row to the spreadsheet.' };
+      }
+      return { handled: true, provider, data: [], text: 'I found the spreadsheet. Tell me what to read, or provide the exact row to append.' };
     }
 
     if (provider === 'calendar') {
@@ -252,7 +317,11 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
     };
   } catch (error) {
     onStatus('Connector request needs attention');
-    return { handled: true, provider, error, text: `I couldn't complete the ${provider} request: ${error.message}` };
+    const needsReconnect = /needs to be connected again|reconnect|HTTP 401|token is expired/i.test(error.message || '');
+    if (needsReconnect && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('zulora-connector-reauth-required', { detail: { provider } }));
+    }
+    return { handled: true, provider, error, needsReconnect, text: `I couldn't complete the ${provider} request: ${error.message}` };
   }
 }
 

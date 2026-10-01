@@ -1,15 +1,16 @@
 import { GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
 import {
-  collection, deleteDoc, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, setDoc, where
+  collection, deleteDoc, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, serverTimestamp, setDoc, where, writeBatch
 } from 'firebase/firestore';
 import {
   deleteObject, getDownloadURL, ref, uploadBytes
 } from 'firebase/storage';
 import { driveAuth, driveDb, driveStorage } from '../config/firebaseDrive';
 
-const FILES_COLLECTION = 'driveFiles';
+const FILES_COLLECTIONS = ['files', 'drive_files', 'driveFiles'];
 const MAX_SEARCH_FILES = 300;
 const MAX_INDEXED_TEXT_LENGTH = 24_000;
+const CLOUDINARY_NAME = 't3dkhv0z';
 
 const normalizeFolderPath = path => String(path || '')
   .split('/')
@@ -29,14 +30,15 @@ const currentDriveUid = () => {
 };
 
 const usageFromSnapshot = snapshot => {
-  const usedBytes = snapshot.docs.reduce((total, item) => total + (Number(item.data().size) || 0), 0);
+  const unique = new Map(snapshot.docs.map(item => [item.id, item.data()]));
+  const usedBytes = [...unique.values()].reduce((total, item) => total + (Number(item.fileSize ?? item.size) || 0), 0);
   return {
     usedBytes,
     totalBytes: usedBytes,
     remainingBytes: null,
     capacityBytes: null,
     capacityAvailable: false,
-    filesCount: snapshot.size,
+    filesCount: unique.size,
     note: 'Usage counts indexed files. Firebase does not expose a per-user remaining bucket quota to the web SDK.'
   };
 };
@@ -70,7 +72,10 @@ export const zuloraDriveService = {
     const id = `file_${Date.now()}_${crypto.randomUUID?.() || Math.random().toString(36).slice(2, 10)}`;
     const name = safeFileName(file.name || 'generated-report.txt');
     const folder = normalizeFolderPath(folderPath);
-    const storagePath = `users/${uid}/drive/${id}/${name}`;
+    const now = new Date();
+    const year = String(now.getFullYear());
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const storagePath = `users/${uid}/zulora_drive/${year}/${month}/${id}-${name}`;
     const storageRef = ref(driveStorage, storagePath);
     const searchableText = await indexTextFromFile(file);
     await uploadBytes(storageRef, file, {
@@ -80,6 +85,11 @@ export const zuloraDriveService = {
 
     try {
       const downloadURL = await getDownloadURL(storageRef);
+      const cloudinaryUrl = await uploadCloudinaryAsset(file).catch(error => {
+        console.info('Cloudinary mirror skipped; Firebase Storage remains the primary copy.', error.message);
+        return '';
+      });
+      const createdAt = serverTimestamp();
       const metadata = {
         id,
         uid,
@@ -87,13 +97,26 @@ export const zuloraDriveService = {
         folderPath: folder,
         storagePath,
         downloadURL,
+        fileId: id,
+        fileName: name,
+        fileUrl: downloadURL,
+        cloudinaryUrl,
+        fileType: file.type || 'application/octet-stream',
+        fileSize: Number(file.size) || 0,
+        uploadedFrom: 'Zulora AI Workspace',
+        createdAt,
+        createdAtMs: Date.now(),
+        isPublic: true,
         type: file.type || 'application/octet-stream',
         size: Number(file.size) || 0,
         searchableText,
-        createdAt: Date.now(),
         updatedAt: Date.now()
       };
-      await setDoc(doc(driveDb, 'users', uid, FILES_COLLECTION, id), metadata);
+      const batch = writeBatch(driveDb);
+      for (const collectionName of FILES_COLLECTIONS) {
+        batch.set(doc(driveDb, 'users', uid, collectionName, id), metadata);
+      }
+      await batch.commit();
       return metadata;
     } catch (error) {
       await deleteObject(storageRef).catch(() => {});
@@ -104,24 +127,20 @@ export const zuloraDriveService = {
   async listFilesFromDrive(path = '') {
     const uid = currentDriveUid();
     const folderPath = normalizeFolderPath(path);
-    const filesQuery = query(
-      collection(driveDb, 'users', uid, FILES_COLLECTION),
-      where('folderPath', '==', folderPath),
-      limit(MAX_SEARCH_FILES)
-    );
-    const snapshot = await getDocs(filesQuery);
-    const files = snapshot.docs.map(item => ({ id: item.id, ...item.data() }))
-      .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
+    const snapshots = await Promise.all(FILES_COLLECTIONS.map(collectionName => getDocs(query(
+      collection(driveDb, 'users', uid, collectionName), where('folderPath', '==', folderPath), limit(MAX_SEARCH_FILES)
+    ))));
+    const byId = new Map(snapshots.flatMap(snapshot => snapshot.docs.map(item => [item.id, { id: item.id, ...item.data() }])));
+    const files = [...byId.values()].sort((a, b) => Number(b.createdAtMs ?? b.createdAt) - Number(a.createdAtMs ?? a.createdAt));
 
     // Folders are virtual paths derived from indexed file metadata.
-    const allSnapshot = folderPath ? await getDocs(query(
-      collection(driveDb, 'users', uid, FILES_COLLECTION), limit(MAX_SEARCH_FILES)
-    )) : snapshot;
-    const folders = [...new Set(allSnapshot.docs
-      .map(item => normalizeFolderPath(item.data().folderPath))
+    const allSnapshots = folderPath ? await Promise.all(FILES_COLLECTIONS.map(collectionName => getDocs(query(
+      collection(driveDb, 'users', uid, collectionName), limit(MAX_SEARCH_FILES)
+    )))) : snapshots;
+    const folders = [...new Set(allSnapshots.flatMap(snapshot => snapshot.docs.map(item => normalizeFolderPath(item.data().folderPath))
       .filter(item => item && item !== folderPath)
       .map(item => item.slice(folderPath ? folderPath.length + 1 : 0).split('/')[0])
-      .filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      .filter(Boolean)))].sort((a, b) => a.localeCompare(b));
 
     return { path: folderPath, files, folders };
   },
@@ -130,77 +149,108 @@ export const zuloraDriveService = {
     const uid = currentDriveUid();
     const terms = String(searchText || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
     if (!terms.length) return [];
-    const snapshot = await getDocs(query(
-      collection(driveDb, 'users', uid, FILES_COLLECTION),
-      orderBy('createdAt', 'desc'),
-      limit(MAX_SEARCH_FILES)
-    ));
-    return snapshot.docs.map(item => ({ id: item.id, ...item.data() }))
+    const snapshots = await Promise.all(FILES_COLLECTIONS.map(collectionName => getDocs(query(
+      collection(driveDb, 'users', uid, collectionName), limit(MAX_SEARCH_FILES)
+    ))));
+    const files = [...new Map(snapshots.flatMap(snapshot => snapshot.docs.map(item => [item.id, { id: item.id, ...item.data() }]))).values()];
+    return files
       .map(file => {
         const haystack = `${file.name || ''} ${file.folderPath || ''} ${file.searchableText || ''}`.toLowerCase();
         const matchedTerms = terms.filter(term => haystack.includes(term)).length;
         return { ...file, matchedTerms };
       })
       .filter(file => file.matchedTerms === terms.length)
-      .sort((a, b) => b.matchedTerms - a.matchedTerms || Number(b.updatedAt) - Number(a.updatedAt));
+      .sort((a, b) => b.matchedTerms - a.matchedTerms || Number(b.createdAtMs ?? b.updatedAt) - Number(a.createdAtMs ?? a.updatedAt));
   },
 
   async getStorageUsage() {
     const uid = currentDriveUid();
-    const snapshot = await getDocs(collection(driveDb, 'users', uid, FILES_COLLECTION));
-    return usageFromSnapshot(snapshot);
+    const snapshots = await Promise.all(FILES_COLLECTIONS.map(collectionName => getDocs(collection(driveDb, 'users', uid, collectionName))));
+    return usageFromSnapshot({ docs: [...new Map(snapshots.flatMap(snapshot => snapshot.docs.map(item => [item.id, item]))).values()], size: 0 });
   },
 
   watchStorageUsage(onUpdate, onError = () => {}) {
     const uid = currentDriveUid();
-    return onSnapshot(
-      collection(driveDb, 'users', uid, FILES_COLLECTION),
-      snapshot => onUpdate(usageFromSnapshot(snapshot)),
-      onError
-    );
+    const snapshotsByCollection = new Map();
+    let stopped = false;
+    const publish = () => {
+      if (stopped) return;
+      const docs = [...new Map([...snapshotsByCollection.values()].flatMap(snapshot => snapshot.docs.map(item => [item.id, item]))).values()];
+      onUpdate(usageFromSnapshot({ docs, size: docs.length }));
+    };
+    const unsubscribes = FILES_COLLECTIONS.map(collectionName => onSnapshot(
+      collection(driveDb, 'users', uid, collectionName), snapshot => { snapshotsByCollection.set(collectionName, snapshot); publish(); }, onError
+    ));
+    return () => { stopped = true; unsubscribes.forEach(unsubscribe => unsubscribe()); };
   },
 
   async listAllDriveFiles() {
     const uid = currentDriveUid();
-    const snapshot = await getDocs(query(
-      collection(driveDb, 'users', uid, FILES_COLLECTION),
-      orderBy('createdAt', 'desc'),
-      limit(MAX_SEARCH_FILES)
-    ));
-    return snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+    const snapshots = await Promise.all(FILES_COLLECTIONS.map(collectionName => getDocs(query(
+      collection(driveDb, 'users', uid, collectionName), limit(MAX_SEARCH_FILES)
+    ))));
+    return [...new Map(snapshots.flatMap(snapshot => snapshot.docs.map(item => [item.id, { id: item.id, ...item.data() }]))).values()]
+      .sort((a, b) => Number(b.createdAtMs ?? b.updatedAt) - Number(a.createdAtMs ?? a.updatedAt));
   },
 
   async deleteDriveFile(fileId) {
     const uid = currentDriveUid();
-    const fileRef = doc(driveDb, 'users', uid, FILES_COLLECTION, String(fileId));
-    const snapshot = await getDoc(fileRef);
-    if (!snapshot.exists()) return false;
-    const metadata = snapshot.data();
+    const fileRefs = FILES_COLLECTIONS.map(collectionName => doc(driveDb, 'users', uid, collectionName, String(fileId)));
+    const snapshots = await Promise.all(fileRefs.map(getDoc));
+    const source = snapshots.find(snapshot => snapshot.exists());
+    if (!source) return false;
+    const metadata = source.data();
     if (metadata.uid !== uid) throw new Error('This Drive file does not belong to the signed-in account.');
     if (metadata.storagePath) {
       try { await deleteObject(ref(driveStorage, metadata.storagePath)); }
       catch (error) { if (error.code !== 'storage/object-not-found') throw error; }
     }
-    await deleteDoc(fileRef);
+    await Promise.all(fileRefs.map(reference => deleteDoc(reference).catch(() => {})));
     return true;
   },
 
   async clearDriveFiles() {
     const uid = currentDriveUid();
-    const snapshot = await getDocs(collection(driveDb, 'users', uid, FILES_COLLECTION));
-    const results = await Promise.allSettled(snapshot.docs.map(async item => {
-      const metadata = item.data();
+    const files = await this.listAllDriveFiles();
+    const results = await Promise.allSettled(files.map(async item => {
+      const metadata = item;
       if (metadata.uid !== uid) throw new Error('A Drive record did not belong to the signed-in account.');
       if (metadata.storagePath) {
         try { await deleteObject(ref(driveStorage, metadata.storagePath)); }
         catch (error) { if (error.code !== 'storage/object-not-found') throw error; }
       }
-      await deleteDoc(item.ref);
+      await Promise.all(FILES_COLLECTIONS.map(collectionName => deleteDoc(doc(driveDb, 'users', uid, collectionName, item.id)).catch(() => {})));
     }));
     const failed = results.filter(result => result.status === 'rejected').length;
     return { deleted: results.length - failed, failed };
   }
 };
+
+async function uploadCloudinaryAsset(file) {
+  const preset = String(import.meta.env?.VITE_CLOUDINARY_UPLOAD_PRESET || '').trim();
+  if (!preset) return '';
+  const form = new FormData();
+  form.set('file', file);
+  form.set('upload_preset', preset);
+  const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_NAME}/auto/upload`, { method: 'POST', body: form });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.secure_url) throw new Error(data.error?.message || `Cloudinary upload failed (HTTP ${response.status}).`);
+  return data.secure_url;
+}
+
+export async function uploadGeneratedAssetToDrive(asset) {
+  if (!driveAuth.currentUser) throw new Error('Connect Zulora Drive in the Connectors panel to sync generated media.');
+  const url = String(asset?.url || asset?.fileUrl || '').trim();
+  if (!url) throw new Error('The generated file has no download URL.');
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Could not fetch generated media for Drive upload (HTTP ${response.status}).`);
+  const blob = await response.blob();
+  const mimeType = blob.type || asset.fileType || (asset.type === 'video' ? 'video/webm' : 'image/png');
+  const extension = mimeType.includes('webm') ? 'webm' : mimeType.includes('mp4') ? 'mp4' : mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('pdf') ? 'pdf' : 'png';
+  const fileName = safeFileName(asset.fileName || asset.name || `zulora-${asset.type || 'asset'}-${Date.now()}.${extension}`);
+  const file = new File([blob], fileName, { type: mimeType });
+  return zuloraDriveService.uploadFileToDrive(file, asset.folderPath || 'Generated Media');
+}
 
 export const uploadFileToDrive = (...args) => zuloraDriveService.uploadFileToDrive(...args);
 export const listFilesFromDrive = (...args) => zuloraDriveService.listFilesFromDrive(...args);

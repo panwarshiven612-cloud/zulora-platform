@@ -20,6 +20,8 @@ import { aiRouter } from '../services/aiRouter';
 import { imageFileToDataUrl } from '../services/imageUtils';
 import { firestoreService, getTokenUsagePercent } from '../services/firestoreService';
 import { downloadMedia } from '../services/downloadService';
+import { driveAuth } from '../config/firebaseDrive';
+import { uploadGeneratedAssetToDrive } from '../services/zuloraDriveService';
 
 const STYLES = [
   { id: 'None', name: 'Follow Prompt', preview: 'https://images.unsplash.com/photo-1634017839464-5c339ebe3cb4?auto=format&fit=crop&w=300&q=80' },
@@ -61,6 +63,8 @@ export const ImageGenerator = () => {
   const [copiedPromptId, setCopiedPromptId] = useState(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [sourceImage, setSourceImage] = useState(null);
+  const [generationError, setGenerationError] = useState('');
+  const [assetNotice, setAssetNotice] = useState('');
   const generatingRef = useRef(false);
 
   // Load previous generated images from Firestore / LocalStorage
@@ -96,6 +100,8 @@ export const ImageGenerator = () => {
     }
 
     setLoading(true);
+    setGenerationError('');
+    setAssetNotice('');
 
     try {
       const result = await aiRouter.generateImage({
@@ -127,15 +133,28 @@ export const ImageGenerator = () => {
 
       const saved = await firestoreService.saveAsset(currentUser.uid, assetData);
       setGallery(prev => [saved, ...prev]);
+      const editFallbackNote = String(result.provider || '').includes('prompt-only')
+        ? 'The reference-image edit provider was unavailable, so this is a new image generated from your prompt. '
+        : '';
+      if (driveAuth.currentUser) {
+        try {
+          const driveCopy = await uploadGeneratedAssetToDrive({ ...assetData, type: 'image', fileName: `zulora-image-${Date.now()}.png` });
+          setAssetNotice(`${editFallbackNote}Saved to Zulora AI gallery and Zulora Drive as ${driveCopy.name}.`);
+        } catch (error) {
+          setAssetNotice(`${editFallbackNote}Saved to Zulora AI gallery. Drive sync failed: ${error.message}`);
+        }
+      } else {
+        setAssetNotice(`${editFallbackNote}Saved to Zulora AI gallery. Connect Zulora Drive in Connectors to sync generated media there automatically.`);
+      }
     } catch (err) {
       console.error('Image generation error:', err);
+      setGenerationError(err.message || 'Image generation could not finish. Please try again.');
       if (err.status === 429) {
         setIsUsageModalOpen(true);
       } else if (err.status === 403) {
         if (err.payload?.upgradeRequired) setIsPricingModalOpen(true);
         else setIsUsageModalOpen(true);
       }
-      if (err.status !== 429) alert(err.message || 'Encountered an issue generating image.');
     } finally {
       setLoading(false);
       generatingRef.current = false;
@@ -151,7 +170,7 @@ export const ImageGenerator = () => {
       setSourceImage({ name: file.name, dataUrl, base64, mimeType: file.type });
       setImageEngine('hf-image-edit');
     } catch (error) {
-      alert(error.message);
+      setGenerationError(error.message || 'Could not read that reference image.');
     }
     event.target.value = '';
   };
@@ -219,6 +238,12 @@ export const ImageGenerator = () => {
           </div>
         </div>
       </div>
+
+      {(generationError || assetNotice) && (
+        <div role={generationError ? 'alert' : 'status'} className={`rounded-2xl border px-4 py-3 text-sm ${generationError ? 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-200' : 'border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-200'}`}>
+          {generationError || assetNotice}
+        </div>
+      )}
 
       {/* Main Studio Controls */}
       <div className="p-5 sm:p-6 rounded-3xl glass-pearl dark:glass-dark border border-slate-200/90 dark:border-slate-800 shadow-glass space-y-6">

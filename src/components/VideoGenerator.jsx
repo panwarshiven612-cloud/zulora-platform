@@ -18,6 +18,8 @@ import { useAuth } from '../context/AuthContext';
 import { aiRouter } from '../services/aiRouter';
 import { firestoreService, getTokenUsagePercent } from '../services/firestoreService';
 import { downloadMedia } from '../services/downloadService';
+import { driveAuth } from '../config/firebaseDrive';
+import { uploadGeneratedAssetToDrive } from '../services/zuloraDriveService';
 
 const CAMERA_ANGLES = [
   'Cinematic Pan',
@@ -39,6 +41,7 @@ export const VideoGenerator = () => {
   const [loading, setLoading] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(null);
   const [generationError, setGenerationError] = useState('');
+  const [assetNotice, setAssetNotice] = useState('');
   const [gallery, setGallery] = useState([]);
   const [activeVideo, setActiveVideo] = useState(null);
   const [isPlaying, setIsPlaying] = useState(true);
@@ -81,7 +84,8 @@ export const VideoGenerator = () => {
     }
 
     setGenerationError('');
-    setGenerationProgress({ provider: 'Video model pipeline', phase: 'Connecting', message: 'Connecting to configured Luma, Hugging Face Video, Replicate, or Pollinations video providers.' });
+    setGenerationProgress({ provider: 'Video model pipeline', phase: 'Initializing Engine', message: 'Starting hosted video engines, then a local animated WebM fallback if required.' });
+    setAssetNotice('');
     setLoading(true);
 
     try {
@@ -113,6 +117,18 @@ export const VideoGenerator = () => {
       setGallery(prev => [saved, ...prev]);
       setActiveVideo(saved);
       setIsPlaying(true);
+      if (driveAuth.currentUser) {
+        setGenerationProgress({ provider: result.provider || 'Video pipeline', phase: 'Saving to Zulora Drive', message: 'Copying the rendered video into your Drive Library.' });
+        try {
+          const extension = result.url.startsWith('blob:') || result.url.startsWith('data:video/webm') ? 'webm' : 'mp4';
+          const driveCopy = await uploadGeneratedAssetToDrive({ ...videoAsset, fileName: `zulora-video-${Date.now()}.${extension}` });
+          setAssetNotice(`Saved to Zulora AI gallery and Zulora Drive as ${driveCopy.name}.`);
+        } catch (error) {
+          setAssetNotice(`Video is in your Zulora AI gallery. Drive sync failed: ${error.message}`);
+        }
+      } else {
+        setAssetNotice('Video is in your Zulora AI gallery. Connect Zulora Drive in Connectors to sync generated media automatically.');
+      }
     } catch (err) {
       console.error('Video generation error:', err);
       if (err.status === 429 || err.status === 403) setIsUsageModalOpen(true);
@@ -277,7 +293,7 @@ export const VideoGenerator = () => {
               <div className="mt-3 rounded-xl border border-indigo-200/20 bg-indigo-50/70 p-3 dark:border-indigo-400/15 dark:bg-indigo-950/25" aria-live="polite">
                 <div className="mb-2 flex items-center justify-between gap-3 text-[11px]">
                   <span className="font-semibold text-indigo-700 dark:text-indigo-200">{generationProgress?.message || 'Waiting for the video provider...'}</span>
-                  <span className="shrink-0 text-slate-500 dark:text-slate-400">{generationProgress?.provider || 'Video API'}</span>
+                  <span className="shrink-0 text-slate-500 dark:text-slate-400">{generationProgress?.provider || 'Video API'} · {generationProgress?.phase || 'working'}</span>
                 </div>
                 <div role="progressbar" aria-label="Video generation progress" aria-valuetext={`${generationProgress?.provider || 'Video API'}: ${generationProgress?.phase || 'working'}`} className="h-2 overflow-hidden rounded-full bg-indigo-100 dark:bg-slate-800">
                   <div className="h-full w-2/5 rounded-full bg-gradient-to-r from-indigo-500 via-sky-400 to-indigo-500" style={{ animation: 'zulora-video-progress 1.5s ease-in-out infinite' }} />
@@ -290,6 +306,7 @@ export const VideoGenerator = () => {
                 {generationError}
               </p>
             )}
+            {assetNotice && <p role="status" aria-live="polite" className="mt-3 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2.5 text-xs leading-5 text-sky-800 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-200">{assetNotice}</p>}
           </div>
 
         </div>

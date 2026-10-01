@@ -18,7 +18,8 @@ import {
   MessageCircle,
   Brain,
   Database,
-  Plug
+  Plug,
+  FolderOpen
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { firestoreService, TIERS } from '../services/firestoreService';
@@ -326,6 +327,16 @@ export const Sidebar = ({
         </div>
         <button
           onClick={() => {
+            setActiveTab('library');
+            if (onCloseMobile) onCloseMobile();
+          }}
+          className="mt-2 flex w-full items-center gap-2 rounded-xl border border-sky-200/70 bg-white/80 p-2.5 text-left text-xs font-semibold text-slate-700 transition-colors hover:border-sky-300 hover:bg-sky-50 dark:border-sky-900/60 dark:bg-slate-950/30 dark:text-slate-300 dark:hover:bg-sky-950/40"
+        >
+          <FolderOpen className="h-4 w-4 text-sky-500" />
+          <span>Library</span>
+        </button>
+        <button
+          onClick={() => {
             setActiveTab('brain');
             if (onCloseMobile) onCloseMobile();
           }}
@@ -531,6 +542,13 @@ export const Sidebar = ({
               title="Video Studio"
             >
               <Film className="w-5 h-5" />
+            </button>
+            <button
+              onClick={() => setActiveTab('library')}
+              className="p-2.5 rounded-xl text-slate-600 dark:text-slate-400 hover:text-sky-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+              title="Library"
+            >
+              <FolderOpen className="w-5 h-5" />
             </button>
             <button
               onClick={() => setActiveTab('vault')}

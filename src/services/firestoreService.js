@@ -16,7 +16,7 @@ import {
   runTransaction
 } from 'firebase/firestore';
 import { db, storage } from './firebase';
-import { ref, uploadString, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytes, uploadString, getDownloadURL } from 'firebase/storage';
 import { emailService } from './emailService';
 import { rateLimiter } from './rateLimiter';
 
@@ -1208,7 +1208,18 @@ export const firestoreService = {
     }
     catch (error) { console.warn('Local asset cache save failed:', error.message); }
 
-    if (asset.url?.startsWith('data:')) {
+    if (asset.url?.startsWith('blob:')) {
+      try {
+        const response = await fetch(asset.url);
+        if (!response.ok) throw new Error(`Could not read generated media (HTTP ${response.status}).`);
+        const blob = await response.blob();
+        const objectRef = ref(storage, `users/${uid}/assets/${asset.id}`);
+        await uploadBytes(objectRef, blob, { contentType: blob.type || (asset.type === 'video' ? 'video/webm' : 'application/octet-stream') });
+        asset.url = await getDownloadURL(objectRef);
+      } catch (err) {
+        console.warn('Firebase Storage generated blob upload fallback:', err.message);
+      }
+    } else if (asset.url?.startsWith('data:')) {
       try {
         const mimeType = asset.url.match(/^data:([^;]+);base64,/)?.[1] || 'image/png';
         const objectRef = ref(storage, `users/${uid}/assets/${asset.id}`);

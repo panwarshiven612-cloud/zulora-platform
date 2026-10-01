@@ -12,7 +12,8 @@ const WORKSPACE_TABS = {
   '/image': 'image',
   '/video': 'video',
   '/brain': 'brain',
-  '/vault': 'vault'
+  '/vault': 'vault',
+  '/library': 'library'
 };
 
 const AppLoading = ({ label = 'Opening your workspace...' }) => (
@@ -98,7 +99,7 @@ const AppRouter = () => {
       return;
     }
     if (loading) return;
-    if (!isAuthenticated && ['/dashboard', '/chat', '/image', '/video', '/brain', '/vault', '/studio', '/settings'].includes(pathname)) {
+    if (!isAuthenticated && ['/dashboard', '/chat', '/image', '/video', '/brain', '/vault', '/studio', '/library', '/settings'].includes(pathname)) {
       navigate('/');
     }
   }, [isAuthenticated, loading, navigate, pathname]);

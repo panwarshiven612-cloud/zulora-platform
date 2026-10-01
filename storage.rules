@@ -15,5 +15,12 @@ service firebase.storage {
         && request.auth.uid == uid
         && request.resource.size < 100 * 1024 * 1024;
     }
+
+    match /users/{uid}/zulora_drive/{year}/{month}/{fileName} {
+      allow read, delete: if request.auth != null && request.auth.uid == uid;
+      allow create, update: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.size < 100 * 1024 * 1024;
+    }
   }
 }

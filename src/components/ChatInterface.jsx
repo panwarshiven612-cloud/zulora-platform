@@ -49,6 +49,7 @@ import {
   Radio,
   Link,
   CloudUpload,
+  PhoneCall,
 } from 'lucide-react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { useAuth } from '../context/AuthContext';
@@ -63,6 +64,7 @@ import { imageFileToDataUrl, readFileAsDataUrl } from '../services/imageUtils';
 import CodeArtifactRunner from './CodeArtifactRunner';
 import ModelSelector from './ModelSelector';
 import ConnectorsModal from './ConnectorsModal';
+import ZegoCallModal from './ZegoCallModal';
 
 /* ============================================================
    CONSTANTS
@@ -482,7 +484,7 @@ const WelcomeScreen = ({ user, onSuggestion }) => (
 /* ============================================================
    MAIN CHAT INTERFACE
    ============================================================ */
-export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpenVoiceAssistant }) => {
+export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpenVoiceAssistant, pendingLibraryAsset, onLibraryAssetConsumed }) => {
   const { currentUser, isPro, setIsUsageModalOpen, setIsPricingModalOpen, checkUsage, recordUsage } = useAuth();
 
   const [messages, setMessages] = useState([]);
@@ -498,6 +500,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const [isSpeakingIndex, setIsSpeakingIndex] = useState(null);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showConnectorsModal, setShowConnectorsModal] = useState(false);
+  const [showZegoCallModal, setShowZegoCallModal] = useState(false);
+  const [connectorReauthProvider, setConnectorReauthProvider] = useState('');
   const [connectorContext, setConnectorContext] = useState('');
   const [driveUploadStatus, setDriveUploadStatus] = useState('');
   const [driveUploadingFile, setDriveUploadingFile] = useState('');
@@ -552,6 +556,15 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     };
     window.addEventListener('zulora-form-responses', onFormResponses);
     return () => window.removeEventListener('zulora-form-responses', onFormResponses);
+  }, []);
+
+  useEffect(() => {
+    const onReconnect = event => {
+      setConnectorReauthProvider(String(event.detail?.provider || 'Google service'));
+      setShowConnectorsModal(true);
+    };
+    window.addEventListener('zulora-connector-reauth-required', onReconnect);
+    return () => window.removeEventListener('zulora-connector-reauth-required', onReconnect);
   }, []);
 
   useEffect(() => {
@@ -670,10 +683,39 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     setAttachments(previous => [...previous, ...incoming.slice(0, Math.max(0, 5 - previous.length))]);
   }, []);
 
-  const handleUploadAttachment = useCallback(async file => {
+  useEffect(() => {
+    if (!pendingLibraryAsset?.url) return undefined;
+    let cancelled = false;
+    const insertAsset = async () => {
+      if (String(pendingLibraryAsset.type || '').startsWith('video/')) {
+        setInputPrompt(previous => `${previous}${previous.trim() ? '\n\n' : ''}Use this video from my Zulora Library as context: ${pendingLibraryAsset.name || 'video'} (${pendingLibraryAsset.url})`);
+        onLibraryAssetConsumed?.();
+        return;
+      }
+      try {
+        const response = await fetch(pendingLibraryAsset.url);
+        if (!response.ok) throw new Error(`File request returned HTTP ${response.status}.`);
+        const blob = await response.blob();
+        const type = blob.type || pendingLibraryAsset.type || 'application/octet-stream';
+        const name = pendingLibraryAsset.name || pendingLibraryAsset.fileName || 'library-file';
+        const file = new File([blob], name, { type });
+        if (cancelled) return;
+        addAttachments([file]);
+      } catch (error) {
+        if (!cancelled) setInputPrompt(previous => `${previous}${previous.trim() ? '\n\n' : ''}Use this Zulora Library asset as context: ${pendingLibraryAsset.name || 'file'} (${pendingLibraryAsset.url})`);
+        console.warn('Could not attach Library file bytes; added its link to the prompt instead:', error.message);
+      } finally {
+        if (!cancelled) onLibraryAssetConsumed?.();
+      }
+    };
+    insertAsset();
+    return () => { cancelled = true; };
+  }, [pendingLibraryAsset, addAttachments, onLibraryAssetConsumed]);
+
+  const handleUploadAttachment = useCallback(async (file, { promptConnect = false } = {}) => {
     if (!driveAuth.currentUser) {
-      setDriveUploadStatus('Connect Zulora Drive to upload this attachment.');
-      setShowConnectorsModal(true);
+      setDriveUploadStatus('Attachment is ready in chat. Connect Zulora Drive to sync it to your Library.');
+      if (promptConnect) setShowConnectorsModal(true);
       return;
     }
     setDriveUploadingFile(file.name);
@@ -709,6 +751,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       .slice(0, Math.max(0, 5 - attachments.length));
     try {
       addAttachments(selectedFiles);
+      if (driveAuth.currentUser) selectedFiles.forEach(file => handleUploadAttachment(file));
+      else if (selectedFiles.length) setDriveUploadStatus('Attachment is ready in chat. Connect Zulora Drive to sync it to your Library.');
       selectedFiles.filter(file => isImageAttachment(file) || isPdfAttachment(file)).forEach(file => {
         getAttachmentDataUrl(file).catch(error => console.warn('Could not prepare selected attachment:', error.message));
       });
@@ -726,12 +770,16 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     if (!imageFiles.length) return;
     event.preventDefault();
     addAttachments(imageFiles);
-  }, [addAttachments]);
+    if (driveAuth.currentUser) imageFiles.forEach(file => handleUploadAttachment(file));
+  }, [addAttachments, handleUploadAttachment]);
 
   const handleDrop = useCallback(event => {
     event.preventDefault();
-    addAttachments(event.dataTransfer?.files || []);
-  }, [addAttachments]);
+    const files = Array.from(event.dataTransfer?.files || []).map(normalizeAttachmentFile);
+    addAttachments(files);
+    if (driveAuth.currentUser) files.forEach(file => handleUploadAttachment(file));
+    else if (files.length) setDriveUploadStatus('Dropped files are ready in chat. Connect Zulora Drive to sync them to your Library.');
+  }, [addAttachments, handleUploadAttachment]);
 
   const removeAttachment = (idx) => {
     if (attachments[idx]) preparedAttachmentDataRef.current.delete(attachments[idx]);
@@ -1030,6 +1078,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   return (
     <div className="flex-1 min-h-0 min-w-0 flex flex-col h-full overflow-hidden relative">
 
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200/60 bg-white/55 px-3 py-2 dark:border-slate-800/70 dark:bg-slate-950/25 sm:px-5">
+        <div className="min-w-0"><p className="truncate text-xs font-bold text-slate-800 dark:text-slate-200">Zulora AI Chat</p><p className="hidden text-[10px] text-slate-400 sm:block">Native connectors and media tools are ready in this workspace</p></div>
+        <button type="button" onClick={() => setShowZegoCallModal(true)} className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg border border-emerald-200/70 bg-emerald-50/70 px-3 text-xs font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300" title="Start a ZEGOCLOUD voice or video room"><PhoneCall className="h-3.5 w-3.5" /><span>Voice / Video</span></button>
+      </header>
+
       {/* Messages Area */}
       <div
         ref={messagesContainerRef}
@@ -1093,7 +1146,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
                     <span className="max-w-[7rem] truncate">{file.name}</span>
                     <button
                       type="button"
-                      onClick={() => handleUploadAttachment(file)}
+                      onClick={() => handleUploadAttachment(file, { promptConnect: true })}
                       disabled={Boolean(driveUploadingFile)}
                       aria-label={`Upload ${file.name} to Zulora Drive`}
                       title="Upload to Zulora Drive"
@@ -1248,7 +1301,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       {showModelMenu && (
         <div aria-hidden="true" className="fixed inset-0 z-40" onClick={() => setShowModelMenu(false)} />
       )}
-      {showConnectorsModal && <ConnectorsModal currentUser={currentUser} onClose={() => setShowConnectorsModal(false)} />}
+      {showConnectorsModal && <ConnectorsModal currentUser={currentUser} reconnectProvider={connectorReauthProvider} onClose={() => { setShowConnectorsModal(false); setConnectorReauthProvider(''); }} />}
+      {showZegoCallModal && <ZegoCallModal currentUser={currentUser} onClose={() => setShowZegoCallModal(false)} />}
     </div>
   );
 };

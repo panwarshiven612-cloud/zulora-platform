@@ -7,6 +7,7 @@ import ImageGenerator from '../components/ImageGenerator';
 import VideoGenerator from '../components/VideoGenerator';
 import AiBrain from '../components/AiBrain';
 import UserVault from '../components/UserVault';
+import Library from '../components/Library';
 import UsageLimitsModal from '../components/UsageLimitsModal';
 import PricingModal from '../components/PricingModal';
 import AccountSettings from './AccountSettings';
@@ -32,9 +33,10 @@ export const Dashboard = ({
   } = useAuth();
 
   const [activeTab, setActiveTab] = useState(() =>
-    ['chat', 'image', 'video', 'brain', 'vault', 'studio'].includes(initialTab) ? initialTab : 'chat'
+    ['chat', 'image', 'video', 'brain', 'vault', 'studio', 'library'].includes(initialTab) ? initialTab : 'chat'
   );
   const [activeSession, setActiveSession] = useState(null);
+  const [pendingLibraryAsset, setPendingLibraryAsset] = useState(null);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
@@ -43,7 +45,7 @@ export const Dashboard = ({
   const safeDisplayName = currentUser?.displayName || userProfile?.displayName || 'Shiven';
 
   useEffect(() => {
-    if (['chat', 'image', 'video', 'brain', 'vault', 'studio'].includes(initialTab)) {
+    if (['chat', 'image', 'video', 'brain', 'vault', 'studio', 'library'].includes(initialTab)) {
       setActiveTab(initialTab);
     }
   }, [initialTab]);
@@ -149,7 +151,8 @@ export const Dashboard = ({
       video: '/video',
       brain: '/brain',
       vault: '/vault',
-      studio: '/studio'
+      studio: '/studio',
+      library: '/library'
     };
     if (onNavigate) onNavigate(routeByTab[tab] || '/dashboard');
   }, [onNavigate]);
@@ -200,6 +203,8 @@ export const Dashboard = ({
               onUpdateSession={handleUpdateSession}
               onNewChat={handleNewChat}
               onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
+              pendingLibraryAsset={pendingLibraryAsset}
+              onLibraryAssetConsumed={() => setPendingLibraryAsset(null)}
             />
           )}
 
@@ -207,6 +212,7 @@ export const Dashboard = ({
           {activeTab === 'video' && <VideoGenerator />}
           {activeTab === 'brain' && <AiBrain />}
           {activeTab === 'vault' && <UserVault />}
+          {activeTab === 'library' && <Library onInsertIntoChat={asset => { setPendingLibraryAsset(asset); handleSelectTab('chat'); }} />}
 
           {activeTab === 'studio' && (
             <Suspense fallback={<div className="min-h-full grid place-items-center bg-[#070914] text-slate-300">Loading AI Studio...</div>}>

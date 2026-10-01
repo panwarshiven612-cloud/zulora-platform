@@ -36,7 +36,7 @@ const formatEventDate = event => {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString([], { dateStyle: 'medium', timeStyle: event?.start?.dateTime ? 'short' : undefined });
 };
 
-export default function ConnectorsModal({ currentUser, onClose }) {
+export default function ConnectorsModal({ currentUser, reconnectProvider = '', onClose }) {
   const [connections, setConnections] = useState({});
   const [driveUser, setDriveUser] = useState(driveAuth.currentUser);
   const [driveUsage, setDriveUsage] = useState({ usedBytes: 0, filesCount: 0 });
@@ -210,6 +210,7 @@ export default function ConnectorsModal({ currentUser, onClose }) {
 
         <div className="max-h-[calc(92dvh-112px)] overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
           {notice && <div role="status" className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-xs leading-relaxed text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">{notice}</div>}
+          {reconnectProvider && <div role="status" className="mb-4 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-3 text-xs leading-relaxed text-sky-900 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-200">{reconnectProvider} needs a fresh Google authorization for this browser session. Select Connect/Reconnect below; Google access tokens are kept in memory only.</div>}
           {!connectorManager.clientConfigured && <div className="mb-4 rounded-xl border border-sky-200 bg-sky-50/80 px-3.5 py-3 text-xs leading-relaxed text-sky-900 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-200">Set <code className="font-bold">VITE_GOOGLE_CLIENT_ID</code> and enable the Google APIs and OAuth consent screen in Google Cloud to connect Gmail, Sheets, Calendar, and Forms. Zulora Drive uses its separate Firebase sign-in.</div>}
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
