@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#edf6ff">
-  <meta name="description" content="Zulora AI and Zulora Drive Privacy Policy: Google Workspace connectors, AI features, cloud files, retention, and deletion.">
+  <meta name="description" content="Privacy Policy for Zulora AI and Zulora Drive, operated by Shiven Panwar. Learn how Google Workspace data, chats, and uploaded files are handled.">
   <link rel="canonical" href="https://zulora.in/privacy.html">
   <title>Privacy Policy | Zulora AI & Zulora Drive</title>
   <style>
@@ -66,76 +66,88 @@
     <div class="brand"><span class="mark" aria-hidden="true">Z</span><span>Zulora AI · Zulora Drive</span></div>
     <header>
       <h1>Privacy Policy</h1>
-      <p class="intro">This policy describes how Zulora AI and Zulora Drive handle account details, connected Google Workspace data, AI requests, and files stored in your Drive account.</p>
+      <p class="intro">This policy explains how Zulora AI accesses, uses, stores, and protects account details, connected Google Workspace data, AI requests, and files stored in Zulora Drive.</p>
+      <p class="updated">Official website: <a href="https://zulora.in">https://zulora.in</a> · Operated by Shiven Panwar (Zulora AI) · Support: <a href="mailto:pawarshiven412@gmail.com">pawarshiven412@gmail.com</a></p>
       <p class="updated"><strong>Effective date:</strong> October 1, 2026</p>
     </header>
 
     <main>
       <section>
-        <h2>1. Information we collect and why</h2>
-        <p>We handle information to provide the AI features, cloud storage, and workflow actions you request. Depending on how you use the service, this can include:</p>
+        <h2>1. Information we collect</h2>
+        <p>We handle the information needed to provide Zulora AI and Zulora Drive. Depending on the features you connect and use, this can include:</p>
         <ul>
-          <li><strong>Account and profile details:</strong> name, email address, profile image, and account identifiers.</li>
+          <li><strong>Account data:</strong> name, email address, profile picture, and account identifiers from sign-in.</li>
           <li><strong>Prompts and app activity:</strong> chat messages, responses, generated results, connector actions, and service diagnostics needed to operate your account.</li>
           <li><strong>Files:</strong> images, documents, media, and other files that you attach, upload, generate, or ask Zulora Drive to retrieve or analyze.</li>
-          <li><strong>Google Workspace data:</strong> information returned by the Gmail, Calendar, Sheets, Drive metadata, or Forms APIs for a connected service and a requested task.</li>
+          <li><strong>Connected Google Workspace data:</strong> Gmail message headers, metadata and preview snippets; Calendar event details; spreadsheet cell values and spreadsheet metadata; Drive file metadata; and Forms responses, as applicable to the scopes you authorize and the action you request.</li>
           <li><strong>Zulora Drive records:</strong> file name, type, size, folder path, owner identifier, upload and update timestamps, searchable text for supported text files, storage path, and file download URL.</li>
           <li><strong>Connector details:</strong> connected account email, provider, authorized scopes, and connection status. Google OAuth access tokens are held in browser memory for the session and are not written to LocalStorage or Firestore by the connector flow.</li>
+          <li><strong>Storage metric:</strong> Zulora Drive calculates the combined size of indexed files for the signed-in Drive account. Firebase does not expose a per-user remaining bucket quota to the web application.</li>
         </ul>
       </section>
 
       <section>
-        <h2>2. Google Workspace access and Limited Use</h2>
+        <h2>2. How we use information</h2>
+        <p>We use information strictly to provide the features you ask us to perform: execute requested AI commands, process images and files, display indexed storage usage, manage your files, and automate productivity workflows through connected services. We do not use connected Google data for unrelated profiling, advertising, or marketing.</p>
+        <p>Google Workspace connector actions run directly against the relevant Google API. Their results may be displayed in your Zulora chat and saved with your chat history. Google connector results are excluded from later AI model context. A copy is written to Zulora Drive only when your request explicitly asks to save or export that report there.</p>
+      </section>
+
+      <section>
+        <h2>3. Google Workspace access and Limited Use</h2>
         <p>Google services are accessed only after you connect the service and ask Zulora AI to perform an action that requires it. We use the data returned for that task—for example, to read requested Gmail messages, view or create Calendar events, read or update a spreadsheet, list spreadsheet names using Drive metadata, or retrieve responses from a Form you identify.</p>
         <p>The connector requests service-specific scopes. Gmail access can include reading and managing messages and creating or sending drafts; Sheets access can include reading and writing spreadsheets; Calendar access can include viewing and creating events; Forms access is limited to reading responses. The Sheets connector uses Google Drive metadata access to list spreadsheet names and links; it does not provide general access to the contents of all Google Drive files.</p>
         <p class="callout"><strong>Zulora AI's use and transfer to any other app of information received from Google APIs will adhere to the Google API Services User Data Policy, including the Limited Use requirements.</strong></p>
-        <p>Google API data is not sold or rented, is not used for advertising, and is not sent to external AI model providers for inference or model training. Connector results may appear in your Zulora chat history, which is stored in Firebase to provide your account and chat features. If you explicitly ask to save a Google connector report to Zulora Drive, that report is uploaded to your separate Drive account.</p>
-        <p>Google API data is never used by Zulora to train or fine-tune generalized AI or large language models.</p>
+        <p>We never sell or rent Google API data, monetize it, use it for targeted advertising, or disclose it to independent AI model providers. We use it only to complete the Google action you requested. Connector results may appear in your Zulora chat history, which Firebase stores to provide your account and chat features. If you explicitly ask to save a Google connector report to Zulora Drive, that report is uploaded to your separate Drive account.</p>
+        <p>Google user data is never used by Zulora to train or fine-tune generalized AI or large language models.</p>
       </section>
 
       <section>
-        <h2>3. Sharing and service providers</h2>
+        <h2>4. Sharing and service providers</h2>
         <p>We do not sell or rent Google API data, use it to serve advertisements, or disclose it to independent AI model providers. Google APIs receive requests needed to carry out the Google action you asked for. Google Firebase is a third-party infrastructure provider that processes account and chat records and hosts Drive files and metadata so Zulora can provide its authentication, chat, and storage features.</p>
         <p>When you explicitly ask Zulora AI to analyze a Zulora Drive file or an attachment, the relevant file content and prompt may be sent to an AI inference provider to produce that result. Depending on the feature and configured route, providers may include Google Gemini, Groq, Cerebras, Mistral AI, OpenRouter, or Pollinations. This applies to Zulora Drive files or attachments; Google Workspace connector results are excluded from model context. Provider-specific processing and retention are governed by each provider's terms.</p>
-        <p>We do not authorize service providers to use Google API data for advertising or generalized model training on Zulora's behalf. This policy does not describe disclosures required by law or needed to protect the security of the service.</p>
+        <p>We do not authorize service providers to use Google API data for advertising or generalized model training on Zulora's behalf. Firebase is a third-party infrastructure provider that processes account, chat, and Drive information to operate the service. This means we do not sell or disclose Google data to independent third parties for their own purposes, but Firebase does process relevant data as our service provider. We may also disclose information if required by law or needed to protect service security.</p>
       </section>
 
       <section>
-        <h2>4. Zulora Drive storage and file access</h2>
+        <h2>5. Zulora Drive storage and file access</h2>
         <p>Zulora Drive uses a separate Firebase project for authentication, file storage, and file metadata. When you upload a file through the Zulora AI connector panel or request an upload, the file is stored in Firebase Storage under your Drive account's owner-scoped path. Its directory record is stored in Firestore. Supported small text files may also have searchable text indexed so you can find them later.</p>
         <p>The connector panel shows the total size of indexed files for the signed-in Drive account and updates that total as file records change. This is indexed file usage, not an independent measurement of every byte in the Firebase bucket. Firebase does not expose a per-user remaining bucket quota or a separate Zulora Drive storage plan to the web app, so Zulora does not show a fabricated plan limit or upgrade status.</p>
         <p>You can list, preview or open, retrieve for an expressly requested AI task, upload, and delete your files from the Connectors panel. Current Firebase Storage rules limit normal file access and management to the authenticated owner. A Firebase download URL is a bearer link: anyone who obtains that URL may be able to access the file, so share it only with people you trust.</p>
       </section>
 
       <section>
-        <h2>5. Retention and deletion</h2>
+        <h2>6. Retention and deletion</h2>
         <ul>
-          <li><strong>Google access:</strong> choose Disconnect in Connectors to clear Zulora's in-session token and connector record. To revoke the underlying Google grant, remove Zulora AI from <a href="https://myaccount.google.com/connections" target="_blank" rel="noopener noreferrer">your Google Account connections</a>. Disconnecting inside Zulora alone does not revoke Google's grant.</li>
+          <li><strong>Google access:</strong> choose Disconnect in the Zulora AI dashboard to clear Zulora's in-session token and connector record. To revoke Google's authorization grant, remove Zulora AI from <a href="https://myaccount.google.com/connections" target="_blank" rel="noopener noreferrer">your Google Account settings</a>. Disconnecting inside Zulora alone does not revoke Google's grant.</li>
           <li><strong>Individual Drive files:</strong> use the delete control beside a file in Connectors. Zulora deletes the indexed record and the corresponding stored object.</li>
           <li><strong>All Drive files:</strong> choose Delete all in the Drive files panel to remove indexed files and their corresponding stored objects from that Drive account.</li>
-          <li><strong>App account data:</strong> use Account Settings to request account deletion. Zulora's account deletion flow deletes the app profile, chat sessions, generated assets, and Zulora browser-stored values. Because Zulora Drive is a separate Firebase project and sign-in, delete Drive files separately in the Connectors panel if you also want that storage cleared.</li>
+          <li><strong>Complete account-data deletion:</strong> use Account Settings or email <a href="mailto:pawarshiven412@gmail.com">pawarshiven412@gmail.com</a> to request deletion of your Zulora account data. The in-app flow deletes the app profile, chat sessions, generated assets, and Zulora browser-stored values. Zulora Drive uses a separate Firebase project and sign-in, so use Delete all in the Drive panel or include that account in your deletion request to have its files removed too.</li>
         </ul>
         <p>Some records may remain for a limited period in service backups, security logs, or where retention is required by law. If a deletion action fails or you need help, email support. Revoking Google access stops future API requests that require the grant but does not itself erase existing chat history or Drive files.</p>
       </section>
 
       <section>
-        <h2>6. Security</h2>
-        <p>We use Firebase authentication and owner-scoped database and storage rules to restrict access to account records and uploaded files. No internet service can guarantee absolute security. Keep your sign-in credentials and file download URLs private, and contact us if you believe your account or a file link has been accessed without permission.</p>
+        <h2>7. Security measures</h2>
+        <p>Browser-to-service and service-to-service connections use HTTPS/TLS encryption in transit where supported by the relevant endpoint. Firebase Authentication and owner-scoped Firestore and Storage security rules are used to restrict account and file access. OAuth access tokens are kept in browser memory for the active session and are not stored in LocalStorage or Firestore by the connector flow. Firebase download URLs are bearer links; anyone who obtains one may be able to access that file. No internet service can guarantee absolute security, so keep credentials and download links private and contact support if you suspect unauthorized access.</p>
       </section>
 
       <section>
-        <h2>7. Children's privacy</h2>
+        <h2>8. Children's privacy</h2>
         <p>Zulora AI and Zulora Drive are not intended for children under 13. We do not knowingly collect personal information from children under 13. Contact us if you believe a child has provided personal information so we can review the request.</p>
       </section>
 
       <section>
-        <h2>8. Updates and contact</h2>
+        <h2>9. Updates and contact</h2>
         <p>We may update this policy when our services or data practices change. The effective date at the top identifies the current version.</p>
-        <p>For privacy questions, Google access revocation, or a data deletion request, contact <a href="mailto:pawarshiven412@gmail.com">pawarshiven412@gmail.com</a>.</p>
+        <p>For privacy questions, Google access revocation, or a complete account-data deletion request, contact <a href="mailto:pawarshiven412@gmail.com">pawarshiven412@gmail.com</a>.</p>
         <p>Official domain: <a href="https://zulora.in">https://zulora.in</a></p>
       </section>
     </main>
-    <footer>© 2026 Zulora AI · Zulora Drive</footer>
+    <footer>
+      <span>© 2026 Zulora AI · Zulora Drive</span>
+      <a href="/privacy.html" aria-current="page">Privacy Policy</a>
+      <a href="/terms.html">Terms of Service</a>
+    </footer>
   </div>
 </body>
 </html>
