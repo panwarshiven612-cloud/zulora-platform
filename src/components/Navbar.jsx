@@ -216,14 +216,6 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
                     className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-all">
                     <Settings className="w-4 h-4 text-slate-500" /> Account Settings
                   </button>
-                  <a href="https://zulora.in/privacy.html" target="_blank" rel="noopener noreferrer" onClick={() => setProfileMenuOpen(false)}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-all">
-                    Privacy Policy
-                  </a>
-                  <a href="https://zulora.in/terms.html" target="_blank" rel="noopener noreferrer" onClick={() => setProfileMenuOpen(false)}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-all">
-                    Terms of Service
-                  </a>
                   <div className="border-t border-slate-100 dark:border-slate-800/60 my-1" />
                   <button onClick={() => { logout(); setProfileMenuOpen(false); }}
                     className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20 transition-all">

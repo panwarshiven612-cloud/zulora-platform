@@ -1,37 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { Chrome, LoaderCircle, ShieldCheck, CheckSquare, Square, ExternalLink, X } from 'lucide-react';
+import { Chrome, LoaderCircle, ShieldCheck, CheckSquare, Square } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 
 /* ─── Privacy Policy Modal ─── */
-const PrivacyModal = ({ onClose }) => (
-  <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 modal-overlay animate-scale-in">
-    <div className="glass-elevated dark:glass-dark rounded-2xl border border-white/80 dark:border-slate-700/60 shadow-2xl max-w-lg w-full max-h-[80vh] overflow-y-auto">
-      <div className="sticky top-0 glass-pearl dark:glass-dark border-b border-slate-200/60 dark:border-slate-700/50 px-5 py-3 flex items-center justify-between rounded-t-2xl">
-        <h2 className="font-bold text-slate-900 dark:text-white text-base">Privacy Policy — Zulora AI & Zulora Drive</h2>
-        <button onClick={onClose} className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20 transition-all" aria-label="Close privacy policy">
-          <X className="w-4 h-4" />
-        </button>
-      </div>
-      <div className="p-5 space-y-4 text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-        <p className="text-xs font-semibold text-sky-500 uppercase tracking-widest">Effective date: October 1, 2026</p>
-        <p>We use your account information, chats, uploaded files, and connected Google data to provide the AI features, storage, and workflow actions you request. Google connector results are handled directly by the connector and are not sent to AI model providers. Zulora Drive files may be sent to an AI inference provider only when you ask Zulora AI to analyze them.</p>
-        <p>Google API data is not sold or rented, used for advertising, or used to train generalized AI models. Google and Firebase process data needed to provide Google API, authentication, chat, and storage features. Zulora Drive files and reports are stored in a separate Firebase project; you can delete individual files or clear that Drive account from the Connectors panel.</p>
-        <p>Zulora AI's use and transfer to any other app of information received from Google APIs will adhere to the Google API Services User Data Policy, including the Limited Use requirements.</p>
-        <p>Disconnect Google in Connectors to clear Zulora's active session token. To revoke Google's authorization grant, remove Zulora AI from your <a href="https://myaccount.google.com/connections" target="_blank" rel="noreferrer" className="text-sky-600 underline">Google Account connections</a>.</p>
-        <p>Read the full <a href="/privacy.html" target="_blank" rel="noreferrer" className="font-semibold text-sky-600 underline">Zulora AI & Zulora Drive Privacy Policy</a>, or contact <a href="mailto:pawarshiven412@gmail.com" className="text-sky-600 underline">pawarshiven412@gmail.com</a>.</p>
-      </div>
-    </div>
-  </div>
-);
-/* ─── MAIN SIGN-IN PAGE ─── */
 export const SignIn = ({ onAuthenticated }) => {
   const { loading, isAuthenticated, signInWithGoogle } = useAuth();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [consent, setConsent] = useState(false);
-  const [showPrivacy, setShowPrivacy] = useState(false);
   const [consentError, setConsentError] = useState(false);
 
   useEffect(() => {
@@ -71,7 +49,6 @@ export const SignIn = ({ onAuthenticated }) => {
 
   return (
     <>
-      {showPrivacy && <PrivacyModal onClose={() => setShowPrivacy(false)} />}
 
       <main className="min-h-screen bg-[#f8fafc] dark:bg-[#070b14] text-slate-900 dark:text-slate-100 flex items-center justify-center px-4 py-10 relative overflow-hidden">
         {/* Background orbs */}
@@ -113,15 +90,7 @@ export const SignIn = ({ onAuthenticated }) => {
                 {consent ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
               </button>
               <span className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-                I agree that Zulora AI may collect my <strong>Name</strong> and <strong>Email</strong> from Google Sign-In to create and manage my account, and to enforce usage limits per the{' '}
-                <button
-                  type="button"
-                  onClick={() => setShowPrivacy(true)}
-                  className="text-sky-500 hover:text-sky-400 underline font-semibold"
-                >
-                  Privacy Policy
-                </button>
-                . I understand I can delete my data at any time from Account Settings.
+                I agree that Zulora AI may collect my <strong>Name</strong> and <strong>Email</strong> from Google Sign-In to create and manage my account and enforce usage limits. I understand I can delete my data at any time from Account Settings.
                 {' '}<span className="text-red-500 font-semibold">*</span>
               </span>
             </label>

@@ -294,11 +294,16 @@ export const AccountSettings = ({ onClose }) => {
               </div>
             </div>
 
-            {/* Contact for data requests */}
-            <p className="text-[10px] text-center text-slate-400 dark:text-slate-600">
-              For data access/correction requests, email{' '}
-              <a href="mailto:zulora.help@gmail.com" className="text-sky-500 underline">zulora.help@gmail.com</a>
-            </p>
+            <section aria-labelledby="settings-legal-heading" className="rounded-2xl border border-sky-100/80 bg-sky-50/50 p-4 dark:border-slate-700/70 dark:bg-slate-900/40">
+              <h3 id="settings-legal-heading" className="text-sm font-bold text-slate-800 dark:text-slate-100">About & Legal</h3>
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2 text-xs font-semibold">
+                <a href="https://zulora.in/privacy.html" target="_blank" rel="noopener noreferrer" className="text-sky-600 underline dark:text-sky-400">Privacy Policy</a>
+                <a href="https://zulora.in/terms.html" target="_blank" rel="noopener noreferrer" className="text-sky-600 underline dark:text-sky-400">Terms of Service</a>
+              </div>
+              <p className="mt-2 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+                24/7 support for Zulora AI & Zulora Drive: <a href="mailto:zulora.help@gmail.com" className="text-sky-600 underline dark:text-sky-400">zulora.help@gmail.com</a> · <a href="https://wa.me/916395211325" target="_blank" rel="noopener noreferrer" className="text-sky-600 underline dark:text-sky-400">WhatsApp +91 6395211325</a>
+              </p>
+            </section>
           </div>
         </div>
       </div>

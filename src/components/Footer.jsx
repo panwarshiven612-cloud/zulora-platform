@@ -13,11 +13,10 @@ export const Footer = () => (
           </span>
         </a>
 
-        <nav aria-label="Footer links" className="flex flex-wrap items-center justify-center gap-x-5 gap-y-3 text-xs font-semibold text-slate-600 dark:text-slate-300">
-          <a href="/privacy.html" className="transition-colors hover:text-sky-600">Privacy Policy</a>
-          <a href="/terms.html" className="transition-colors hover:text-sky-600">Terms of Service</a>
-          <a href="mailto:pawarshiven412@gmail.com" className="inline-flex items-center gap-1.5 transition-colors hover:text-sky-600"><Mail className="h-3.5 w-3.5" /> Support</a>
-          <a href="https://wa.me/916395211325" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 transition-colors hover:text-emerald-600"><MessageCircle className="h-3.5 w-3.5" /> WhatsApp</a>
+        <nav aria-label="Support contacts" className="flex flex-wrap items-center justify-center gap-x-5 gap-y-3 text-xs font-semibold text-slate-600 dark:text-slate-300">
+          <a href="mailto:zulora.help@gmail.com" className="inline-flex items-center gap-1.5 transition-colors hover:text-sky-600"><Mail className="h-3.5 w-3.5" /> zulora.help@gmail.com</a>
+          <a href="https://wa.me/916395211325" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 transition-colors hover:text-emerald-600"><MessageCircle className="h-3.5 w-3.5" /> WhatsApp +91 6395211325</a>
+          <span>24/7 user support for Zulora AI & Zulora Drive</span>
         </nav>
       </div>
 

@@ -564,8 +564,9 @@ export const LandingPage = () => {
             <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs text-slate-500 dark:text-slate-500">
               <a href="https://school.zulora.in" target="_blank" rel="noopener noreferrer" className="hover:text-sky-500 transition-colors">school.zulora.in</a>
               <a href="https://drive.zulora.in" target="_blank" rel="noopener noreferrer" className="hover:text-sky-500 transition-colors">drive.zulora.in</a>
-              <a href="mailto:pawarshiven412@gmail.com" className="hover:text-sky-500 transition-colors">pawarshiven412@gmail.com</a>
-              <a href="https://wa.me/916395211325" target="_blank" rel="noopener noreferrer" className="hover:text-sky-500 transition-colors">WhatsApp</a>
+              <a href="mailto:zulora.help@gmail.com" className="hover:text-sky-500 transition-colors">zulora.help@gmail.com</a>
+              <a href="https://wa.me/916395211325" target="_blank" rel="noopener noreferrer" className="hover:text-sky-500 transition-colors">WhatsApp +91 6395211325</a>
+              <span className="text-slate-500 dark:text-slate-500">24/7 user support for Zulora AI & Zulora Drive</span>
               <a href="/privacy.html" className="hover:text-sky-500 transition-colors">Privacy Policy</a>
               <a href="/terms.html" className="hover:text-sky-500 transition-colors">Terms of Service</a>
             </div>
