@@ -4,9 +4,10 @@ import {
   ChevronLeft, Crown, BarChart3, Lock, Download, X,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { firestoreService } from '../services/firestoreService';
-import { doc, deleteDoc, collection, getDocs, query, where, limit, startAfter } from 'firebase/firestore';
-import { db } from '../services/firebase';
+import { doc, deleteDoc, collection, getDocs, query, limit, startAfter } from 'firebase/firestore';
+import { deleteUser } from 'firebase/auth';
+import { deleteObject, ref } from 'firebase/storage';
+import { db, storage } from '../services/firebase';
 import { getPreferredVoiceId, setPreferredVoiceId, VOICE_OPTIONS } from '../services/voicePreferences';
 
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
@@ -113,10 +114,7 @@ export const AccountSettings = ({ onClose }) => {
     tier === 'ultra' ? 'from-violet-500 to-purple-600' :
     tier === 'pro'   ? 'from-amber-500 to-orange-500'  : 'from-slate-400 to-slate-500';
 
-  /**
-   * DPDP Act §17 — Right to Erasure
-   * Permanently delete ALL user data from Firestore then sign out.
-   */
+  /** Delete app-owned records and the signed-in Firebase Authentication user. */
   const handleDeleteAccount = async () => {
     if (!currentUser?.uid) return;
     setDeleting(true);
@@ -124,22 +122,31 @@ export const AccountSettings = ({ onClose }) => {
     try {
       const uid = currentUser.uid;
 
-      // Delete all chat sessions
-      try {
-        const sessionsRef = collection(db, 'users', uid, 'sessions');
-        await deleteCollectionInBatches(sessionsRef);
-      } catch (e) { console.warn('Session deletion error:', e); }
+      const lastSignInAt = Date.parse(currentUser.metadata?.lastSignInTime || '');
+      if (!lastSignInAt || Date.now() - lastSignInAt > 4 * 60 * 1000) {
+        throw new Error('For security, sign out and sign back in before deleting your account, then retry.');
+      }
 
-      // Delete all generated assets
-      try {
-        const assetsRef = collection(db, 'users', uid, 'assets');
-        await deleteCollectionInBatches(assetsRef);
-      } catch (e) { console.warn('Assets deletion error:', e); }
+      // Remove all account-owned Firestore subcollections used by the app.
+      for (const name of ['sessions', 'chats', 'vault', 'search_vault', 'projects', 'studio_projects', 'code_projects', 'connectors']) {
+        await deleteCollectionInBatches(collection(db, 'users', uid, name));
+      }
 
-      // Delete user profile document
-      try {
-        await deleteDoc(doc(db, 'users', uid));
-      } catch (e) { console.warn('Profile deletion error:', e); }
+      // Remove generated asset objects and their index records.
+      const assetsRef = collection(db, 'users', uid, 'assets');
+      while (true) {
+        const page = await getDocs(query(assetsRef, limit(DELETE_BATCH_SIZE)));
+        if (page.empty) break;
+        for (const item of page.docs) {
+          try { await deleteObject(ref(storage, `users/${uid}/assets/${item.id}`)); }
+          catch (error) { if (error.code !== 'storage/object-not-found') throw error; }
+          await deleteDoc(item.ref);
+        }
+      }
+
+      // Delete the profile before removing the Firebase Authentication user.
+      await deleteDoc(doc(db, 'users', uid));
+      await deleteUser(currentUser);
 
       // Clear localStorage
       Object.keys(localStorage).forEach(key => {

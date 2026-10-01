@@ -1,6 +1,6 @@
 import { GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
 import {
-  collection, deleteDoc, doc, getDoc, getDocs, limit, orderBy, query, setDoc, where
+  collection, deleteDoc, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, setDoc, where
 } from 'firebase/firestore';
 import {
   deleteObject, getDownloadURL, ref, uploadBytes
@@ -26,6 +26,19 @@ const currentDriveUid = () => {
   const uid = driveAuth.currentUser?.uid;
   if (!uid) throw new Error('Connect Zulora Drive before using its files.');
   return uid;
+};
+
+const usageFromSnapshot = snapshot => {
+  const usedBytes = snapshot.docs.reduce((total, item) => total + (Number(item.data().size) || 0), 0);
+  return {
+    usedBytes,
+    totalBytes: usedBytes,
+    remainingBytes: null,
+    capacityBytes: null,
+    capacityAvailable: false,
+    filesCount: snapshot.size,
+    note: 'Usage counts indexed files. Firebase does not expose a per-user remaining bucket quota to the web SDK.'
+  };
 };
 
 async function indexTextFromFile(file) {
@@ -135,16 +148,16 @@ export const zuloraDriveService = {
   async getStorageUsage() {
     const uid = currentDriveUid();
     const snapshot = await getDocs(collection(driveDb, 'users', uid, FILES_COLLECTION));
-    const usedBytes = snapshot.docs.reduce((total, item) => total + (Number(item.data().size) || 0), 0);
-    return {
-      usedBytes,
-      totalBytes: usedBytes,
-      remainingBytes: null,
-      capacityBytes: null,
-      capacityAvailable: false,
-      filesCount: snapshot.size,
-      note: 'The Firebase web SDK does not expose a per-user remaining bucket quota.'
-    };
+    return usageFromSnapshot(snapshot);
+  },
+
+  watchStorageUsage(onUpdate, onError = () => {}) {
+    const uid = currentDriveUid();
+    return onSnapshot(
+      collection(driveDb, 'users', uid, FILES_COLLECTION),
+      snapshot => onUpdate(usageFromSnapshot(snapshot)),
+      onError
+    );
   },
 
   async listAllDriveFiles() {
@@ -164,9 +177,28 @@ export const zuloraDriveService = {
     if (!snapshot.exists()) return false;
     const metadata = snapshot.data();
     if (metadata.uid !== uid) throw new Error('This Drive file does not belong to the signed-in account.');
-    if (metadata.storagePath) await deleteObject(ref(driveStorage, metadata.storagePath));
+    if (metadata.storagePath) {
+      try { await deleteObject(ref(driveStorage, metadata.storagePath)); }
+      catch (error) { if (error.code !== 'storage/object-not-found') throw error; }
+    }
     await deleteDoc(fileRef);
     return true;
+  },
+
+  async clearDriveFiles() {
+    const uid = currentDriveUid();
+    const snapshot = await getDocs(collection(driveDb, 'users', uid, FILES_COLLECTION));
+    const results = await Promise.allSettled(snapshot.docs.map(async item => {
+      const metadata = item.data();
+      if (metadata.uid !== uid) throw new Error('A Drive record did not belong to the signed-in account.');
+      if (metadata.storagePath) {
+        try { await deleteObject(ref(driveStorage, metadata.storagePath)); }
+        catch (error) { if (error.code !== 'storage/object-not-found') throw error; }
+      }
+      await deleteDoc(item.ref);
+    }));
+    const failed = results.filter(result => result.status === 'rejected').length;
+    return { deleted: results.length - failed, failed };
   }
 };
 
@@ -175,5 +207,6 @@ export const listFilesFromDrive = (...args) => zuloraDriveService.listFilesFromD
 export const searchDriveFiles = (...args) => zuloraDriveService.searchDriveFiles(...args);
 export const listAllDriveFiles = (...args) => zuloraDriveService.listAllDriveFiles(...args);
 export const deleteDriveFile = (...args) => zuloraDriveService.deleteDriveFile(...args);
+export const clearDriveFiles = (...args) => zuloraDriveService.clearDriveFiles(...args);
 
 export default zuloraDriveService;

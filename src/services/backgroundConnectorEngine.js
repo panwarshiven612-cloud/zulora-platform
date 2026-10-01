@@ -93,7 +93,11 @@ async function appendRows(spreadsheetId, rows) {
   );
 }
 
-async function autoSaveReport(provider, data) {
+async function autoSaveReport(provider, data, prompt) {
+  // Google API results stay in the requested connector workflow unless the user
+  // explicitly asks to copy or export the report to Zulora Drive.
+  const asksForDriveCopy = /\b(?:save|store|copy|back\s*up|export)\b.{0,60}\b(?:zulora\s+)?drive\b|\b(?:zulora\s+)?drive\b.{0,60}\b(?:save|store|copy|back\s*up|export)\b/i.test(String(prompt || ''));
+  if (!asksForDriveCopy) return '';
   if (!driveAuth.currentUser || !Array.isArray(data) || !data.length) return '';
   try {
     const file = new File(
@@ -200,7 +204,7 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
           sheetNote = `\n\nAppended ${emails.length} email rows to the requested spreadsheet.`;
         }
       }
-      const driveNote = await autoSaveReport('Gmail', emails);
+      const driveNote = await autoSaveReport('Gmail', emails, request);
       return { handled: true, provider, data: emails, text: `${output}${sheetNote}${driveNote}` };
     }
 
@@ -217,7 +221,7 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
         const range = encodeURIComponent(`'${firstSheet.replace(/'/g, "''")}'!A1:Z30`);
         const result = await connectorManager.apiFetch('sheets', `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(id)}/values/${range}`);
         const values = result.values || [];
-        const driveNote = await autoSaveReport('Sheets', values);
+        const driveNote = await autoSaveReport('Sheets', values, request);
         return { handled: true, provider, data: values, text: `Spreadsheet data:\n\n${values.map(row => row.join(' | ')).join('\n') || '(No values in the first 30 rows.)'}${driveNote}` };
       }
       return { handled: true, provider, data: [], text: 'I found the spreadsheet. To append data, ask me to include or export specific information from this chat; the source data was not specified.' };
@@ -231,7 +235,7 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
         return { handled: true, provider, data: created, text: `Created “${created.summary || event.summary}” on Calendar for ${created.start?.dateTime || event.start.dateTime}.` };
       }
       const events = await listUpcomingCalendarEvents(10);
-      const driveNote = await autoSaveReport('Calendar', events);
+      const driveNote = await autoSaveReport('Calendar', events, request);
       const text = events.length ? `Upcoming Calendar events:\n${events.map(event => `- ${event.summary || '(untitled)'} — ${event.start?.dateTime || event.start?.date || 'time not set'}`).join('\n')}${driveNote}` : 'There are no upcoming Calendar events.';
       return { handled: true, provider, data: events, text };
     }
@@ -239,7 +243,7 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
     const formId = request.match(/forms\/d\/(?:e\/)?([\w-]+)/i)?.[1] || request.match(/\bform\s+(?:id\s+)?([\w-]{8,})/i)?.[1];
     if (!formId) return { handled: true, provider, data: [], text: 'Include a Google Form URL or form ID so I know which response set to read.' };
     const responses = await listGoogleFormResponses(formId);
-    const driveNote = await autoSaveReport('Google-Forms', responses);
+    const driveNote = await autoSaveReport('Google-Forms', responses, request);
     return {
       handled: true,
       provider,

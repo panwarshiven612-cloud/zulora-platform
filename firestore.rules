@@ -23,7 +23,7 @@ service cloud.firestore {
       allow update: if isOwner(uid)
         && request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(['displayName', 'photoURL', 'welcomeEmailSent', 'ai_brain']);
-      allow delete: if false;
+      allow delete: if isOwner(uid);
 
       match /chats/{chatId} {
         allow read, write: if isOwner(uid);

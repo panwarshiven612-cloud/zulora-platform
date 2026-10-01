@@ -739,7 +739,12 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   };
 
   const buildContextMessages = useCallback(() => {
-    return messages.map(m => ({ role: m.role, content: m.content }));
+    // Native Google connector results are handled directly by the connector
+    // engine. Do not forward saved Gmail/Calendar/Sheets/Forms output to a
+    // third-party model provider in a later chat turn.
+    return messages
+      .filter(message => message.provider !== 'Native API Connectors')
+      .map(message => ({ role: message.role, content: message.content }));
   }, [messages]);
 
   const sendMessage = useCallback(async (promptOverride = null) => {

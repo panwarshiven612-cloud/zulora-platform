@@ -9,86 +9,22 @@ const PrivacyModal = ({ onClose }) => (
   <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 modal-overlay animate-scale-in">
     <div className="glass-elevated dark:glass-dark rounded-2xl border border-white/80 dark:border-slate-700/60 shadow-2xl max-w-lg w-full max-h-[80vh] overflow-y-auto">
       <div className="sticky top-0 glass-pearl dark:glass-dark border-b border-slate-200/60 dark:border-slate-700/50 px-5 py-3 flex items-center justify-between rounded-t-2xl">
-        <h2 className="font-bold text-slate-900 dark:text-white text-base">Privacy Policy — Zulora AI</h2>
-        <button onClick={onClose} className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20 transition-all">
+        <h2 className="font-bold text-slate-900 dark:text-white text-base">Privacy Policy — Zulora AI & Zulora Drive</h2>
+        <button onClick={onClose} className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20 transition-all" aria-label="Close privacy policy">
           <X className="w-4 h-4" />
         </button>
       </div>
       <div className="p-5 space-y-4 text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-        <p className="text-xs font-semibold text-sky-500 uppercase tracking-widest">Last updated: September 2026 · DPDP Act 2023 Compliant</p>
-
-        <section>
-          <h3 className="font-bold text-slate-900 dark:text-white mb-1">1. What Data We Collect</h3>
-          <p>We collect only what is necessary to provide Zulora AI services:</p>
-          <ul className="list-disc pl-4 mt-1 space-y-1">
-            <li><strong>Name & Email</strong> — from Google Sign-In, used to create your account.</li>
-            <li><strong>Usage Data</strong> — chat counts, image/video generation counts (to enforce fair usage limits).</li>
-            <li><strong>Chat Sessions</strong> — your conversation history, stored in Firebase Firestore under your user ID.</li>
-            <li><strong>Profile Photo</strong> — from Google OAuth (display only, not stored on our servers).</li>
-          </ul>
-        </section>
-
-        <section>
-          <h3 className="font-bold text-slate-900 dark:text-white mb-1">2. What We Do NOT Collect</h3>
-          <ul className="list-disc pl-4 space-y-1">
-            <li>Home address or physical location</li>
-            <li>Date of birth or age</li>
-            <li>Phone number (unless voluntarily provided for WhatsApp support)</li>
-            <li>Financial information or payment details</li>
-            <li>Biometric data of any kind</li>
-          </ul>
-        </section>
-
-        <section>
-          <h3 className="font-bold text-slate-900 dark:text-white mb-1">3. Why We Use Your Data</h3>
-          <ul className="list-disc pl-4 space-y-1">
-            <li>To create and manage your Zulora AI account</li>
-            <li>To enforce per-user usage limits (DPDP Act: Data Minimization)</li>
-            <li>To send you a one-time welcome email via EmailJS</li>
-            <li>To display your name and photo in the app UI</li>
-          </ul>
-        </section>
-
-        <section>
-          <h3 className="font-bold text-slate-900 dark:text-white mb-1">4. Data Retention & Deletion</h3>
-          <p>You can permanently delete your account and all associated data at any time from <strong>Settings → Account → Delete My Account</strong>. All data is deleted from Firebase Firestore within 24 hours of the deletion request.</p>
-        </section>
-
-        <section>
-          <h3 className="font-bold text-slate-900 dark:text-white mb-1">5. Third-Party Services</h3>
-          <p>Zulora AI uses the following third-party services, each with their own privacy policies:</p>
-          <ul className="list-disc pl-4 space-y-1">
-            <li>Google Firebase (Auth, Firestore)</li>
-            <li>Google Gemini AI</li>
-            <li>Groq, Mistral, Cerebras, OpenRouter (AI inference)</li>
-            <li>EmailJS (welcome email delivery)</li>
-          </ul>
-        </section>
-
-        <section>
-          <h3 className="font-bold text-slate-900 dark:text-white mb-1">6. Your Rights (DPDP Act 2023)</h3>
-          <p>Under India's Digital Personal Data Protection Act 2023, you have the right to:</p>
-          <ul className="list-disc pl-4 space-y-1">
-            <li>Access your personal data</li>
-            <li>Correct inaccurate personal data</li>
-            <li>Erase your personal data</li>
-            <li>Withdraw consent at any time</li>
-            <li>File a grievance with the Data Protection Board of India</li>
-          </ul>
-          <p className="mt-1">Contact us: <a href="mailto:zulora.help@gmail.com" className="text-sky-500 underline">zulora.help@gmail.com</a></p>
-        </section>
-
-        <section>
-          <h3 className="font-bold text-slate-900 dark:text-white mb-1">7. Contact</h3>
-          <p>Data Fiduciary: <strong>Shiven Panwar, Zulora</strong><br />
-          Email: <a href="mailto:zulora.help@gmail.com" className="text-sky-500 underline">zulora.help@gmail.com</a><br />
-          WhatsApp: +91 6395211325</p>
-        </section>
+        <p className="text-xs font-semibold text-sky-500 uppercase tracking-widest">Effective date: October 1, 2026</p>
+        <p>We use your account information, chats, uploaded files, and connected Google data to provide the AI features, storage, and workflow actions you request. Google connector results are handled directly by the connector and are not sent to AI model providers. Zulora Drive files may be sent to an AI inference provider only when you ask Zulora AI to analyze them.</p>
+        <p>Google API data is not sold or rented, used for advertising, or used to train generalized AI models. Google and Firebase process data needed to provide Google API, authentication, chat, and storage features. Zulora Drive files and reports are stored in a separate Firebase project; you can delete individual files or clear that Drive account from the Connectors panel.</p>
+        <p>Zulora AI's use and transfer to any other app of information received from Google APIs will adhere to the Google API Services User Data Policy, including the Limited Use requirements.</p>
+        <p>Disconnect Google in Connectors to clear Zulora's active session token. To revoke Google's authorization grant, remove Zulora AI from your <a href="https://myaccount.google.com/connections" target="_blank" rel="noreferrer" className="text-sky-600 underline">Google Account connections</a>.</p>
+        <p>Read the full <a href="/privacy.html" target="_blank" rel="noreferrer" className="font-semibold text-sky-600 underline">Zulora AI & Zulora Drive Privacy Policy</a>, or contact <a href="mailto:pawarshiven412@gmail.com" className="text-sky-600 underline">pawarshiven412@gmail.com</a>.</p>
       </div>
     </div>
   </div>
 );
-
 /* ─── MAIN SIGN-IN PAGE ─── */
 export const SignIn = ({ onAuthenticated }) => {
   const { loading, isAuthenticated, signInWithGoogle } = useAuth();
