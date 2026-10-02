@@ -1,3 +1,4 @@
+import { onAuthStateChanged } from 'firebase/auth';
 import { deleteDoc, doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
 
@@ -8,45 +9,105 @@ const GOOGLE_CLIENT_ID = String(
 const GOOGLE_IDENTITY_SCRIPT = 'https://accounts.google.com/gsi/client';
 const TOKEN_REFRESH_MARGIN_MS = 60_000;
 const TOKEN_STORAGE_KEY = 'zulora_oauth_token';
+const TOKEN_DB_NAME = 'zulora-connector-sessions';
+const TOKEN_DB_VERSION = 1;
+const CONNECTOR_STATE_KEY = 'zulora_connector_sessions';
 const sessionTokens = new Map();
 let identityScriptPromise;
+let tokenDbPromise;
+let tokenWriteQueue = Promise.resolve();
+const silentRefreshes = new Map();
+
+function readStoredConnectorStates() {
+  if (typeof window === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CONNECTOR_STATE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch { return {}; }
+}
+
+function writeStoredConnectorState(providerId, state) {
+  const states = readStoredConnectorStates();
+  if (state) states[providerId] = state;
+  else delete states[providerId];
+  try { localStorage.setItem(CONNECTOR_STATE_KEY, JSON.stringify(states)); } catch { /* State is also represented by persisted OAuth tokens. */ }
+}
 
 function readStoredTokens() {
   if (typeof window === 'undefined') return {};
   try {
-    const raw = sessionStorage.getItem(TOKEN_STORAGE_KEY) || localStorage.getItem(TOKEN_STORAGE_KEY);
+    const raw = localStorage.getItem(TOKEN_STORAGE_KEY) || sessionStorage.getItem(TOKEN_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (typeof parsed === 'string' && parsed) return { accessToken: parsed, expiresAt: Date.now() + 5 * 60_000 };
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   } catch {
     try {
-      const raw = sessionStorage.getItem(TOKEN_STORAGE_KEY) || localStorage.getItem(TOKEN_STORAGE_KEY) || '';
+      const raw = localStorage.getItem(TOKEN_STORAGE_KEY) || sessionStorage.getItem(TOKEN_STORAGE_KEY) || '';
       return raw ? { accessToken: raw, expiresAt: Date.now() + 5 * 60_000 } : {};
     } catch { return {}; }
   }
+}
+
+function openTokenDb() {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  if (!tokenDbPromise) tokenDbPromise = new Promise(resolve => {
+    const request = indexedDB.open(TOKEN_DB_NAME, TOKEN_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains('sessions')) db.createObjectStore('sessions');
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(null);
+    request.onblocked = () => resolve(null);
+  });
+  return tokenDbPromise;
+}
+
+function persistTokensToIndexedDb(tokens) {
+  tokenWriteQueue = tokenWriteQueue.then(async () => {
+    const db = await openTokenDb();
+    if (!db) return;
+    await new Promise(resolve => {
+      const transaction = db.transaction('sessions', 'readwrite');
+      const store = transaction.objectStore('sessions');
+      store.clear();
+      for (const [provider, token] of Object.entries(tokens)) store.put(token, provider);
+      transaction.oncomplete = transaction.onerror = transaction.onabort = resolve;
+    });
+  }).catch(() => {});
+  return tokenWriteQueue;
+}
+
+function validTokenRecord(value, providerId) {
+  if (!value || typeof value !== 'object') return null;
+  let expiresAt = Number(value.expiresAt || value.expiry_date || value.expires_at || value.expirationTime) || 0;
+  if (expiresAt > 0 && expiresAt < 1_000_000_000_000) expiresAt *= 1000;
+  const accessToken = String(value.accessToken || value.access_token || '');
+  const uid = String(value.uid || auth.currentUser?.uid || '');
+  if (!accessToken || !expiresAt || (auth.currentUser?.uid && uid && uid !== auth.currentUser.uid)) return null;
+  return { accessToken, expiresAt, email: String(value.email || ''), uid, provider: providerId };
 }
 
 function writeStoredTokens(removeProviders = []) {
   if (typeof window === 'undefined') return;
   const tokens = { ...readStoredTokens() };
   for (const provider of removeProviders) delete tokens[provider];
-  for (const [provider, token] of sessionTokens.entries()) tokens[provider] = token;
+  for (const [provider, token] of sessionTokens.entries()) tokens[provider] = { ...token, provider };
   for (const [provider, value] of Object.entries(tokens)) {
-    let expiry = Number(value?.expiresAt || value?.expiry_date || value?.expires_at || value?.expirationTime) || 0;
-    if (expiry > 0 && expiry < 1_000_000_000_000) expiry *= 1000;
-    if (provider !== 'accessToken' && value && typeof value === 'object' && (!expiry || expiry <= Date.now() + TOKEN_REFRESH_MARGIN_MS)) delete tokens[provider];
+    if (provider === 'accessToken') continue;
+    if (!validTokenRecord(value, provider)) delete tokens[provider];
   }
   try {
+    localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(tokens));
     sessionStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(tokens));
-    // Migrate and remove legacy localStorage tokens; Google access tokens are tab scoped.
-    localStorage.removeItem(TOKEN_STORAGE_KEY);
-  } catch { /* In-memory OAuth access remains available for this page session. */ }
+  } catch { /* IndexedDB and the in-memory session remain available where possible. */ }
+  persistTokensToIndexedDb(tokens);
 }
 
 function restoreStoredToken(providerId) {
   const stored = readStoredTokens();
-  const candidate = stored[providerId] || stored;
+  const candidate = stored[providerId] || (stored.provider === providerId ? stored : null);
   const accessToken = typeof candidate === 'string'
     ? candidate
     : String(candidate?.accessToken || candidate?.access_token || '');
@@ -55,7 +116,7 @@ function restoreStoredToken(providerId) {
   if (!expiresAt && candidate?.expires_in && candidate?.storedAt) expiresAt = Number(candidate.storedAt) + Number(candidate.expires_in) * 1000;
   if (!expiresAt && accessToken) expiresAt = Date.now() + 5 * 60_000;
   const uid = String(candidate?.uid || auth.currentUser?.uid || '');
-  if (!accessToken || !expiresAt || expiresAt <= Date.now() + TOKEN_REFRESH_MARGIN_MS || (auth.currentUser?.uid && uid && uid !== auth.currentUser.uid)) {
+  if (!accessToken || !expiresAt || (auth.currentUser?.uid && uid && uid !== auth.currentUser.uid)) {
     return null;
   }
   const token = { accessToken, expiresAt, email: String(candidate?.email || ''), uid };
@@ -90,8 +151,13 @@ export const CONNECTOR_CONFIG = Object.freeze({
   },
   forms: {
     id: 'forms', name: 'Google Forms', icon: 'form',
-    scopes: ['https://www.googleapis.com/auth/forms.responses.readonly', 'openid', 'email'],
-    description: 'Read responses from forms you select.'
+    scopes: ['https://www.googleapis.com/auth/forms.body.readonly', 'https://www.googleapis.com/auth/forms.responses.readonly', 'openid', 'email'],
+    description: 'Read selected forms and their responses.'
+  },
+  drive: {
+    id: 'drive', name: 'Google Drive', icon: 'drive',
+    scopes: ['https://www.googleapis.com/auth/drive.readonly', 'https://www.googleapis.com/auth/drive.file', 'openid', 'email'],
+    description: 'Find, download, and manage files you have granted access to.'
   }
 });
 
@@ -155,6 +221,37 @@ const tokenRequest = (oauth, scopes, prompt) => new Promise((resolve, reject) =>
   client.requestAccessToken({ prompt });
 });
 
+async function silentlyRefresh(providerId, uid = auth.currentUser?.uid || '') {
+  if (silentRefreshes.has(providerId)) return silentRefreshes.get(providerId);
+  const refreshPromise = (async () => {
+    const provider = CONNECTOR_CONFIG[providerId];
+    if (!provider || !uid || (auth.currentUser?.uid && auth.currentUser.uid !== uid)) return null;
+    const oauth = await loadIdentityServices();
+    try {
+      const token = await tokenRequest(oauth, provider.scopes, '');
+      const email = await readGoogleAccount(token.access_token).catch(() => '');
+      sessionTokens.set(providerId, {
+        accessToken: token.access_token,
+        expiresAt: Date.now() + (Number(token.expires_in) || 3600) * 1000,
+        email,
+        uid
+      });
+      writeStoredTokens();
+      emitConnectorChange();
+      return sessionTokens.get(providerId);
+    } catch (error) {
+      // A silent request is deliberately non-interactive. Keep the connector
+      // session record so the UI can offer an explicit reconnect action.
+      if (!/interaction_required|login_required|consent_required|immediate_failed/i.test(String(error?.message || ''))) {
+        console.info(`Silent ${provider.name} token renewal was unavailable.`, error.message);
+      }
+      return null;
+    }
+  })().finally(() => silentRefreshes.delete(providerId));
+  silentRefreshes.set(providerId, refreshPromise);
+  return refreshPromise;
+}
+
 async function readGoogleAccount(accessToken) {
   const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
     headers: { Authorization: `Bearer ${accessToken}` }
@@ -200,6 +297,48 @@ export const connectorManager = {
   clientConfigured: Boolean(GOOGLE_CLIENT_ID),
   prepareOAuth: loadIdentityServices,
 
+  async restoreSession() {
+    const stored = readStoredTokens();
+    for (const providerId of Object.keys(CONNECTOR_CONFIG)) {
+      const localToken = validTokenRecord(stored[providerId], providerId);
+      if (localToken) sessionTokens.set(providerId, localToken);
+    }
+    const db = await openTokenDb();
+    if (db) {
+      const idbTokens = await new Promise(resolve => {
+        const store = db.transaction('sessions', 'readonly').objectStore('sessions');
+        const valuesRequest = store.getAll();
+        const keysRequest = store.getAllKeys();
+        let values;
+        let keys;
+        const finish = () => {
+          if (values && keys) resolve(values.map((value, index) => ({ ...value, provider: value.provider || keys[index] })));
+        };
+        valuesRequest.onsuccess = () => { values = valuesRequest.result || []; finish(); };
+        keysRequest.onsuccess = () => { keys = keysRequest.result || []; finish(); };
+        valuesRequest.onerror = keysRequest.onerror = () => resolve([]);
+      });
+      for (const value of idbTokens) {
+        const record = validTokenRecord(value, value?.provider);
+        if (!record || !CONNECTOR_CONFIG[record.provider]) continue;
+        const current = sessionTokens.get(record.provider);
+        if (!current || record.expiresAt > current.expiresAt) sessionTokens.set(record.provider, record);
+      }
+      writeStoredTokens();
+    }
+    emitConnectorChange();
+    const uid = auth.currentUser?.uid;
+    if (uid) {
+      for (const providerId of Object.keys(CONNECTOR_CONFIG)) {
+        const token = sessionTokens.get(providerId);
+        if (token?.uid === uid && token.expiresAt <= Date.now() + TOKEN_REFRESH_MARGIN_MS) {
+          silentlyRefresh(providerId, uid).catch(() => {});
+        }
+      }
+    }
+    return this.getActiveGoogleProviders();
+  },
+
   async connect(providerId, uid) {
     const provider = CONNECTOR_CONFIG[providerId];
     if (!provider) throw new Error(`Unknown connector: ${providerId}`);
@@ -214,15 +353,18 @@ export const connectorManager = {
       connectedAt: Date.now(),
       updatedAt: Date.now()
     };
+    writeStoredConnectorState(providerId, connection);
     sessionTokens.set(providerId, {
       accessToken: token.access_token,
       expiresAt: Date.now() + (Number(token.expires_in) || 3600) * 1000,
       email,
-      uid
+      uid,
+      provider: providerId
     });
     writeStoredTokens();
-    // Keep only short-lived access tokens in tab-scoped session storage so a
-    // reload restores the active connector. Refresh tokens are never stored.
+    // Persist the short-lived session access token in localStorage and
+    // IndexedDB for reload recovery. GIS does not issue refresh tokens from
+    // its browser token flow; long-lived refresh credentials stay server-side.
     emitConnectorChange();
     let metadataSaved = true;
     try { await setDoc(connectorDoc(uid, providerId), connection, { merge: true }); }
@@ -238,44 +380,84 @@ export const connectorManager = {
     // grant, which may also contain another connected Workspace service.
     sessionTokens.delete(providerId);
     writeStoredTokens([providerId]);
+    writeStoredConnectorState(providerId, null);
     if (uid) await deleteDoc(connectorDoc(uid, providerId)).catch(() => {});
     emitConnectorChange();
   },
 
   async getAccessToken(providerId) {
-    const token = sessionTokens.get(providerId) || restoreStoredToken(providerId);
+    let token = sessionTokens.get(providerId) || restoreStoredToken(providerId);
+    if (token && token.expiresAt <= Date.now() + TOKEN_REFRESH_MARGIN_MS) {
+      token = await silentlyRefresh(providerId, token.uid || auth.currentUser?.uid || '');
+    }
     if (!token || token.expiresAt <= Date.now() + TOKEN_REFRESH_MARGIN_MS || (auth.currentUser?.uid && token.uid && token.uid !== auth.currentUser.uid)) {
       sessionTokens.delete(providerId);
       writeStoredTokens([providerId]);
+      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('zulora-connector-reauth-required', { detail: { provider: providerId } }));
       throw new Error(`${CONNECTOR_CONFIG[providerId]?.name || providerId} needs to be connected again. Reconnect it in Connectors to continue.`);
     }
     return token.accessToken;
   },
 
   async apiFetch(providerId, url, options = {}) {
-    const accessToken = await this.getAccessToken(providerId);
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-        ...options.headers,
-        Authorization: `Bearer ${accessToken}`
+    const method = String(options.method || 'GET').toUpperCase();
+    const retryableMethod = ['GET', 'HEAD', 'DELETE'].includes(method);
+    let refreshedAfter401 = false;
+    let transientRetries = 0;
+    while (true) {
+      const accessToken = await this.getAccessToken(providerId);
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+          ...options.headers,
+          Authorization: `Bearer ${accessToken}`
+        }
+      });
+      if (response.status === 401 && !refreshedAfter401) {
+        refreshedAfter401 = true;
+        const current = sessionTokens.get(providerId);
+        const renewed = await silentlyRefresh(providerId, current?.uid || auth.currentUser?.uid || '');
+        if (renewed) continue;
       }
-    });
-    if (response.status === 401 || response.status === 403) {
-      sessionTokens.delete(providerId);
-      writeStoredTokens([providerId]);
-      emitConnectorChange();
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('zulora-connector-reauth-required', { detail: { provider: providerId } }));
+      if (response.status === 401 || response.status === 403) {
+        sessionTokens.delete(providerId);
+        writeStoredTokens([providerId]);
+        emitConnectorChange();
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('zulora-connector-reauth-required', { detail: { provider: providerId } }));
+        }
       }
+      if ((response.status === 429 || response.status >= 500) && transientRetries < 1 && (retryableMethod || response.status === 429)) {
+        transientRetries += 1;
+        const retryAfter = Number(response.headers.get('retry-after'));
+        const delay = retryAfter ? Math.min(1500, retryAfter * 1000) : 250 * transientRetries;
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      const data = response.status === 204 ? null : await response.json().catch(() => null);
+      if (!response.ok) {
+        const reason = data?.error?.message || response.statusText || 'Google API request failed';
+        throw new Error(`${CONNECTOR_CONFIG[providerId]?.name || providerId}: ${reason} (HTTP ${response.status})`);
+      }
+      return data;
     }
-    const data = response.status === 204 ? null : await response.json().catch(() => null);
-    if (!response.ok) {
-      const reason = data?.error?.message || response.statusText || 'Google API request failed';
-      throw new Error(`${CONNECTOR_CONFIG[providerId]?.name || providerId}: ${reason} (HTTP ${response.status})`);
-    }
-    return data;
+  },
+
+  getCachedStatuses(uid) {
+    const states = readStoredConnectorStates();
+    return Object.fromEntries(Object.keys(CONNECTOR_CONFIG).map(provider => {
+      const session = sessionTokens.get(provider) || restoreStoredToken(provider);
+      const connected = Boolean(session && session.expiresAt > Date.now() + TOKEN_REFRESH_MARGIN_MS
+        && (!uid || !session.uid || session.uid === uid));
+      return [provider, {
+        ...CONNECTOR_CONFIG[provider],
+        ...(states[provider] || {}),
+        connected,
+        needsReconnect: Boolean(states[provider] && !connected),
+        email: session?.email || states[provider]?.email || ''
+      }];
+    }));
   },
 
   async getStatuses(uid) {
@@ -285,10 +467,15 @@ export const connectorManager = {
       if (uid) {
         try {
           const snapshot = await getDoc(connectorDoc(uid, provider));
-          if (snapshot.exists()) metadata = snapshot.data();
+          if (snapshot.exists()) {
+            metadata = snapshot.data();
+            writeStoredConnectorState(provider, metadata);
+          }
         } catch { /* Metadata is optional; live OAuth state is authoritative. */ }
       }
-      const connected = Boolean(session && session.expiresAt > Date.now() + TOKEN_REFRESH_MARGIN_MS);
+      const connected = Boolean(session && session.expiresAt > Date.now() + TOKEN_REFRESH_MARGIN_MS
+        && (!uid || !session.uid || session.uid === uid));
+      if (session && !connected && uid && session.uid === uid) silentlyRefresh(provider, uid).catch(() => {});
       return [provider, {
         ...CONNECTOR_CONFIG[provider],
         ...metadata,
@@ -302,6 +489,7 @@ export const connectorManager = {
 
   getActiveConnectorContext(driveConnected = false) {
     const active = this.getActiveGoogleProviders().map(provider => CONNECTOR_CONFIG[provider].name);
+    if (this.getActiveGoogleProviders().includes('drive')) active.push('Google Drive');
     if (driveConnected) active.push('Zulora Drive');
     return active.length
       ? `Available native connectors for this signed-in session: ${active.join(', ')}. When a request targets one of these services, Zulora can use its direct API connector without opening tabs or using the Computer Plugin.`
@@ -377,6 +565,10 @@ export const connectorManager = {
     return result.items || [];
   },
 
+  async deleteCalendarEvent({ event_id }) {
+    return this.apiFetch('calendar', `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(event_id)}`, { method: 'DELETE' });
+  },
+
   async appendSheetRow({ spreadsheet_id, range = 'Sheet1!A:Z', values = [] }) {
     const encodedRange = encodeURIComponent(range);
     return this.apiFetch('sheets', `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheet_id)}/values/${encodedRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
@@ -384,10 +576,94 @@ export const connectorManager = {
     });
   },
 
+  async createSpreadsheet({ title }) {
+    return this.apiFetch('sheets', 'https://sheets.googleapis.com/v4/spreadsheets', {
+      method: 'POST', body: JSON.stringify({ properties: { title } })
+    });
+  },
+
+  async searchGmailThreads({ query = 'in:inbox', max_results = 5 } = {}) {
+    const params = new URLSearchParams({ q: String(query || 'in:inbox'), maxResults: String(Math.min(20, Math.max(1, Number(max_results) || 5))) });
+    const listing = await this.apiFetch('gmail', `https://gmail.googleapis.com/gmail/v1/users/me/threads?${params}`);
+    return Promise.all((listing.threads || []).map(async item => {
+      const thread = await this.apiFetch('gmail', `https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(item.id)}?format=full`);
+      const messages = (thread.messages || []).map(message => {
+        const headers = message.payload?.headers || [];
+        const getHeader = name => headers.find(header => header.name?.toLowerCase() === name)?.value || '';
+        return { from: getHeader('from'), subject: getHeader('subject'), date: getHeader('date'), snippet: message.snippet || '', body: getGmailText(message.payload) || message.snippet || '' };
+      });
+      return { id: thread.id, historyId: thread.historyId, messages };
+    }));
+  },
+
+  async listGoogleDriveFiles({ query = '', max_results = 20 } = {}) {
+    const params = new URLSearchParams({
+      pageSize: String(Math.min(100, Math.max(1, Number(max_results) || 20))),
+      orderBy: 'modifiedTime desc',
+      fields: 'files(id,name,mimeType,size,modifiedTime,webViewLink,description,trashed)'
+    });
+    const cleanQuery = String(query || '').trim();
+    if (cleanQuery) params.set('q', `trashed = false and (name contains '${cleanQuery.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')`);
+    else params.set('q', 'trashed = false');
+    const result = await this.apiFetch('drive', `https://www.googleapis.com/drive/v3/files?${params}`);
+    return result.files || [];
+  },
+
+  async manageGoogleDriveFile({ action = 'list', file_id = '', name = '', max_results = 20 } = {}) {
+    if (action === 'list') return this.listGoogleDriveFiles({ query: name, max_results });
+    if (!file_id) throw new Error('A Google Drive file ID is required.');
+    if (action === 'trash') return this.apiFetch('drive', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file_id)}`, {
+      method: 'PATCH', body: JSON.stringify({ trashed: true })
+    });
+    if (action === 'get') return this.apiFetch('drive', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file_id)}?fields=id,name,mimeType,size,modifiedTime,webViewLink,description,trashed`);
+    throw new Error('Drive file action must be list, get, or trash.');
+  },
+
+  async downloadGoogleDriveFile({ file_id }) {
+    if (!file_id) throw new Error('A Google Drive file ID is required.');
+    let token = await this.getAccessToken('drive');
+    let response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file_id)}?alt=media`, { headers: { Authorization: `Bearer ${token}` } });
+    if (response.status === 401) {
+      const current = sessionTokens.get('drive');
+      const renewed = await silentlyRefresh('drive', current?.uid || auth.currentUser?.uid || '');
+      if (renewed) {
+        token = renewed.accessToken;
+        response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file_id)}?alt=media`, { headers: { Authorization: `Bearer ${token}` } });
+      }
+    }
+    if (!response.ok) throw new Error(`Google Drive download failed (HTTP ${response.status}).`);
+    const blob = await response.blob();
+    if (blob.size > 2 * 1024 * 1024) throw new Error('Files larger than 2 MB must be opened from Google Drive instead of attached to chat.');
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    return { mimeType: blob.type || 'application/octet-stream', size: blob.size, base64: btoa(binary) };
+  },
+
+  async getGoogleForm({ form_id }) {
+    if (!form_id) throw new Error('A Google Form ID is required.');
+    return this.apiFetch('forms', `https://forms.googleapis.com/v1/forms/${encodeURIComponent(form_id)}`);
+  },
+
+  async getGoogleFormResponses({ form_id, max_results = 100 } = {}) {
+    if (!form_id) throw new Error('A Google Form ID is required.');
+    const params = new URLSearchParams({ pageSize: String(Math.min(500, Math.max(1, Number(max_results) || 100))) });
+    const result = await this.apiFetch('forms', `https://forms.googleapis.com/v1/forms/${encodeURIComponent(form_id)}/responses?${params}`);
+    return result.responses || [];
+  },
+
   async readSheetData({ spreadsheet_id, range }) {
     const result = await this.apiFetch('sheets', `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheet_id)}/values/${encodeURIComponent(range)}`);
     return result.values || [];
   }
 };
+
+if (typeof window !== 'undefined') {
+  connectorManager.restoreSession().catch(() => {});
+  onAuthStateChanged(auth, user => {
+    if (!user) return;
+    connectorManager.restoreSession().catch(() => {});
+  });
+}
 
 export default connectorManager;

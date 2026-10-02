@@ -3,14 +3,13 @@ import {
   collection, deleteDoc, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, serverTimestamp, setDoc, where, writeBatch
 } from 'firebase/firestore';
 import {
-  deleteObject, getDownloadURL, ref, uploadBytes
+  deleteObject, getDownloadURL, ref, uploadBytesResumable
 } from 'firebase/storage';
 import { driveAuth, driveDb, driveStorage } from '../config/firebaseDrive';
 
 const FILES_COLLECTIONS = ['user_drive_files', 'files', 'drive_files', 'driveFiles'];
 const MAX_SEARCH_FILES = 300;
 const MAX_INDEXED_TEXT_LENGTH = 24_000;
-const CLOUDINARY_NAME = 't3dkhv0z';
 
 const normalizeFolderPath = path => String(path || '')
   .split('/')
@@ -75,27 +74,46 @@ export const zuloraDriveService = {
     await signOut(driveAuth);
   },
 
-  async uploadFileToDrive(file, folderPath = '') {
-    if (!(file instanceof Blob)) throw new Error('Choose a file to upload to Zulora Drive.');
+  async uploadFileToDrive(file, folderPath = '', { onProgress } = {}) {
+    const blobLike = typeof Blob !== 'undefined' && file instanceof Blob;
+    const fileLike = file && Number.isFinite(Number(file.size)) && typeof file.arrayBuffer === 'function';
+    if (!blobLike && !fileLike) throw new Error('Choose a file to upload to Zulora Drive.');
+    const originalName = String(file.name || 'upload');
+    if (!blobLike) {
+      const bytes = await file.arrayBuffer();
+      file = new Blob([bytes], { type: file.type || 'application/octet-stream' });
+    }
     const uid = currentDriveUid();
     const id = `file_${Date.now()}_${crypto.randomUUID?.() || Math.random().toString(36).slice(2, 10)}`;
-    const name = safeFileName(file.name || 'generated-report.txt');
+    const name = safeFileName(originalName || 'generated-report.txt');
     const folder = normalizeFolderPath(folderPath);
     const now = new Date();
     const storagePath = `users/${uid}/drive/${id}-${name}`;
     const storageRef = ref(driveStorage, storagePath);
     const searchableText = await indexTextFromFile(file);
-    await uploadBytes(storageRef, file, {
-      contentType: file.type || 'application/octet-stream',
-      customMetadata: { ownerUid: uid, fileId: id }
+    await new Promise((resolve, reject) => {
+      const task = uploadBytesResumable(storageRef, file, {
+        contentType: file.type || 'application/octet-stream',
+        customMetadata: { ownerUid: uid, fileId: id }
+      });
+      const timer = setTimeout(() => {
+        task.cancel();
+        reject(new Error('Upload timed out. Check your connection and try again.'));
+      }, 180_000);
+      task.on('state_changed', snapshot => {
+        const ratio = snapshot.totalBytes ? snapshot.bytesTransferred / snapshot.totalBytes : 0;
+        onProgress?.({ percent: Math.min(100, Math.round(ratio * 100)), bytesTransferred: snapshot.bytesTransferred, totalBytes: snapshot.totalBytes });
+      }, error => {
+        clearTimeout(timer);
+        reject(error);
+      }, () => {
+        clearTimeout(timer);
+        resolve();
+      });
     });
 
     try {
       const downloadURL = await getDownloadURL(storageRef);
-      const cloudinaryUrl = await uploadCloudinaryAsset(file).catch(error => {
-        console.info('Cloudinary mirror skipped; Firebase Storage remains the primary copy.', error.message);
-        return '';
-      });
       const createdAt = serverTimestamp();
       const metadata = {
         id,
@@ -107,7 +125,7 @@ export const zuloraDriveService = {
         fileId: id,
         fileName: name,
         fileUrl: downloadURL,
-        cloudinaryUrl,
+        cloudinaryUrl: '',
         fileType: file.type || 'application/octet-stream',
         mimeType: file.type || 'application/octet-stream',
         fileSize: Number(file.size) || 0,
@@ -121,23 +139,23 @@ export const zuloraDriveService = {
         searchableText,
         updatedAt: Date.now()
       };
-      const batch = writeBatch(driveDb);
-      for (const collectionName of FILES_COLLECTIONS.filter(name => name !== 'user_drive_files')) {
-        batch.set(doc(driveDb, 'users', uid, collectionName, id), metadata);
-      }
-      await batch.commit();
       try { await setDoc(doc(driveDb, 'users', uid, 'user_drive_files', id), metadata); }
       catch (error) {
         if (isPermissionDenied(error)) {
           console.info('The updated Drive index rule is not deployed yet; the file remains available in the legacy Drive indexes.');
         } else {
-          await Promise.all(FILES_COLLECTIONS.filter(name => name !== 'user_drive_files')
-            .map(name => deleteDoc(doc(driveDb, 'users', uid, name, id)).catch(() => {})));
           throw error;
         }
       }
+      const legacyBatch = writeBatch(driveDb);
+      for (const collectionName of FILES_COLLECTIONS.filter(name => name !== 'user_drive_files')) {
+        legacyBatch.set(doc(driveDb, 'users', uid, collectionName, id), metadata);
+      }
+      await legacyBatch.commit();
+      onProgress?.({ percent: 100, bytesTransferred: file.size, totalBytes: file.size, stage: 'saved' });
       return metadata;
     } catch (error) {
+      await Promise.all(FILES_COLLECTIONS.map(collectionName => deleteDoc(doc(driveDb, 'users', uid, collectionName, id)).catch(() => {})));
       await deleteObject(storageRef).catch(() => {});
       throw new Error(`The file uploaded, but Drive could not save its directory record: ${error.message}`);
     }
@@ -252,18 +270,6 @@ export const zuloraDriveService = {
     return { deleted: results.length - failed, failed };
   }
 };
-
-async function uploadCloudinaryAsset(file) {
-  const preset = String(import.meta.env?.VITE_CLOUDINARY_UPLOAD_PRESET || '').trim();
-  if (!preset) return '';
-  const form = new FormData();
-  form.set('file', file);
-  form.set('upload_preset', preset);
-  const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_NAME}/auto/upload`, { method: 'POST', body: form });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.secure_url) throw new Error(data.error?.message || `Cloudinary upload failed (HTTP ${response.status}).`);
-  return data.secure_url;
-}
 
 export async function uploadGeneratedAssetToDrive(asset) {
   if (!driveAuth.currentUser) throw new Error('Connect Zulora Drive in the Connectors panel to sync generated media.');

@@ -20,7 +20,7 @@ import { AI_STUDIO_SYSTEM_PROMPT } from './aiStudioPrompt';
 import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_FLASH_MODEL_ID, GEMINI_MODELS, GEMINI_MODEL_FALLBACKS, GEMINI_PRO_MODEL_FALLBACKS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from './aiModels';
 import { buildImagePrompt } from './imageGen';
 import connectorManager from './connectorManager';
-import { executeGoogleConnectorFunction, getGoogleConnectorFunctionDeclarations, getGoogleConnectorToolInstructions, isGoogleReconnectError } from './googleConnectorTools';
+import { executeGoogleConnectorFunction, getGoogleConnectorFunctionDeclarations, getGoogleConnectorFunctionProvider, getGoogleConnectorToolInstructions, isGoogleReconnectError } from './googleConnectorTools';
 
 // ─── SAFE ENVIRONMENT EXTRACTOR ──────────────────────────────────────────────
 const clientEnv = import.meta.env || {};
@@ -649,11 +649,14 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
       const signature = `${name}:${JSON.stringify(args)}`;
       let result = executedCalls.get(signature);
       if (!executedCalls.has(signature)) {
-        try { result = await executeGoogleConnectorFunction(name, args); }
+        try {
+          options.onProgress?.({ label: `Executing ${name.replaceAll('_', ' ')}`, status: 'running' });
+          result = await executeGoogleConnectorFunction(name, args, { onProgress: options.onProgress });
+        }
         catch (error) {
           result = { error: error.message || 'The Google connector request failed.' };
           if (isGoogleReconnectError(error)) {
-            reconnectProvider = ({ send_gmail: 'gmail', read_emails: 'gmail', create_calendar_event: 'calendar', get_calendar_events: 'calendar', append_sheet_row: 'sheets', read_sheet_data: 'sheets' })[name] || '';
+            reconnectProvider = getGoogleConnectorFunctionProvider(name);
           }
         }
         executedCalls.set(signature, result);

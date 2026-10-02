@@ -466,7 +466,7 @@ function plainMessages(messages, systemPrompt) {
   ];
 }
 
-async function readProviderEventStream(response, readToken, onToken, streamState, onUsage = undefined) {
+async function readProviderEventStream(response, readToken, onToken, streamState, onUsage = undefined, onGrounding = undefined) {
   if (!response.body) throw new Error('The model returned no response stream.');
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -478,6 +478,8 @@ async function readProviderEventStream(response, readToken, onToken, streamState
     if (!data || data === '[DONE]') return;
     const event = JSON.parse(data);
     if (event.usageMetadata || event.usage) onUsage?.(event.usageMetadata || event.usage);
+    const groundingMetadata = event.candidates?.[0]?.groundingMetadata;
+    if (groundingMetadata) onGrounding?.(groundingMetadata);
     const token = readToken(event);
     if (typeof token === 'string' && token) {
       output += token;
@@ -624,8 +626,9 @@ async function tryGemini(messages, options = {}) {
         let text;
         if (options.stream) {
           let usageMetadata;
-          text = await readProviderEventStream(response, event => event.candidates?.[0]?.content?.parts?.map(part => part.text || '').join(''), options.onToken, options.streamState, usage => { usageMetadata = usage; });
-          data = { usageMetadata };
+          let groundingMetadata;
+          text = await readProviderEventStream(response, event => event.candidates?.[0]?.content?.parts?.map(part => part.text || '').join(''), options.onToken, options.streamState, usage => { usageMetadata = usage; }, value => { groundingMetadata = value; });
+          data = { usageMetadata, candidates: [{ groundingMetadata }] };
         } else {
           data = await response.json();
           text = data.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('').trim();
@@ -636,6 +639,7 @@ async function tryGemini(messages, options = {}) {
           const grounding = candidate?.groundingMetadata || {};
           const chunks = grounding.groundingChunks || [];
           const sources = chunks.map(chunk => chunk.web && ({ title: chunk.web.title || chunk.web.uri, url: chunk.web.uri })).filter(Boolean);
+          if (options.enableWebSearch && !sources.length) throw new Error('Google Search grounding returned no source links.');
           return { text, tokenUsage: normalizeTokenUsage(data.usageMetadata), provider: `Google Gemini (Key #${index + 1})`, model, sources };
         }
       }
@@ -737,7 +741,9 @@ async function generateChat(body, streamOptions = {}) {
     : requestedPreference === 'gemini' ? (coding || complex ? GEMINI_PRO_MODEL_ID : GEMINI_FLASH_MODEL)
       : flagship || useProModel ? GEMINI_PRO_MODEL_ID : GEMINI_FAST_MODEL;
   const groqModel = 'llama-3.3-70b-versatile';
-  const order = attachments.length
+  const order = body.enableWebSearch
+    ? ['gemini']
+    : attachments.length
     ? ['gemini']
     : chooseChatOrder(preference, requestedPreference === 'auto');
   for (const provider of order) {
@@ -764,6 +770,7 @@ async function generateChat(body, streamOptions = {}) {
       throw error;
     }
   }
+  if (body.enableWebSearch) throw new Error('Live web search is temporarily unavailable because Google Search grounding could not complete. Please retry.');
   if (!vision) {
     try {
       const output = await tryPollinationsText(messages, { coding, flagship });
@@ -1376,6 +1383,7 @@ export default async function handler(req, res) {
         res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
         res.flush?.();
       };
+      sendEvent('status', { status: 'connected' });
       const streamState = { sent: false };
       try {
         const output = await generateChat(body, {

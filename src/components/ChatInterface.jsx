@@ -49,9 +49,9 @@ import {
   Radio,
   Link,
   CloudUpload,
-  PhoneCall,
 } from 'lucide-react';
 import { onAuthStateChanged } from 'firebase/auth';
+import { doc, setDoc } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext';
 import { apiRouter } from '../services/apiRouter';
 import connectorManager from '../services/connectorManager';
@@ -60,11 +60,12 @@ import { executeDriveChatIntent, getDriveSystemContext, uploadChatMediaToDrive }
 import { driveAuth } from '../config/firebaseDrive';
 import { isCodeGenerationPrompt } from '../services/aiModels';
 import { firestoreService, deriveChatTitle } from '../services/firestoreService';
+import { db } from '../services/firebase';
 import { imageFileToDataUrl, readFileAsDataUrl } from '../services/imageUtils';
+import { checkExtensionConnected, executeCommand } from '../services/browserAgentEngine';
 import CodeArtifactRunner from './CodeArtifactRunner';
 import ModelSelector from './ModelSelector';
 import ConnectorsModal from './ConnectorsModal';
-import ZegoCallModal from './ZegoCallModal';
 
 /* ============================================================
    CONSTANTS
@@ -90,6 +91,18 @@ const normalizeAttachmentFile = file => {
 };
 const isImageAttachment = file => attachmentMimeType(file).startsWith('image/');
 const isPdfAttachment = file => attachmentMimeType(file) === 'application/pdf';
+const isComputerAutomationIntent = prompt => /\b(?:whatsapp|browser|webpage|website|tab|dom|button|input|text field|element|current page|web app)\b/i.test(String(prompt || ''))
+  && /\b(?:open|navigate|go to|click|type|fill|send|message|search|select|press)\b/i.test(String(prompt || ''));
+const attachWebCitations = (content, sources = []) => {
+  const text = String(content || '');
+  const validSources = sources.filter(source => {
+    try { return ['https:', 'http:'].includes(new URL(source.url).protocol); } catch { return false; }
+  });
+  if (!validSources.length) return text;
+  const missing = validSources.filter(source => !text.includes(source.url));
+  if (!missing.length) return text;
+  return `${text.trim()}\n\n${missing.map(source => `Source: [${String(source.title || new URL(source.url).hostname).replace(/[\[\]]/g, '')}](${source.url})`).join('\n')}`;
+};
 
 [
   ['clike', clike], ['markup', markup], ['javascript', javascript], ['jsx', jsx],
@@ -386,13 +399,26 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
             </>
           ) : (
             <>
+              {message.thinkingSteps?.length > 0 && <details className="zulora-thinking-box mb-3 overflow-hidden rounded-xl border border-violet-200/70 bg-violet-50/70 text-violet-950 dark:border-violet-900/60 dark:bg-violet-950/25 dark:text-violet-100" open={Boolean(message.streaming)}>
+                <summary className="cursor-pointer list-none px-3 py-2 text-xs font-semibold">🧠 Thinking / Executing Steps...</summary>
+                <div className="step-log space-y-1.5 border-t border-violet-200/60 px-3 py-2 dark:border-violet-900/50">
+                  {message.thinkingSteps.slice(-12).map((step, stepIndex) => <div key={`${step.label}-${stepIndex}`} className="flex items-start gap-2 text-[11px] leading-relaxed">
+                    <span aria-hidden="true" className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${step.status === 'done' ? 'bg-emerald-500' : step.status === 'error' ? 'bg-rose-500' : 'bg-violet-500 animate-pulse'}`} />
+                    <span className="min-w-0"><span className="font-medium">Step {stepIndex + 1}: {step.label}</span>{step.detail && <span className="ml-1 text-violet-700/75 dark:text-violet-200/70">{step.detail}</span>}</span>
+                  </div>)}
+                </div>
+              </details>}
               <MarkdownContent content={message.content} />
+              {message.needsReconnect && <button type="button" onClick={onReconnect} className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-amber-200/70 bg-amber-50/95 px-3 py-1.5 text-xs font-semibold text-amber-800 shadow-sm hover:bg-amber-100">
+                🔑 Please reconnect your Google Account to use connected features.
+              </button>}
               {message.streaming && <span aria-hidden="true" className="inline-block h-4 ml-0.5 align-middle border-r-2 border-sky-500 animate-pulse" />}
             </>
           )}
         </div>
         {!isUser && message.sources?.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-1 pt-1">
+            {message.webSearched && <span className="basis-full px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Web Sources</span>}
             {message.sources.slice(0, 5).map((source, sourceIndex) => (
               <a key={`${source.url}-${sourceIndex}`} href={source.url} target="_blank" rel="noreferrer"
                 className="inline-flex max-w-full items-center gap-1 rounded-full border border-sky-200/70 dark:border-sky-800/50 bg-sky-50/70 dark:bg-sky-950/30 px-2 py-1 text-[10px] text-sky-700 dark:text-sky-300 hover:underline">
@@ -525,7 +551,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const [isSpeakingIndex, setIsSpeakingIndex] = useState(null);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showConnectorsModal, setShowConnectorsModal] = useState(false);
-  const [showZegoCallModal, setShowZegoCallModal] = useState(false);
   const [connectorReauthProvider, setConnectorReauthProvider] = useState('');
   const [connectorContext, setConnectorContext] = useState('');
   const [driveUploadStatus, setDriveUploadStatus] = useState('');
@@ -616,7 +641,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   useEffect(() => {
     const previews = new Map();
     attachments.forEach(file => {
-      if (isImageAttachment(file)) previews.set(file, URL.createObjectURL(file));
+      if (isImageAttachment(file) || attachmentMimeType(file).startsWith('video/')) previews.set(file, URL.createObjectURL(file));
     });
     setAttachmentPreviewUrls(previews);
     return () => previews.forEach(url => URL.revokeObjectURL(url));
@@ -767,7 +792,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     setDriveUploadingFile(file.name);
     setDriveUploadStatus('');
     try {
-      const saved = await uploadChatMediaToDrive(file, 'Chat Uploads');
+      const saved = await uploadChatMediaToDrive(file, 'Chat Uploads', {
+        onProgress: progress => setDriveUploadStatus(progress.stage === 'saved'
+          ? `Saving ${file.name} to Zulora Drive…`
+          : `Uploading ${file.name} to Zulora Drive… ${progress.percent || 0}%`)
+      });
       setDriveUploadStatus(`Uploaded ${saved.name} to Zulora Drive.`);
     } catch (error) {
       setDriveUploadStatus(error.message || 'Could not upload this file to Zulora Drive.');
@@ -941,6 +970,30 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       model: modelPreference,
       pending: true
     };
+    const assistantId = (Date.now() + 1).toString();
+    let streamedText = '';
+    let streamedProvider = null;
+    let thinkingSteps = [];
+    let hasLoggedFirstToken = false;
+    const shouldShowThinkingBox = codeGenerationRequest || enableWebSearch || isComputerAutomationIntent(basePrompt)
+      || /\b(?:gmail|email|calendar|meeting|sheets|spreadsheet|forms|drive|multi[- ]step|multi[- ]task|multiple actions|and then|after that|step by step|complex|analy[sz]e|architecture|execute|run code)\b/i.test(basePrompt);
+    const publishAssistant = (streaming = true) => {
+      if (!shouldShowThinkingBox) return;
+      setMessages(previous => [
+        ...previous.filter(message => message.id !== assistantId),
+        { id: assistantId, role: 'assistant', content: streamedText, timestamp: Date.now(), model: streamedProvider?.model || 'Working…', provider: streamedProvider?.provider, thinkingSteps: [...thinkingSteps], streaming }
+      ]);
+    };
+    const pushThinkingStep = (label, status = 'running', detail = '') => {
+      if (!shouldShowThinkingBox || !label) return;
+      const prior = thinkingSteps.at(-1);
+      if (prior?.label === label && prior.status === status && prior.detail === detail) return;
+      thinkingSteps = [
+        ...thinkingSteps.map(step => step.status === 'running' ? { ...step, status: 'done' } : step),
+        { label: String(label), status, detail: String(detail || '') }
+      ].slice(-16);
+      publishAssistant();
+    };
     setMessages(newMessages);
     setInputPrompt('');
     attachments.forEach(file => preparedAttachmentDataRef.current.delete(file));
@@ -952,9 +1005,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     setIsAtBottom(true);
     setQueryTime(null);
     const startTime = Date.now();
-    const assistantId = (Date.now() + 1).toString();
-    let streamedText = '';
-    let streamedProvider = null;
+    pushThinkingStep('Preparing request');
 
     try {
       // Save the user turn before inference so navigation or reloads do not lose it.
@@ -976,23 +1027,59 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       const userVault = currentUser?.uid
         ? await firestoreService.getVault(currentUser.uid)
         : null;
+      pushThinkingStep('Checking active connectors and request context', 'done');
       const detectedConnector = detectConnectorTask(basePrompt);
-      const modelToolProvider = ['gmail', 'calendar', 'sheets'].includes(detectedConnector)
+      let browserTask = null;
+      if (isComputerAutomationIntent(basePrompt) && await checkExtensionConnected()) {
+        const today = new Date().toISOString().slice(0, 10);
+        const lastRunDate = localStorage.getItem('zulora_plugin_last_date');
+        const priorRuns = lastRunDate === today ? Math.max(0, Number(localStorage.getItem('zulora_plugin_daily_count')) || 0) : 0;
+        if (!isPro && priorRuns >= 10) {
+          browserTask = { handled: true, text: 'The free Computer Plugin limit is 10 tasks per day. Your daily allowance resets tomorrow.' };
+          pushThinkingStep('Checking Computer Plugin daily allowance', 'error', 'Daily free limit reached');
+        } else {
+          if (!isPro) {
+            const nextRuns = priorRuns + 1;
+            localStorage.setItem('zulora_plugin_last_date', today);
+            localStorage.setItem('zulora_plugin_daily_count', String(nextRuns));
+            if (currentUser?.uid) setDoc(doc(db, 'users', currentUser.uid), { dailyPluginUsage: { date: today, count: nextRuns, updatedAt: Date.now() } }, { merge: true }).catch(() => {});
+          }
+          pushThinkingStep('Connecting to the active Computer Plugin');
+          const result = await executeCommand(basePrompt, currentUser, entry => pushThinkingStep(entry.label, entry.status, entry.detail));
+          browserTask = {
+            handled: true,
+            text: result?.ok || result?.success
+              ? (result.text || result.message || 'The Computer Plugin completed the requested browser actions.')
+              : `The Computer Plugin could not complete the browser action: ${result?.error || 'No completion response was received.'}`,
+            data: result,
+            provider: 'Computer Plugin'
+          };
+          pushThinkingStep('Browser automation finished', result?.ok || result?.success ? 'done' : 'error', result?.error || '');
+        }
+      }
+      const modelToolProvider = ['gmail', 'calendar', 'sheets', 'forms', 'drive'].includes(detectedConnector)
         && connectorManager.getActiveGoogleProviders().includes(detectedConnector);
-      const connectorTask = modelToolProvider ? null : await executeConnectorTask(basePrompt, {
-        onStatus: status => setShowThinking(Boolean(status))
+      const connectorTask = browserTask?.handled || modelToolProvider || detectedConnector === 'drive' ? null : await executeConnectorTask(basePrompt, {
+        onStatus: status => {
+          setShowThinking(Boolean(status));
+          if (status) pushThinkingStep('Executing a connected service action');
+        },
+        onLog: entry => pushThinkingStep(entry.label, entry.status, entry.detail)
       });
-      const driveTask = connectorTask?.handled
+      const driveTask = browserTask?.handled || connectorTask?.handled
         ? null
         : await executeDriveChatIntent(basePrompt, { files: attachments });
-      const directTask = connectorTask?.handled
+      const directTask = browserTask?.handled
+        ? browserTask
+        : connectorTask?.handled
         ? connectorTask
         : driveTask?.handled && !driveTask.useLLM ? driveTask : null;
+      pushThinkingStep(enableWebSearch ? 'Searching the web and grounding the answer' : 'Sending request to the model');
       const result = directTask
         ? {
           text: directTask.text,
-          model: connectorTask?.handled ? 'Zulora Connectors' : 'Zulora Drive',
-          provider: connectorTask?.handled ? 'Native API Connectors' : 'Zulora Drive Tools',
+          model: browserTask?.handled ? 'Computer Plugin' : connectorTask?.handled ? 'Zulora Connectors' : 'Zulora Drive',
+          provider: browserTask?.handled ? 'Browser Automation' : connectorTask?.handled ? 'Native API Connectors' : 'Zulora Drive Tools',
           connectorData: directTask.data,
           usage: { tracked: false, processedTokens: 0 },
           tokenUsage: { totalTokens: 0 }
@@ -1010,9 +1097,14 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           userVault,
           connectorContext,
           attachments: [...attachmentPayloads, ...(driveTask?.attachments || [])],
+          onProgress: entry => pushThinkingStep(entry.label, entry.status, entry.detail),
           onToken: token => {
             if (!token) return;
             streamedText += token;
+            if (!hasLoggedFirstToken) {
+              hasLoggedFirstToken = true;
+              pushThinkingStep('Receiving streamed response', 'running');
+            }
             clearTimeout(thinkingTimerRef.current);
             setShowThinking(false);
             setMessages([...newMessages, {
@@ -1022,11 +1114,13 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
               timestamp: Date.now(),
               model: streamedProvider?.model || 'Generating…',
               provider: streamedProvider?.provider,
+              thinkingSteps: [...thinkingSteps],
               streaming: true
             }]);
           },
           onProvider: route => {
             streamedProvider = route;
+            pushThinkingStep(`Connected to ${route.provider || 'model provider'}`, 'done');
             if (!streamedText) return;
             setMessages([...newMessages, {
               id: assistantId,
@@ -1035,6 +1129,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
               timestamp: Date.now(),
               model: route.model || 'Generating…',
               provider: route.provider,
+              thinkingSteps: [...thinkingSteps],
               streaming: true
             }]);
           },
@@ -1045,21 +1140,26 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             setShowThinking(true);
             thinkingTimerRef.current = setTimeout(() => setShowThinking(false), 7000);
             setMessages(newMessages);
+            pushThinkingStep('Retrying with the next available provider');
           },
         }
       );
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       setQueryTime(elapsed);
+      pushThinkingStep('Response ready', 'done');
+      const responseText = attachWebCitations(result.text || streamedText || 'I encountered an issue generating a response. Please try again.', result.sources || []);
 
       const aiMsg = {
         id: assistantId,
         role: 'assistant',
-        content: result.text || streamedText || 'I encountered an issue generating a response. Please try again.',
+        content: responseText,
         timestamp: Date.now(),
         model: result.model || 'Zulora AI',
         provider: result.provider,
         sources: result.sources || [],
+        webSearched: Boolean(enableWebSearch),
+        thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps] : undefined,
         needsReconnect: Boolean(result.needsReconnect || directTask?.needsReconnect),
         connectorProvider: result.connectorProvider || directTask?.provider || '',
         queryTime: elapsed,
@@ -1111,11 +1211,12 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         else setIsUsageModalOpen(true);
       }
       const errorMsg = {
-        id: (Date.now() + 2).toString(),
+        id: assistantId,
         role: 'assistant',
         content: `⚠️ **Generation failed**: ${error.message || 'All AI providers unavailable. Please check your connection and try again.'}`,
         timestamp: Date.now(),
         model: 'Error',
+        thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps.map(step => step.status === 'running' ? { ...step, status: 'done' } : step), { label: 'Request failed', status: 'error', detail: error.message || 'Provider error' }] : undefined,
       };
       if (streamedText) {
         errorMsg.content = `${streamedText}\n\n_Response interrupted: ${error.message || 'the connection ended before completion.'}_`;
@@ -1147,7 +1248,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 
       <header className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200/60 bg-white/55 px-3 py-2 dark:border-slate-800/70 dark:bg-slate-950/25 sm:px-5">
         <div className="min-w-0"><p className="truncate text-xs font-bold text-slate-800 dark:text-slate-200">Zulora AI Chat</p><p className="hidden text-[10px] text-slate-400 sm:block">Native connectors and media tools are ready in this workspace</p></div>
-        <button type="button" onClick={() => setShowZegoCallModal(true)} className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg border border-emerald-200/70 bg-emerald-50/70 px-3 text-xs font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300" title="Start a ZEGOCLOUD voice or video room"><PhoneCall className="h-3.5 w-3.5" /><span>Voice / Video</span></button>
       </header>
 
       {/* Messages Area */}
@@ -1207,11 +1307,13 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             <div className="flex flex-wrap gap-2 px-3 pt-3" aria-label="Attached files">
               {driveUploadStatus && <div role="status" className="basis-full rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-2 text-[11px] text-sky-800 dark:border-sky-900/60 dark:bg-sky-950/40 dark:text-sky-300">{driveUploadStatus}</div>}
               {attachments.map((file, i) => {
-                const previewUrl = isImageAttachment(file) ? attachmentPreviewUrls.get(file) : null;
+                const previewUrl = attachmentPreviewUrls.get(file);
                 return (
                   <div key={`${file.name}-${file.lastModified}-${i}`} className="group relative flex h-14 max-w-[16rem] items-center gap-2 overflow-hidden rounded-xl border border-sky-200/60 bg-sky-50/80 pr-16 text-xs text-sky-800 dark:border-sky-800/50 dark:bg-sky-950/30 dark:text-sky-300">
                     {previewUrl ? (
                       <img src={previewUrl} alt={`Preview of ${file.name}`} className="h-14 w-14 shrink-0 object-cover" />
+                    ) : attachmentMimeType(file).startsWith('video/') && attachmentPreviewUrls.get(file) ? (
+                      <video src={attachmentPreviewUrls.get(file)} muted playsInline preload="metadata" aria-label={`Preview of ${file.name}`} className="h-14 w-14 shrink-0 bg-black object-cover" />
                     ) : (
                       <span className="grid h-14 w-14 shrink-0 place-items-center bg-sky-100 dark:bg-sky-900/50"><Paperclip className="h-4 w-4" /></span>
                     )}
@@ -1314,7 +1416,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
                 <Camera className="w-3.5 h-3.5" />
               </button>
               <input ref={fileInputRef} type="file" multiple className="hidden" style={{ display: 'none' }} onChange={handleFileSelect} accept="image/*,video/*,.pdf,.txt,.doc,.docx,.csv,.md,.json" />
-              <input ref={cameraInputRef} type="file" className="hidden" style={{ display: 'none' }} onChange={handleFileSelect} accept="image/*" capture="environment" />
+              <input ref={cameraInputRef} type="file" className="hidden" style={{ display: 'none' }} onChange={handleFileSelect} accept="image/*,video/*" />
 
               {/* Mic */}
               <button
@@ -1378,7 +1480,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         <div aria-hidden="true" className="fixed inset-0 z-40" onClick={() => setShowModelMenu(false)} />
       )}
       {showConnectorsModal && <ConnectorsModal currentUser={currentUser} reconnectProvider={connectorReauthProvider} onClose={() => { setShowConnectorsModal(false); setConnectorReauthProvider(''); }} />}
-      {showZegoCallModal && <ZegoCallModal currentUser={currentUser} onClose={() => setShowZegoCallModal(false)} />}
     </div>
   );
 };

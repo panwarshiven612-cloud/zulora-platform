@@ -28,6 +28,9 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
   const audioRef = useRef(null);
   const audioUrlRef = useRef('');
   const utteranceRef = useRef(null);
+  const voiceQueueRef = useRef([]);
+  const voicePlayingRef = useRef(false);
+  const generationCompleteRef = useRef(false);
   const silenceTimerRef = useRef(null);
   const activeRef = useRef(false);
   const statusRef = useRef(status);
@@ -49,6 +52,9 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
   }, [isPro]);
 
   const cleanupAudio = useCallback(() => {
+    voiceQueueRef.current = [];
+    voicePlayingRef.current = false;
+    generationCompleteRef.current = false;
     if (audioRef.current) {
       audioRef.current.onended = null;
       audioRef.current.onerror = null;
@@ -61,6 +67,71 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
     }
     try { window.speechSynthesis?.cancel(); } catch { /* Browser speech may be unavailable. */ }
   }, []);
+
+  const playQueuedVoiceSegment = useCallback(async () => {
+    if (voicePlayingRef.current || !activeRef.current) return;
+    const segment = voiceQueueRef.current.shift();
+    if (!segment) {
+      if (generationCompleteRef.current && activeRef.current) {
+        setStatus('idle');
+        window.setTimeout(() => startListeningRef.current?.(), 350);
+      }
+      return;
+    }
+    voicePlayingRef.current = true;
+    setStatus('speaking');
+    const finish = () => {
+      if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = '';
+      audioRef.current = null;
+      utteranceRef.current = null;
+      voicePlayingRef.current = false;
+      void playQueuedVoiceSegment();
+    };
+    try {
+      const blob = await segment.audio;
+      if (!activeRef.current) { voicePlayingRef.current = false; return; }
+      if (!blob?.size) throw new Error('Voice provider returned an empty audio segment.');
+      const url = URL.createObjectURL(blob);
+      audioUrlRef.current = url;
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = finish;
+      audio.onerror = () => speakOnDevice(segment.text);
+      await audio.play();
+    } catch (error) {
+      console.info('[VoiceAssistant] Using device speech for a streamed segment:', error?.message || error);
+      speakOnDevice(segment.text);
+    }
+  }, [currentUser, language, selectedVoice.voiceId]);
+
+  const speakOnDevice = text => {
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+    if (audioUrlRef.current) { URL.revokeObjectURL(audioUrlRef.current); audioUrlRef.current = ''; }
+    if (!activeRef.current || !window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') {
+      voicePlayingRef.current = false;
+      void playQueuedVoiceSegment();
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(cleanForSpeech(text));
+    utterance.lang = language;
+    utterance.rate = 1.02;
+    utterance.onend = () => {
+      utteranceRef.current = null;
+      voicePlayingRef.current = false;
+      void playQueuedVoiceSegment();
+    };
+    utterance.onerror = utterance.onend;
+    utteranceRef.current = utterance;
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const queueVoiceSegment = text => {
+    const spokenText = cleanForSpeech(text);
+    if (!spokenText || !activeRef.current) return;
+    voiceQueueRef.current.push({ text: spokenText, audio: requestVoiceAudio(spokenText, selectedVoice.voiceId, currentUser) });
+    void playQueuedVoiceSegment();
+  };
 
   const stopAll = useCallback(() => {
     activeRef.current = false;
@@ -200,15 +271,57 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
     setInterimTranscript('');
     setStatus('thinking');
     const voicePrompt = `You are Zulora's natural voice conversation partner. Reply in the same language and script the user used, including natural Hindi or Hinglish when appropriate. Keep the spoken answer warm, direct, and concise in one to three sentences. Avoid markdown, lists, and code unless asked. User: ${query}`;
+    let speechBuffer = '';
+    let streamedReply = '';
+    let queuedSegments = 0;
+    voiceQueueRef.current = [];
+    voicePlayingRef.current = false;
+    generationCompleteRef.current = false;
+    const queueCompletedSentences = () => {
+      let match;
+      const sentencePattern = /^([\s\S]*?[.!?…]+["')\]]*)(?:\s+|$)/;
+      while ((match = speechBuffer.match(sentencePattern)) && match[1].trim()) {
+        speechBuffer = speechBuffer.slice(match[0].length);
+        queuedSegments += 1;
+        queueVoiceSegment(match[1]);
+      }
+    };
     try {
       const context = conversation.slice(-6).map(turn => ({ role: turn.role, content: turn.text }));
-      const result = await apiRouter.generateChat(voicePrompt, context, { model: 'auto', currentUser });
+      const result = await apiRouter.generateChat(voicePrompt, context, {
+        model: 'auto', currentUser,
+        onToken: token => {
+          if (!activeRef.current || !token) return;
+          streamedReply += token;
+          speechBuffer += token;
+          setAiResponse(streamedReply);
+          queueCompletedSentences();
+        },
+        onReset: () => {
+          speechBuffer = '';
+          streamedReply = '';
+          queuedSegments = 0;
+          voiceQueueRef.current = [];
+          if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+          if (audioUrlRef.current) { URL.revokeObjectURL(audioUrlRef.current); audioUrlRef.current = ''; }
+          voicePlayingRef.current = false;
+        }
+      });
       if (!activeRef.current) return;
       const reply = result?.text?.trim() || 'I am here. What would you like to talk about?';
       setAiResponse(reply);
       setConversation(previous => [...previous, { role: 'user', text: query }, { role: 'assistant', text: reply }]);
       onNewTurn?.({ user: query, assistant: reply });
-      await speakText(reply);
+      const unspokenTail = speechBuffer.trim() || (!queuedSegments ? reply : '');
+      if (unspokenTail) {
+        queuedSegments += 1;
+        queueVoiceSegment(unspokenTail);
+      }
+      if (queuedSegments) {
+        generationCompleteRef.current = true;
+        setStatus('speaking');
+        void playQueuedVoiceSegment();
+      } else await speakText(reply);
     } catch (error) {
       console.warn('[VoiceAssistant] AI generation error:', error?.message || error);
       if (!activeRef.current) return;
@@ -216,7 +329,7 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
       setAiResponse(fallback);
       await speakText(fallback);
     }
-  }, [conversation, currentUser, onNewTurn, speakText]);
+  }, [conversation, currentUser, onNewTurn, playQueuedVoiceSegment, queueVoiceSegment, speakText]);
   processQueryRef.current = processUserQuery;
 
   useEffect(() => {

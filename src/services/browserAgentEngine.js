@@ -808,10 +808,10 @@ function normalizeAgentStep(raw, stepNum) {
       action: ACTION_TYPES.TYPE_TEXT,
       app: 'Browser',
       params: {
-        selector: raw.target || raw.selector || raw.params?.selector || 'input',
-        text: raw.value || raw.text || raw.params?.text || '',
+        selector: raw.target || raw.selector || raw.params?.target || raw.params?.selector || 'input',
+        text: raw.value || raw.text || raw.params?.value || raw.params?.text || '',
         submit: Boolean(raw.submit || raw.pressEnter || raw.params?.submit || raw.params?.pressEnter ||
-          /search|query/i.test(String(raw.target || raw.selector || raw.params?.selector || '')))
+          /search|query/i.test(String(raw.target || raw.selector || raw.params?.target || raw.params?.selector || '')))
       }
     };
   }
@@ -820,7 +820,7 @@ function normalizeAgentStep(raw, stepNum) {
       step,
       action: ACTION_TYPES.CLICK_ELEMENT,
       app: 'Browser',
-      params: { selector: raw.target || raw.selector || raw.params?.selector || 'button' }
+      params: { selector: raw.target || raw.selector || raw.params?.target || raw.params?.selector || 'button' }
     };
   }
   if (action === 'EXTRACT_DATA' || action === 'EXTRACT' || action === 'READ_DOM') {

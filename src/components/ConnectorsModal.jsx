@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  CalendarDays, Check, ChevronRight, Cloud, ExternalLink, FileSpreadsheet,
+  CalendarDays, Check, ChevronRight, Cloud, ExternalLink, FileSpreadsheet, HardDrive,
   FileText, LoaderCircle, Mail, Plug, RefreshCw, ShieldCheck, Trash2, Unplug, Upload, X
 } from 'lucide-react';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -16,7 +16,7 @@ const ICONS = {
   sheets: FileSpreadsheet,
   calendar: CalendarDays,
   forms: FileText,
-  drive: Cloud
+  drive: HardDrive
 };
 
 const formatBytes = bytes => {
@@ -50,6 +50,7 @@ export default function ConnectorsModal({ currentUser, reconnectProvider = '', o
   const driveFileInputRef = useRef(null);
 
   const refresh = useCallback(async () => {
+    setConnections(connectorManager.getCachedStatuses(currentUser?.uid));
     const status = await connectorManager.getStatuses(currentUser?.uid);
     setConnections(status);
     if (status.sheets?.connected) {
@@ -141,7 +142,11 @@ export default function ConnectorsModal({ currentUser, reconnectProvider = '', o
     setBusy('drive-upload');
     setNotice('');
     try {
-      for (const file of files) await zuloraDriveService.uploadFileToDrive(file, 'Uploads');
+      for (const file of files) await zuloraDriveService.uploadFileToDrive(file, 'Uploads', {
+        onProgress: progress => setNotice(progress.stage === 'saved'
+          ? `Saving ${file.name} to Drive…`
+          : `Uploading ${file.name}… ${progress.percent || 0}%`)
+      });
       setDriveFiles(await zuloraDriveService.listAllDriveFiles());
       setNotice(`Uploaded ${files.length} file${files.length === 1 ? '' : 's'} to Zulora Drive.`);
     } catch (error) { setNotice(error.message); }
@@ -210,8 +215,8 @@ export default function ConnectorsModal({ currentUser, reconnectProvider = '', o
 
         <div className="max-h-[calc(92dvh-112px)] overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
           {notice && <div role="status" className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-xs leading-relaxed text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">{notice}</div>}
-          {reconnectProvider && <div role="status" className="mb-4 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-3 text-xs leading-relaxed text-sky-900 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-200">{reconnectProvider} needs a fresh Google authorization for this browser session. Select Connect/Reconnect below; Google access tokens are kept in memory only.</div>}
-          {!connectorManager.clientConfigured && <div className="mb-4 rounded-xl border border-sky-200 bg-sky-50/80 px-3.5 py-3 text-xs leading-relaxed text-sky-900 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-200">Set <code className="font-bold">VITE_GOOGLE_CLIENT_ID</code> and enable the Google APIs and OAuth consent screen in Google Cloud to connect Gmail, Sheets, Calendar, and Forms. Zulora Drive uses its separate Firebase sign-in.</div>}
+          {reconnectProvider && <div role="status" className="mb-4 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-3 text-xs leading-relaxed text-sky-900 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-200">{reconnectProvider} needs fresh Google authorization. Zulora will try silent renewal after reload when Google permits it; select Reconnect below if Google requires interaction.</div>}
+          {!connectorManager.clientConfigured && <div className="mb-4 rounded-xl border border-sky-200 bg-sky-50/80 px-3.5 py-3 text-xs leading-relaxed text-sky-900 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-200">Set <code className="font-bold">VITE_GOOGLE_CLIENT_ID</code> and enable Gmail, Calendar, Sheets, Forms, and Drive APIs plus the OAuth consent screen in Google Cloud. Zulora Drive uses its separate Firebase sign-in.</div>}
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {providerCards.map(config => {

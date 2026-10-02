@@ -21,15 +21,18 @@ export function detectConnectorTask(prompt) {
     && /\b(read|review|summari[sz]e|check|find|search|fetch|get|retrieve|extract|tell|show|last|recent|latest|first|send|draft|inbox)\b/i.test(text);
   const asksCalendar = ( /\b(calendar|events?)\b/i.test(text)
     || /\b(schedule|book|create)\b.{0,40}\b(meeting|appointment)\b/i.test(text) )
-    && /\b(list|show|view|upcoming|schedule|create|add|book)\b/i.test(text);
+    && /\b(list|show|view|upcoming|schedule|create|add|book|delete|remove|cancel)\b/i.test(text);
   const asksForms = /\b(forms?|responses?)\b/i.test(text)
     && /\b(read|sync|fetch|show|list|responses?)\b/i.test(text);
+  const asksGoogleDrive = /\bgoogle\s+drive\b/i.test(text)
+    && /\b(list|show|search|find|download|open|manage|delete|trash|inspect)\b/i.test(text);
   const asksSheets = /\b(spreadsheet|google\s*sheets?|sheets?)\b/i.test(text)
-    && /\b(read|append|add|write|update|summari[sz]e|export|put|save)\b/i.test(text);
+    && /\b(read|append|add|write|update|summari[sz]e|export|put|save|create|make)\b/i.test(text);
   if (asksGmail) return 'gmail';
   if (asksCalendar) return 'calendar';
   if (asksForms) return 'forms';
   if (asksSheets) return 'sheets';
+  if (asksGoogleDrive) return 'drive';
   return null;
 }
 
