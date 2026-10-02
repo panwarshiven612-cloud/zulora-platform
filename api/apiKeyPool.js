@@ -20,7 +20,8 @@ const providerKeyNames = {
     'VITE_OPENROUTER_API_KEY_2', 'VITE_OPENROUTER_KEY_1', 'VITE_OPENROUTER_KEY_2'
   ],
   cerebras: ['CEREBRAS_API_KEY', 'VITE_CEREBRAS_API_KEY', 'VITE_CEREBRAS_KEY'],
-  mistral: ['MISTRAL_API_KEY', 'VITE_MISTRAL_API_KEY', 'VITE_MISTRAL_KEY']
+  mistral: ['MISTRAL_API_KEY', 'VITE_MISTRAL_API_KEY', 'VITE_MISTRAL_KEY'],
+  backup: ['BACKUP_API_KEY', 'FALLBACK_API_KEY', 'OPENAI_API_KEY']
 };
 const providerKeysFor = provider => provider === 'groq'
   ? [...new Set([String(process.env.GROQ_API_KEY || '').trim(), ...readKeys(...providerKeyNames.groq)].filter(Boolean))]
@@ -34,6 +35,8 @@ const performance = Object.fromEntries(Object.keys(providers).map(name => [name,
 
 export const providerKeys = Object.freeze({
   pollinations: readFirstKey('POLLINATIONS_API_KEY', 'POLLINATIONS_KEY', 'VITE_POLLINATIONS_API_KEY', 'VITE_POLLINATIONS_KEY'),
+  backupUrl: readFirstKey('BACKUP_API_URL', 'FALLBACK_API_URL') || 'https://api.openai.com/v1/chat/completions',
+  backupModel: readFirstKey('BACKUP_API_MODEL', 'FALLBACK_API_MODEL') || 'gpt-4o-mini',
   huggingface: process.env.HF_API_KEY || process.env.HUGGINGFACE_API_KEY || '',
   fal: readFirstKey('FAL_API_KEY', 'FAL_KEY', 'VITE_FAL_API_KEY', 'VITE_FAL_KEY'),
   cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID || '',

@@ -9,6 +9,7 @@ import { deleteUser } from 'firebase/auth';
 import { deleteObject, ref } from 'firebase/storage';
 import { db, storage } from '../services/firebase';
 import { getPreferredVoiceId, setPreferredVoiceId, VOICE_OPTIONS } from '../services/voicePreferences';
+import { requestLimits } from '../services/generationApi';
 
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 const DELETE_BATCH_SIZE = 15;
@@ -96,12 +97,33 @@ const DeleteConfirmModal = ({ onConfirm, onCancel, loading }) => {
 /* ─── MAIN ACCOUNT SETTINGS ─── */
 export const AccountSettings = ({ onClose }) => {
   const { currentUser, logout, tier, userProfile } = useAuth();
+  const [creditStatus, setCreditStatus] = useState(null);
+  const fallbackCreditLimit = tier === 'ultra' ? 8_000_000 : tier === 'pro' ? 200_000 : 60_000;
+  const creditLimit = Number(creditStatus?.tokenLimit) || fallbackCreditLimit;
+  const creditStart = Number(userProfile?.usage?.tokenWindowStart) || 0;
+  const localCreditWindowExpired = !creditStart || Date.now() - creditStart >= 4 * 60 * 60 * 1000 || creditStart > Date.now();
+  const creditsUsed = creditStatus
+    ? Math.max(0, Number(creditStatus.usedTokens) || 0)
+    : localCreditWindowExpired ? 0 : Math.min(creditLimit, Math.max(0, Number(userProfile?.usage?.tokenUsed) || 0));
+  const creditsRemaining = Math.max(0, creditLimit - creditsUsed);
+  const creditPercent = Math.min(100, Math.floor(creditsUsed / creditLimit * 100));
   const [preferredVoice, setPreferredVoice] = useState(getPreferredVoiceId);
   useEffect(() => {
     const voice = VOICE_OPTIONS.find(option => option.id === preferredVoice);
     if (voice && (voice.tier === 'free' || tier !== 'free')) return;
     setPreferredVoice(setPreferredVoiceId('adam'));
   }, [preferredVoice, tier]);
+  useEffect(() => {
+    if (!currentUser?.uid) return undefined;
+    let active = true;
+    const refreshCredits = async () => {
+      const status = await requestLimits(currentUser);
+      if (active && status) setCreditStatus(status);
+    };
+    refreshCredits();
+    const timer = window.setInterval(refreshCredits, 30_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [currentUser?.uid]);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState('');
@@ -213,6 +235,15 @@ export const AccountSettings = ({ onClose }) => {
                 </div>
               </div>
             </div>
+
+            <section className="rounded-xl border border-sky-200/60 bg-sky-50/50 p-4 dark:border-sky-900/50 dark:bg-sky-950/20">
+              <div className="flex items-center justify-between gap-3">
+                <div><h3 className="text-sm font-bold text-slate-900 dark:text-white">AI credit balance</h3><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{creditLimit.toLocaleString()} credits per rolling 4 hours</p></div>
+                <div className="text-right"><p className="text-sm font-bold text-sky-700 dark:text-sky-300">{creditsRemaining.toLocaleString()}</p><p className="text-[10px] text-slate-500 dark:text-slate-400">credits remaining</p></div>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800"><div className="h-full rounded-full bg-gradient-to-r from-sky-500 to-indigo-500 transition-all" style={{ width: `${creditPercent}%` }} /></div>
+              <p className="mt-1.5 text-right text-[10px] text-slate-500 dark:text-slate-400">{creditsUsed.toLocaleString()} / {creditLimit.toLocaleString()} used</p>
+            </section>
 
             <section className="rounded-xl border border-sky-200/60 bg-sky-50/50 p-4 dark:border-sky-900/50 dark:bg-sky-950/20">
               <h3 className="text-sm font-bold text-slate-900 dark:text-white">Voice assistant</h3>

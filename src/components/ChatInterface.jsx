@@ -55,7 +55,7 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { useAuth } from '../context/AuthContext';
 import { apiRouter } from '../services/apiRouter';
 import connectorManager from '../services/connectorManager';
-import { executeConnectorTask } from '../services/backgroundConnectorEngine';
+import { detectConnectorTask, executeConnectorTask } from '../services/backgroundConnectorEngine';
 import { executeDriveChatIntent, getDriveSystemContext, uploadChatMediaToDrive } from '../services/driveChatTools';
 import { driveAuth } from '../config/firebaseDrive';
 import { isCodeGenerationPrompt } from '../services/aiModels';
@@ -72,6 +72,7 @@ import ZegoCallModal from './ZegoCallModal';
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 const ATTACHMENT_MIME_BY_EXTENSION = {
   bmp: 'image/bmp', gif: 'image/gif', jpeg: 'image/jpeg', jpg: 'image/jpeg', png: 'image/png', svg: 'image/svg+xml', webp: 'image/webp',
+  mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', mpeg: 'video/mpeg', mpg: 'video/mpeg',
   csv: 'text/csv', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   json: 'application/json', md: 'text/markdown', pdf: 'application/pdf', txt: 'text/plain'
 };
@@ -306,7 +307,7 @@ const TypingIndicator = () => (
 /* ============================================================
    MESSAGE BUBBLE
    ============================================================ */
-const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeaking, copiedIndex }) => {
+const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeaking, copiedIndex, attachmentPreviews = [], onReconnect }) => {
   const isUser = message.role === 'user';
   const timestamp = message.timestamp
     ? new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -359,7 +360,30 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
             }`}
         >
           {isUser ? (
-            <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
+            <>
+              <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{message.displayContent || message.content}</p>
+              {attachmentPreviews.length > 0 && <div className="mt-3 grid max-w-md grid-cols-1 gap-2 sm:grid-cols-2">
+                {attachmentPreviews.map((attachment, attachmentIndex) => (
+                  <div key={`${attachment.name}-${attachmentIndex}`} className="overflow-hidden rounded-xl border border-white/30 bg-slate-950/15">
+                    {attachment.mimeType?.startsWith('image/') ? (
+                      <a href={attachment.url} target="_blank" rel="noreferrer" aria-label={`Open ${attachment.name}`}>
+                        <img src={attachment.url} alt={attachment.name} className="max-h-64 w-full object-contain" />
+                      </a>
+                    ) : attachment.mimeType?.startsWith('video/') ? (
+                      <video src={attachment.url} controls preload="metadata" aria-label={attachment.name} className="max-h-64 w-full bg-black object-contain" />
+                    ) : (
+                      <a href={attachment.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 px-3 py-2 text-xs font-semibold text-white underline">
+                        <Paperclip className="h-4 w-4 shrink-0" /><span className="truncate">{attachment.name}</span>
+                      </a>
+                    )}
+                    <p className="truncate px-2 py-1 text-[10px] text-white/80">{attachment.name}</p>
+                  </div>
+                ))}
+              </div>}
+              {message.needsReconnect && <button type="button" onClick={onReconnect} className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-amber-200/70 bg-amber-50/95 px-3 py-1.5 text-xs font-semibold text-amber-800 shadow-sm hover:bg-amber-100">
+                🔑 Please reconnect your Google Account to use Gmail/Calendar features.
+              </button>}
+            </>
           ) : (
             <>
               <MarkdownContent content={message.content} />
@@ -495,6 +519,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const [enableWebSearch, setEnableWebSearch] = useState(false);
   const [attachments, setAttachments] = useState([]);
   const [attachmentPreviewUrls, setAttachmentPreviewUrls] = useState(() => new Map());
+  const [messageMedia, setMessageMedia] = useState(() => new Map());
   const [isListening, setIsListening] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [isSpeakingIndex, setIsSpeakingIndex] = useState(null);
@@ -505,6 +530,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const [connectorContext, setConnectorContext] = useState('');
   const [driveUploadStatus, setDriveUploadStatus] = useState('');
   const [driveUploadingFile, setDriveUploadingFile] = useState('');
+  const [driveConnected, setDriveConnected] = useState(Boolean(driveAuth.currentUser));
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [queryTime, setQueryTime] = useState(null);
@@ -514,6 +540,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
   const preparedAttachmentDataRef = useRef(new Map());
+  const uploadedAttachmentFilesRef = useRef(new WeakSet());
+  const messagePreviewUrlsRef = useRef(new Set());
+  const lastActiveSessionIdRef = useRef(activeSession?.id || '');
   const recognitionRef = useRef(null);
   const textareaRef = useRef(null);
   const speechRef = useRef(null);
@@ -527,6 +556,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     const refreshConnectorContext = () => {
       if (!active) return;
       const driveConnected = Boolean(driveAuth.currentUser);
+      setDriveConnected(driveConnected);
       setConnectorContext([
         connectorManager.getActiveConnectorContext(driveConnected),
         getDriveSystemContext(driveConnected)
@@ -541,6 +571,22 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       unsubscribe();
     };
   }, [currentUser?.uid]);
+
+  useEffect(() => {
+    const nextSessionId = activeSession?.id || '';
+    const previousSessionId = lastActiveSessionIdRef.current;
+    if (previousSessionId !== nextSessionId && (previousSessionId || !nextSessionId)) {
+      setMessageMedia(new Map());
+      for (const url of messagePreviewUrlsRef.current) URL.revokeObjectURL(url);
+      messagePreviewUrlsRef.current.clear();
+    }
+    lastActiveSessionIdRef.current = nextSessionId;
+  }, [activeSession?.id]);
+
+  useEffect(() => () => {
+    for (const url of messagePreviewUrlsRef.current) URL.revokeObjectURL(url);
+    messagePreviewUrlsRef.current.clear();
+  }, []);
 
   useEffect(() => {
     const onFormResponses = event => {
@@ -726,9 +772,18 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     } catch (error) {
       setDriveUploadStatus(error.message || 'Could not upload this file to Zulora Drive.');
     } finally {
-      setDriveUploadingFile('');
+    setDriveUploadingFile('');
     }
   }, []);
+
+  useEffect(() => {
+    if (!driveConnected) return;
+    attachments.forEach(file => {
+      if (uploadedAttachmentFilesRef.current.has(file)) return;
+      uploadedAttachmentFilesRef.current.add(file);
+      handleUploadAttachment(file).catch(() => uploadedAttachmentFilesRef.current.delete(file));
+    });
+  }, [attachments, driveConnected, handleUploadAttachment]);
 
   const getAttachmentDataUrl = useCallback(file => {
     let pending = preparedAttachmentDataRef.current.get(file);
@@ -751,8 +806,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       .slice(0, Math.max(0, 5 - attachments.length));
     try {
       addAttachments(selectedFiles);
-      if (driveAuth.currentUser) selectedFiles.forEach(file => handleUploadAttachment(file));
-      else if (selectedFiles.length) setDriveUploadStatus('Attachment is ready in chat. Connect Zulora Drive to sync it to your Library.');
+      if (!driveAuth.currentUser && selectedFiles.length) setDriveUploadStatus('Attachment is ready in chat. Connect Zulora Drive to sync it to your Library.');
       selectedFiles.filter(file => isImageAttachment(file) || isPdfAttachment(file)).forEach(file => {
         getAttachmentDataUrl(file).catch(error => console.warn('Could not prepare selected attachment:', error.message));
       });
@@ -770,16 +824,14 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     if (!imageFiles.length) return;
     event.preventDefault();
     addAttachments(imageFiles);
-    if (driveAuth.currentUser) imageFiles.forEach(file => handleUploadAttachment(file));
-  }, [addAttachments, handleUploadAttachment]);
+  }, [addAttachments]);
 
   const handleDrop = useCallback(event => {
     event.preventDefault();
     const files = Array.from(event.dataTransfer?.files || []).map(normalizeAttachmentFile);
     addAttachments(files);
-    if (driveAuth.currentUser) files.forEach(file => handleUploadAttachment(file));
-    else if (files.length) setDriveUploadStatus('Dropped files are ready in chat. Connect Zulora Drive to sync them to your Library.');
-  }, [addAttachments, handleUploadAttachment]);
+    if (!driveAuth.currentUser && files.length) setDriveUploadStatus('Dropped files are ready in chat. Connect Zulora Drive to sync them to your Library.');
+  }, [addAttachments]);
 
   const removeAttachment = (idx) => {
     if (attachments[idx]) preparedAttachmentDataRef.current.delete(attachments[idx]);
@@ -830,10 +882,14 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       if (!uploadDirectlyToDrive) {
         const imageFiles = attachments.filter(isImageAttachment);
         const pdfFiles = attachments.filter(isPdfAttachment);
-        const textFiles = attachments.filter(file => !isImageAttachment(file) && !isPdfAttachment(file));
-        attachmentPayloads = await Promise.all([...imageFiles, ...pdfFiles].map(async file => {
+        const videoFiles = attachments.filter(file => attachmentMimeType(file).startsWith('video/'));
+        const textFiles = attachments.filter(file => !isImageAttachment(file) && !isPdfAttachment(file) && !attachmentMimeType(file).startsWith('video/'));
+        attachmentPayloads = await Promise.all([...imageFiles, ...pdfFiles, ...videoFiles].map(async file => {
           if (isPdfAttachment(file) && file.size > 3 * 1024 * 1024) {
             throw new Error('PDFs must be 3 MB or smaller to attach. Save a smaller copy and try again.');
+          }
+          if (attachmentMimeType(file).startsWith('video/') && file.size > 15 * 1024 * 1024) {
+            throw new Error('Videos must be 15 MB or smaller to analyze in chat. The file is still available to upload to Zulora Drive.');
           }
           const base64 = await getAttachmentDataUrl(file);
           const mimeType = base64.match(/^data:([^;]+);base64,/)?.[1] || attachmentMimeType(file);
@@ -864,6 +920,12 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       timestamp: Date.now(),
       attachments: attachments.map(f => f.name),
     };
+    const messagePreviews = attachments.map(file => {
+      const url = URL.createObjectURL(file);
+      messagePreviewUrlsRef.current.add(url);
+      return { name: file.name, mimeType: attachmentMimeType(file), url };
+    });
+    if (messagePreviews.length) setMessageMedia(previous => new Map(previous).set(userMsg.id, messagePreviews));
 
     const newMessages = [...messages, userMsg];
     const sessionId = activeSession?.id || `chat_${Date.now()}`;
@@ -914,7 +976,10 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       const userVault = currentUser?.uid
         ? await firestoreService.getVault(currentUser.uid)
         : null;
-      const connectorTask = await executeConnectorTask(basePrompt, {
+      const detectedConnector = detectConnectorTask(basePrompt);
+      const modelToolProvider = ['gmail', 'calendar', 'sheets'].includes(detectedConnector)
+        && connectorManager.getActiveGoogleProviders().includes(detectedConnector);
+      const connectorTask = modelToolProvider ? null : await executeConnectorTask(basePrompt, {
         onStatus: status => setShowThinking(Boolean(status))
       });
       const driveTask = connectorTask?.handled
@@ -995,6 +1060,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         model: result.model || 'Zulora AI',
         provider: result.provider,
         sources: result.sources || [],
+        needsReconnect: Boolean(result.needsReconnect || directTask?.needsReconnect),
+        connectorProvider: result.connectorProvider || directTask?.provider || '',
         queryTime: elapsed,
       };
 
@@ -1103,6 +1170,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
                 onEdit={handleEditPrompt}
                 isSpeaking={isSpeakingIndex}
                 copiedIndex={copiedIndex}
+                attachmentPreviews={messageMedia.get(msg.id) || []}
+                onReconnect={() => {
+                  setConnectorReauthProvider(msg.connectorProvider || 'Google service');
+                  setShowConnectorsModal(true);
+                }}
               />
             ))}
             {loading && showThinking && <TypingIndicator />}
@@ -1241,7 +1313,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
               >
                 <Camera className="w-3.5 h-3.5" />
               </button>
-              <input ref={fileInputRef} type="file" multiple className="hidden" style={{ display: 'none' }} onChange={handleFileSelect} accept="image/*,.pdf,.txt,.doc,.docx,.csv,.md,.json" />
+              <input ref={fileInputRef} type="file" multiple className="hidden" style={{ display: 'none' }} onChange={handleFileSelect} accept="image/*,video/*,.pdf,.txt,.doc,.docx,.csv,.md,.json" />
               <input ref={cameraInputRef} type="file" className="hidden" style={{ display: 'none' }} onChange={handleFileSelect} accept="image/*" capture="environment" />
 
               {/* Mic */}
@@ -1290,6 +1362,10 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             </button>
           </div>
         </div>
+
+        {!attachments.length && (driveUploadingFile || driveUploadStatus) && <p role="status" className="mt-2 text-center text-[11px] text-sky-700 dark:text-sky-300">
+          {driveUploadingFile ? `Syncing ${driveUploadingFile} to Zulora Drive…` : driveUploadStatus}
+        </p>}
 
         {/* Disclaimer */}
         <p className="text-center text-[10px] text-slate-400 dark:text-slate-600 mt-2">

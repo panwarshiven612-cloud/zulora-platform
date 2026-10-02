@@ -8,15 +8,15 @@ import { buildImagePrompt } from '../src/services/imageGen.js';
 export const maxDuration = 60;
 export const config = { maxDuration };
 
-const CHAT_ORDER = ['gemini', 'cerebras', 'groq', 'mistral', 'openrouter'];
+const CHAT_ORDER = ['gemini', 'openrouter', 'backup', 'cerebras', 'groq', 'mistral'];
 const GEMINI_FAST_MODEL = process.env.GEMINI_FAST_MODEL || GEMINI_FAST_MODEL_ID;
 const GEMINI_FLASH_MODEL = process.env.GEMINI_FLASH_MODEL || GEMINI_FLASH_MODEL_ID;
 const GEMINI_HIGH_CAPACITY_MODEL = process.env.GEMINI_HIGH_CAPACITY_MODEL || GEMINI_BEST_MODEL_ID;
 const GEMINI_FLASH_VARIANTS = [...new Set([GEMINI_HIGH_CAPACITY_MODEL, ...GEMINI_MODEL_FALLBACKS])];
 const CHAT_WINDOW_MS = 4 * 60 * 60 * 1000;
 const CHAT_REQUEST_LIMIT = 60;
-const TOKEN_LIMITS = { free: 50_000, pro: 200_000, ultra: 8_000_000 };
-const TOKEN_WINDOW_MS = 6 * 60 * 60 * 1000;
+const TOKEN_LIMITS = { free: 60_000, pro: 200_000, ultra: 8_000_000 };
+const TOKEN_WINDOW_MS = 4 * 60 * 60 * 1000;
 let cachedFirestoreToken = null;
 let cachedFirebaseCertificates = null;
 
@@ -523,7 +523,8 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
     groq: { url: 'https://api.groq.com/openai/v1/chat/completions', model: options.model || 'llama-3.3-70b-versatile', label: 'Groq LPU' },
     openrouter: { url: 'https://openrouter.ai/api/v1/chat/completions', model: options.model || 'openrouter/free', label: 'OpenRouter' },
     cerebras: { url: 'https://api.cerebras.ai/v1/chat/completions', model: options.model || 'llama3.1-70b', label: 'Cerebras' },
-    mistral: { url: 'https://api.mistral.ai/v1/chat/completions', model: options.model || 'mistral-large-latest', label: 'Mistral AI' }
+    mistral: { url: 'https://api.mistral.ai/v1/chat/completions', model: options.model || 'mistral-large-latest', label: 'Mistral AI' },
+    backup: { url: providerKeys.backupUrl, model: options.model || providerKeys.backupModel, label: 'Backup API' }
   };
   const config = configs[provider];
   const parts = attachmentParts(options.attachments);
@@ -1305,7 +1306,7 @@ export default async function handler(req, res) {
         chatResetAt: bucket.chatRequestTimes.length ? new Date(bucket.chatResetAt).toISOString() : null
       };
       if (type === 'chat' && bucket.chatRemaining <= 0) return safeError(res, 429, 'You have used all 60 chat requests in this rolling 4-hour window.', { upgradeRequired: false, usage: { ...status, blocked: true } });
-      if (!bucket.allowed && !flagshipRequest) return safeError(res, 429, 'Your six-hour AI token allocation is used. It refreshes automatically as earlier usage expires.', { upgradeRequired: false, usage: { ...status, blocked: true } });
+      if (!bucket.allowed && !flagshipRequest) return safeError(res, 429, 'Your four-hour AI credit allocation is used. It refreshes automatically as earlier usage expires.', { upgradeRequired: false, usage: { ...status, blocked: true } });
       return json(res, 200, { allowance: { type, allowed: true, planTier: before.planTier, usage: { ...status, blocked: false } } });
     }
 
@@ -1332,7 +1333,7 @@ export default async function handler(req, res) {
         } else {
           if (!flagshipRequest) {
             const tokenState = await readTokenUsageState(uid);
-            if (!tokenState.allowed) return safeError(res, 429, 'Your six-hour AI token allocation is used. It refreshes automatically as earlier usage expires.', { upgradeRequired: false, usage: { blocked: true, usedPercent: 100, resetAt: new Date(tokenState.resetAt).toISOString() } });
+            if (!tokenState.allowed) return safeError(res, 429, 'Your four-hour AI credit allocation is used. It refreshes automatically as earlier usage expires.', { upgradeRequired: false, usage: { blocked: true, usedPercent: 100, resetAt: new Date(tokenState.resetAt).toISOString() } });
           }
           usageTrackingAvailable = true;
         }
@@ -1353,7 +1354,7 @@ export default async function handler(req, res) {
         const promptRate = await registerPromptAttempt(uid, estimatedReservationTokens(body), flagshipRequest);
         if (!promptRate.allowed) {
           if (promptRate.requestLimit) return safeError(res, 429, 'You have used all 60 chat requests in this rolling 4-hour window.', { upgradeRequired: false, usage: { blocked: true, ...promptRate } });
-          return safeError(res, 429, 'Your six-hour AI token allocation is used. It refreshes automatically as earlier usage expires.', { upgradeRequired: false, usage: { blocked: true, ...promptRate } });
+          return safeError(res, 429, 'Your four-hour AI credit allocation is used. It refreshes automatically as earlier usage expires.', { upgradeRequired: false, usage: { blocked: true, ...promptRate } });
         }
         chatReservationId = promptRate.reservationId;
       } catch (error) {

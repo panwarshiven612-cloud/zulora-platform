@@ -1,7 +1,6 @@
 const FOUR_HOURS = 4 * 60 * 60 * 1000;
-const SIX_HOURS = 6 * 60 * 60 * 1000;
 const ONE_DAY = 24 * 60 * 60 * 1000;
-const TOKEN_WINDOW_MS = SIX_HOURS;
+const TOKEN_WINDOW_MS = FOUR_HOURS;
 const DATABASE_NAME = 'zulora-rate-limits';
 const DATABASE_VERSION = 1;
 const STORE_NAME = 'usage-windows';
@@ -67,7 +66,7 @@ function normalizeTokenEvents(records, now, windowMs) {
   return [...unique.values()].sort((a, b) => a.timestamp - b.timestamp);
 }
 
-function stateFor(uid, type, events, limit, tokenLimit = 50_000, now = Date.now(), tokenEvents = []) {
+function stateFor(uid, type, events, limit, tokenLimit = 60_000, now = Date.now(), tokenEvents = []) {
   const windowMs = windows[type];
   const timestamps = normalizeEvents(events, now, windowMs);
   const currentTokenEvents = normalizeTokenEvents(tokenEvents, now, TOKEN_WINDOW_MS);
@@ -79,7 +78,7 @@ function stateFor(uid, type, events, limit, tokenLimit = 50_000, now = Date.now(
     timestamps,
     tokenEvents: currentTokenEvents,
     tokenCount,
-    tokenLimit: Math.max(1, Number(tokenLimit) || 50_000),
+    tokenLimit: Math.max(1, Number(tokenLimit) || 60_000),
     tokenWindowStart: currentTokenEvents[0]?.timestamp || now,
     tokenResetAt: (currentTokenEvents[0]?.timestamp || now) + TOKEN_WINDOW_MS,
     count,
@@ -88,7 +87,7 @@ function stateFor(uid, type, events, limit, tokenLimit = 50_000, now = Date.now(
     windowStart: timestamps[0] || now,
     resetAt: timestamps.length ? timestamps[0] + windowMs : now,
     remaining: Math.max(0, limit - count),
-    usedPercent: Math.min(100, Math.floor((tokenCount / Math.max(1, Number(tokenLimit) || 50_000)) * 100)),
+    usedPercent: Math.min(100, Math.floor((tokenCount / Math.max(1, Number(tokenLimit) || 60_000)) * 100)),
     actionUsedPercent: Math.min(100, Math.floor((count / Math.max(1, Number(limit) || defaults[type])) * 100)),
     allowed: count < limit,
   };
@@ -135,14 +134,14 @@ function writeIndexed(database, record) {
 }
 
 export const rateLimiter = {
-  async getStatus(uid, type, limit = defaults[type], tokenLimit = 50_000) {
+  async getStatus(uid, type, limit = defaults[type], tokenLimit = 60_000) {
     if (!uid || !windows[type]) return stateFor(uid, type, [], limit, tokenLimit);
     const now = Date.now();
     const { timestamps, tokenEvents } = await getEvents(uid, type, now);
     return stateFor(uid, type, timestamps, Math.max(1, Number(limit) || defaults[type]), tokenLimit, now, tokenEvents);
   },
 
-  async check(uid, type, limit = defaults[type], tokenLimit = 50_000) {
+  async check(uid, type, limit = defaults[type], tokenLimit = 60_000) {
     const status = await this.getStatus(uid, type, limit, tokenLimit);
     return { ...status, blocked: !status.allowed };
   },

@@ -70,6 +70,10 @@ service cloud.firestore {
       match /drive_files/{fileId} {
         allow read, write: if isOwner(uid);
       }
+
+      match /user_drive_files/{fileId} {
+        allow read, write: if isOwner(uid);
+      }
     }
   }
 }

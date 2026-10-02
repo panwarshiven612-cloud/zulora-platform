@@ -7,7 +7,7 @@ import {
 } from 'firebase/storage';
 import { driveAuth, driveDb, driveStorage } from '../config/firebaseDrive';
 
-const FILES_COLLECTIONS = ['files', 'drive_files', 'driveFiles'];
+const FILES_COLLECTIONS = ['user_drive_files', 'files', 'drive_files', 'driveFiles'];
 const MAX_SEARCH_FILES = 300;
 const MAX_INDEXED_TEXT_LENGTH = 24_000;
 const CLOUDINARY_NAME = 't3dkhv0z';
@@ -28,6 +28,15 @@ const currentDriveUid = () => {
   if (!uid) throw new Error('Connect Zulora Drive before using its files.');
   return uid;
 };
+
+const isPermissionDenied = error => error?.code === 'permission-denied'
+  || /missing or insufficient permissions/i.test(String(error?.message || ''));
+const readIndexSnapshot = (collectionName, read) => read().catch(error => {
+  // The new index collection can be denied until the updated Firebase rules
+  // are deployed. Existing indexes remain readable during that rollout.
+  if (collectionName === 'user_drive_files' && isPermissionDenied(error)) return { docs: [] };
+  throw error;
+});
 
 const usageFromSnapshot = snapshot => {
   const unique = new Map(snapshot.docs.map(item => [item.id, item.data()]));
@@ -73,9 +82,7 @@ export const zuloraDriveService = {
     const name = safeFileName(file.name || 'generated-report.txt');
     const folder = normalizeFolderPath(folderPath);
     const now = new Date();
-    const year = String(now.getFullYear());
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const storagePath = `users/${uid}/zulora_drive/${year}/${month}/${id}-${name}`;
+    const storagePath = `users/${uid}/drive/${id}-${name}`;
     const storageRef = ref(driveStorage, storagePath);
     const searchableText = await indexTextFromFile(file);
     await uploadBytes(storageRef, file, {
@@ -102,6 +109,7 @@ export const zuloraDriveService = {
         fileUrl: downloadURL,
         cloudinaryUrl,
         fileType: file.type || 'application/octet-stream',
+        mimeType: file.type || 'application/octet-stream',
         fileSize: Number(file.size) || 0,
         uploadedFrom: 'Zulora AI Workspace',
         createdAt,
@@ -109,14 +117,25 @@ export const zuloraDriveService = {
         isPublic: true,
         type: file.type || 'application/octet-stream',
         size: Number(file.size) || 0,
+        uploadTime: Date.now(),
         searchableText,
         updatedAt: Date.now()
       };
       const batch = writeBatch(driveDb);
-      for (const collectionName of FILES_COLLECTIONS) {
+      for (const collectionName of FILES_COLLECTIONS.filter(name => name !== 'user_drive_files')) {
         batch.set(doc(driveDb, 'users', uid, collectionName, id), metadata);
       }
       await batch.commit();
+      try { await setDoc(doc(driveDb, 'users', uid, 'user_drive_files', id), metadata); }
+      catch (error) {
+        if (isPermissionDenied(error)) {
+          console.info('The updated Drive index rule is not deployed yet; the file remains available in the legacy Drive indexes.');
+        } else {
+          await Promise.all(FILES_COLLECTIONS.filter(name => name !== 'user_drive_files')
+            .map(name => deleteDoc(doc(driveDb, 'users', uid, name, id)).catch(() => {})));
+          throw error;
+        }
+      }
       return metadata;
     } catch (error) {
       await deleteObject(storageRef).catch(() => {});
@@ -127,16 +146,16 @@ export const zuloraDriveService = {
   async listFilesFromDrive(path = '') {
     const uid = currentDriveUid();
     const folderPath = normalizeFolderPath(path);
-    const snapshots = await Promise.all(FILES_COLLECTIONS.map(collectionName => getDocs(query(
+    const snapshots = await Promise.all(FILES_COLLECTIONS.map(collectionName => readIndexSnapshot(collectionName, () => getDocs(query(
       collection(driveDb, 'users', uid, collectionName), where('folderPath', '==', folderPath), limit(MAX_SEARCH_FILES)
-    ))));
+    )))));
     const byId = new Map(snapshots.flatMap(snapshot => snapshot.docs.map(item => [item.id, { id: item.id, ...item.data() }])));
     const files = [...byId.values()].sort((a, b) => Number(b.createdAtMs ?? b.createdAt) - Number(a.createdAtMs ?? a.createdAt));
 
     // Folders are virtual paths derived from indexed file metadata.
-    const allSnapshots = folderPath ? await Promise.all(FILES_COLLECTIONS.map(collectionName => getDocs(query(
+    const allSnapshots = folderPath ? await Promise.all(FILES_COLLECTIONS.map(collectionName => readIndexSnapshot(collectionName, () => getDocs(query(
       collection(driveDb, 'users', uid, collectionName), limit(MAX_SEARCH_FILES)
-    )))) : snapshots;
+    ))))) : snapshots;
     const folders = [...new Set(allSnapshots.flatMap(snapshot => snapshot.docs.map(item => normalizeFolderPath(item.data().folderPath))
       .filter(item => item && item !== folderPath)
       .map(item => item.slice(folderPath ? folderPath.length + 1 : 0).split('/')[0])
@@ -149,9 +168,9 @@ export const zuloraDriveService = {
     const uid = currentDriveUid();
     const terms = String(searchText || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
     if (!terms.length) return [];
-    const snapshots = await Promise.all(FILES_COLLECTIONS.map(collectionName => getDocs(query(
+    const snapshots = await Promise.all(FILES_COLLECTIONS.map(collectionName => readIndexSnapshot(collectionName, () => getDocs(query(
       collection(driveDb, 'users', uid, collectionName), limit(MAX_SEARCH_FILES)
-    ))));
+    )))));
     const files = [...new Map(snapshots.flatMap(snapshot => snapshot.docs.map(item => [item.id, { id: item.id, ...item.data() }]))).values()];
     return files
       .map(file => {
@@ -165,7 +184,7 @@ export const zuloraDriveService = {
 
   async getStorageUsage() {
     const uid = currentDriveUid();
-    const snapshots = await Promise.all(FILES_COLLECTIONS.map(collectionName => getDocs(collection(driveDb, 'users', uid, collectionName))));
+    const snapshots = await Promise.all(FILES_COLLECTIONS.map(collectionName => readIndexSnapshot(collectionName, () => getDocs(collection(driveDb, 'users', uid, collectionName)))));
     return usageFromSnapshot({ docs: [...new Map(snapshots.flatMap(snapshot => snapshot.docs.map(item => [item.id, item]))).values()], size: 0 });
   },
 
@@ -179,16 +198,18 @@ export const zuloraDriveService = {
       onUpdate(usageFromSnapshot({ docs, size: docs.length }));
     };
     const unsubscribes = FILES_COLLECTIONS.map(collectionName => onSnapshot(
-      collection(driveDb, 'users', uid, collectionName), snapshot => { snapshotsByCollection.set(collectionName, snapshot); publish(); }, onError
+      collection(driveDb, 'users', uid, collectionName), snapshot => { snapshotsByCollection.set(collectionName, snapshot); publish(); }, error => {
+        if (collectionName !== 'user_drive_files' || !isPermissionDenied(error)) onError(error);
+      }
     ));
     return () => { stopped = true; unsubscribes.forEach(unsubscribe => unsubscribe()); };
   },
 
   async listAllDriveFiles() {
     const uid = currentDriveUid();
-    const snapshots = await Promise.all(FILES_COLLECTIONS.map(collectionName => getDocs(query(
+    const snapshots = await Promise.all(FILES_COLLECTIONS.map(collectionName => readIndexSnapshot(collectionName, () => getDocs(query(
       collection(driveDb, 'users', uid, collectionName), limit(MAX_SEARCH_FILES)
-    ))));
+    )))));
     return [...new Map(snapshots.flatMap(snapshot => snapshot.docs.map(item => [item.id, { id: item.id, ...item.data() }]))).values()]
       .sort((a, b) => Number(b.createdAtMs ?? b.updatedAt) - Number(a.createdAtMs ?? a.updatedAt));
   },
@@ -196,7 +217,13 @@ export const zuloraDriveService = {
   async deleteDriveFile(fileId) {
     const uid = currentDriveUid();
     const fileRefs = FILES_COLLECTIONS.map(collectionName => doc(driveDb, 'users', uid, collectionName, String(fileId)));
-    const snapshots = await Promise.all(fileRefs.map(getDoc));
+    const snapshots = await Promise.all(fileRefs.map((reference, index) => {
+      const collectionName = FILES_COLLECTIONS[index];
+      return getDoc(reference).catch(error => {
+        if (collectionName === 'user_drive_files' && isPermissionDenied(error)) return { exists: () => false };
+        throw error;
+      });
+    }));
     const source = snapshots.find(snapshot => snapshot.exists());
     if (!source) return false;
     const metadata = source.data();

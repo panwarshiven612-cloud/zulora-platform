@@ -85,11 +85,11 @@ export const Sidebar = ({
     return () => clearInterval(interval);
   }, [currentUser?.uid]);
 
-  // Token balance reset uses the earliest active event in the rolling six-hour window.
+  // Credit balance reset uses the earliest active event in the rolling four-hour window.
   useEffect(() => {
     const updateCountdown = () => {
       const serverReset = Date.parse(serverUsage?.resetAt || '');
-      const localReset = Number(safeUsage.tokenResetAt) || (Number(safeUsage.tokenWindowStart) ? Number(safeUsage.tokenWindowStart) + 6 * 60 * 60 * 1000 : 0);
+      const localReset = Number(safeUsage.tokenResetAt) || (Number(safeUsage.tokenWindowStart) ? Number(safeUsage.tokenWindowStart) + 4 * 60 * 60 * 1000 : 0);
       const resetAt = Number.isFinite(serverReset) && serverReset > 0 ? serverReset : localReset;
       const msLeft = Math.max(0, resetAt - Date.now());
       const tokenCount = Math.max(0, Number(serverUsage?.usedTokens ?? safeUsage.tokenUsed) || 0);
@@ -169,10 +169,10 @@ export const Sidebar = ({
     return diff >= oneDay && diff < sevenDays;
   });
   const olderSessions = sessions.filter(s => now - (s.updatedAt || 0) >= sevenDays);
-  const defaultTokenCap = tier === TIERS.ULTRA ? 8_000_000 : tier === TIERS.PRO ? 200_000 : 50_000;
+  const defaultTokenCap = tier === TIERS.ULTRA ? 8_000_000 : tier === TIERS.PRO ? 200_000 : 60_000;
   const tokenCap = Number(serverUsage?.tokenLimit) || defaultTokenCap;
   const tokenWindowStart = Number(safeUsage.tokenWindowStart) || clockNow;
-  const tokenWindowExpired = clockNow - tokenWindowStart >= 6 * 60 * 60 * 1000 || tokenWindowStart > clockNow;
+  const tokenWindowExpired = clockNow - tokenWindowStart >= 4 * 60 * 60 * 1000 || tokenWindowStart > clockNow;
   const tokenUsed = Math.max(0, Number(serverUsage?.usedTokens ?? (tokenWindowExpired ? 0 : safeUsage.tokenUsed)) || 0);
   const tokensRemaining = Math.max(0, tokenCap - tokenUsed);
   const tokenPercent = Number.isFinite(Number(serverUsage?.usedPercent))
@@ -425,7 +425,7 @@ export const Sidebar = ({
             </span>
             <span className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1">
               <Clock className="w-3 h-3 text-slate-400" />
-              <span>{tokenUsed > 0 ? `Tokens reset in ${resetCountdown}` : '6-hour token window'}</span>
+              <span>{tokenUsed > 0 ? `Credits reset in ${resetCountdown}` : '4-hour credit window'}</span>
             </span>
           </div>
 
@@ -444,10 +444,10 @@ export const Sidebar = ({
             ))}
           </div>
 
-          {/* Rolling six-hour token allocation */}
+          {/* Rolling four-hour AI credit allocation */}
           <div>
             <div className="flex justify-between text-[10px] text-slate-500 dark:text-slate-400 mb-1">
-              <span>{tokenCap.toLocaleString()} Tokens / 6 Hours</span>
+              <span>{tokenCap.toLocaleString()} Credits / 4 Hours</span>
               <span>{tokenPercent}% used</span>
             </div>
             <div className="w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
@@ -456,7 +456,7 @@ export const Sidebar = ({
                 style={{ width: `${tokenPercent}%` }}
               />
             </div>
-            <p className="mt-1 text-right text-[9px] text-slate-500 dark:text-slate-400">{tokensRemaining.toLocaleString()} tokens remaining</p>
+            <p className="mt-1 text-right text-[9px] text-slate-500 dark:text-slate-400">{tokensRemaining.toLocaleString()} credits remaining</p>
           </div>
 
           {/* Action buttons */}

@@ -52,8 +52,8 @@ export const TIER_PRICING = {
 
 const CHAT_WINDOW_MS = 4 * 60 * 60 * 1000; // rolling 4 hours
 const DAY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
-const TOKEN_WINDOW_MS = 6 * 60 * 60 * 1000; // rolling 6 hours
-const TOKEN_LIMITS = { free: 50_000, pro: 200_000, ultra: 8_000_000 };
+const TOKEN_WINDOW_MS = 4 * 60 * 60 * 1000; // rolling 4 hours
+const TOKEN_LIMITS = { free: 60_000, pro: 200_000, ultra: 8_000_000 };
 
 // LocalStorage fallback prefix
 const STORAGE_PREFIX = 'zulora_store_';
@@ -911,7 +911,7 @@ export const firestoreService = {
         error: `${type} quota reached. Please wait for the quota window to reset.`
       };
     }
-    if (!tokenAllowed) return { allowed: false, usage: tokenStatus, tier: getTier(profile), error: 'Six-hour AI token allocation reached.' };
+    if (!tokenAllowed) return { allowed: false, usage: tokenStatus, tier: getTier(profile), error: 'Four-hour AI credit allocation reached.' };
 
     return {
       allowed: true,

@@ -1,5 +1,5 @@
 import { deleteDoc, doc, getDoc, setDoc } from 'firebase/firestore';
-import { db } from './firebase';
+import { auth, db } from './firebase';
 
 const GOOGLE_CLIENT_ID = String(
   import.meta.env?.VITE_GOOGLE_CLIENT_ID
@@ -7,8 +7,61 @@ const GOOGLE_CLIENT_ID = String(
 ).trim();
 const GOOGLE_IDENTITY_SCRIPT = 'https://accounts.google.com/gsi/client';
 const TOKEN_REFRESH_MARGIN_MS = 60_000;
+const TOKEN_STORAGE_KEY = 'zulora_oauth_token';
 const sessionTokens = new Map();
 let identityScriptPromise;
+
+function readStoredTokens() {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = sessionStorage.getItem(TOKEN_STORAGE_KEY) || localStorage.getItem(TOKEN_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (typeof parsed === 'string' && parsed) return { accessToken: parsed, expiresAt: Date.now() + 5 * 60_000 };
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    try {
+      const raw = sessionStorage.getItem(TOKEN_STORAGE_KEY) || localStorage.getItem(TOKEN_STORAGE_KEY) || '';
+      return raw ? { accessToken: raw, expiresAt: Date.now() + 5 * 60_000 } : {};
+    } catch { return {}; }
+  }
+}
+
+function writeStoredTokens(removeProviders = []) {
+  if (typeof window === 'undefined') return;
+  const tokens = { ...readStoredTokens() };
+  for (const provider of removeProviders) delete tokens[provider];
+  for (const [provider, token] of sessionTokens.entries()) tokens[provider] = token;
+  for (const [provider, value] of Object.entries(tokens)) {
+    let expiry = Number(value?.expiresAt || value?.expiry_date || value?.expires_at || value?.expirationTime) || 0;
+    if (expiry > 0 && expiry < 1_000_000_000_000) expiry *= 1000;
+    if (provider !== 'accessToken' && value && typeof value === 'object' && (!expiry || expiry <= Date.now() + TOKEN_REFRESH_MARGIN_MS)) delete tokens[provider];
+  }
+  try {
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(tokens));
+    // Migrate and remove legacy localStorage tokens; Google access tokens are tab scoped.
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch { /* In-memory OAuth access remains available for this page session. */ }
+}
+
+function restoreStoredToken(providerId) {
+  const stored = readStoredTokens();
+  const candidate = stored[providerId] || stored;
+  const accessToken = typeof candidate === 'string'
+    ? candidate
+    : String(candidate?.accessToken || candidate?.access_token || '');
+  let expiresAt = Number(candidate?.expiresAt || candidate?.expiry_date || candidate?.expires_at || candidate?.expirationTime) || 0;
+  if (expiresAt > 0 && expiresAt < 1_000_000_000_000) expiresAt *= 1000;
+  if (!expiresAt && candidate?.expires_in && candidate?.storedAt) expiresAt = Number(candidate.storedAt) + Number(candidate.expires_in) * 1000;
+  if (!expiresAt && accessToken) expiresAt = Date.now() + 5 * 60_000;
+  const uid = String(candidate?.uid || auth.currentUser?.uid || '');
+  if (!accessToken || !expiresAt || expiresAt <= Date.now() + TOKEN_REFRESH_MARGIN_MS || (auth.currentUser?.uid && uid && uid !== auth.currentUser.uid)) {
+    return null;
+  }
+  const token = { accessToken, expiresAt, email: String(candidate?.email || ''), uid };
+  sessionTokens.set(providerId, token);
+  return token;
+}
 
 export const CONNECTOR_CONFIG = Object.freeze({
   gmail: {
@@ -111,6 +164,38 @@ async function readGoogleAccount(accessToken) {
   return String(account.email || '');
 }
 
+function decodeGmailBody(data) {
+  if (!data) return '';
+  const base64 = String(data).replace(/-/g, '+').replace(/_/g, '/');
+  const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=');
+  try {
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+    return new TextDecoder('utf-8').decode(bytes);
+  } catch { return ''; }
+}
+
+function getGmailText(payload) {
+  const parts = [];
+  const visit = part => {
+    if (!part) return;
+    if (part.mimeType === 'text/plain' && part.body?.data) parts.push(decodeGmailBody(part.body.data));
+    for (const nested of part.parts || []) visit(nested);
+  };
+  visit(payload);
+  if (parts.length) return parts.join('\n').replace(/\s+/g, ' ').trim().slice(0, 12_000);
+  const htmlParts = [];
+  const visitHtml = part => {
+    if (!part) return;
+    if (part.mimeType === 'text/html' && part.body?.data) htmlParts.push(decodeGmailBody(part.body.data));
+    for (const nested of part.parts || []) visitHtml(nested);
+  };
+  visitHtml(payload);
+  return htmlParts.join('\n').replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ').trim().slice(0, 12_000);
+}
+
 export const connectorManager = {
   clientConfigured: Boolean(GOOGLE_CLIENT_ID),
   prepareOAuth: loadIdentityServices,
@@ -135,8 +220,9 @@ export const connectorManager = {
       email,
       uid
     });
-    // Persist connection metadata only. GIS browser access tokens are short-lived;
-    // refresh tokens and access tokens are deliberately never written to storage.
+    writeStoredTokens();
+    // Keep only short-lived access tokens in tab-scoped session storage so a
+    // reload restores the active connector. Refresh tokens are never stored.
     emitConnectorChange();
     let metadataSaved = true;
     try { await setDoc(connectorDoc(uid, providerId), connection, { merge: true }); }
@@ -151,14 +237,16 @@ export const connectorManager = {
     // Forget this connector locally without revoking the whole Google OAuth
     // grant, which may also contain another connected Workspace service.
     sessionTokens.delete(providerId);
+    writeStoredTokens([providerId]);
     if (uid) await deleteDoc(connectorDoc(uid, providerId)).catch(() => {});
     emitConnectorChange();
   },
 
   async getAccessToken(providerId) {
-    const token = sessionTokens.get(providerId);
-    if (!token || token.expiresAt <= Date.now() + TOKEN_REFRESH_MARGIN_MS) {
+    const token = sessionTokens.get(providerId) || restoreStoredToken(providerId);
+    if (!token || token.expiresAt <= Date.now() + TOKEN_REFRESH_MARGIN_MS || (auth.currentUser?.uid && token.uid && token.uid !== auth.currentUser.uid)) {
       sessionTokens.delete(providerId);
+      writeStoredTokens([providerId]);
       throw new Error(`${CONNECTOR_CONFIG[providerId]?.name || providerId} needs to be connected again. Reconnect it in Connectors to continue.`);
     }
     return token.accessToken;
@@ -174,9 +262,13 @@ export const connectorManager = {
         Authorization: `Bearer ${accessToken}`
       }
     });
-    if (response.status === 401) {
+    if (response.status === 401 || response.status === 403) {
       sessionTokens.delete(providerId);
+      writeStoredTokens([providerId]);
       emitConnectorChange();
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('zulora-connector-reauth-required', { detail: { provider: providerId } }));
+      }
     }
     const data = response.status === 204 ? null : await response.json().catch(() => null);
     if (!response.ok) {
@@ -188,7 +280,7 @@ export const connectorManager = {
 
   async getStatuses(uid) {
     const entries = await Promise.all(Object.keys(CONNECTOR_CONFIG).map(async provider => {
-      const session = sessionTokens.get(provider);
+      const session = sessionTokens.get(provider) || restoreStoredToken(provider);
       let metadata = null;
       if (uid) {
         try {
@@ -209,14 +301,23 @@ export const connectorManager = {
   },
 
   getActiveConnectorContext(driveConnected = false) {
-    const active = Object.keys(CONNECTOR_CONFIG).filter(provider => {
-      const session = sessionTokens.get(provider);
-      return session && session.expiresAt > Date.now() + TOKEN_REFRESH_MARGIN_MS;
-    }).map(provider => CONNECTOR_CONFIG[provider].name);
+    const active = this.getActiveGoogleProviders().map(provider => CONNECTOR_CONFIG[provider].name);
     if (driveConnected) active.push('Zulora Drive');
     return active.length
       ? `Available native connectors for this signed-in session: ${active.join(', ')}. When a request targets one of these services, Zulora can use its direct API connector without opening tabs or using the Computer Plugin.`
       : 'No native connectors are active in this session. Ask the user to connect the requested service from the Connectors hub before accessing its data.';
+  },
+
+  getActiveGoogleProviders() {
+    return Object.keys(CONNECTOR_CONFIG).filter(provider => {
+      const token = sessionTokens.get(provider) || restoreStoredToken(provider);
+      return Boolean(token && token.expiresAt > Date.now() + TOKEN_REFRESH_MARGIN_MS
+        && (!auth.currentUser?.uid || !token.uid || token.uid === auth.currentUser.uid));
+    });
+  },
+
+  hasActiveGoogleConnectors() {
+    return this.getActiveGoogleProviders().length > 0;
   },
 
   async sendGmailMessage({ to, subject, body }) {
@@ -249,6 +350,43 @@ export const connectorManager = {
     return this.apiFetch('gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/drafts', {
       method: 'POST', body: JSON.stringify({ message: { raw } })
     });
+  },
+
+  async readEmails({ query = 'in:inbox', max_results = 5 } = {}) {
+    const params = new URLSearchParams({ q: String(query || 'in:inbox'), maxResults: String(Math.min(20, Math.max(1, Number(max_results) || 5))) });
+    const list = await this.apiFetch('gmail', `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`);
+    const messages = await Promise.all((list.messages || []).map(async item => {
+      const message = await this.apiFetch('gmail', `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(item.id)}?format=full`);
+      const headers = message.payload?.headers || [];
+      const getHeader = name => headers.find(header => header.name?.toLowerCase() === name)?.value || '';
+      return { id: message.id, from: getHeader('from'), subject: getHeader('subject'), date: getHeader('date'), snippet: message.snippet || '', body: getGmailText(message.payload) || message.snippet || '' };
+    }));
+    return messages;
+  },
+
+  async createCalendarEvent({ title, start_time, end_time, description = '' }) {
+    return this.apiFetch('calendar', 'https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+      method: 'POST', body: JSON.stringify({ summary: title, description, start: { dateTime: start_time }, end: { dateTime: end_time } })
+    });
+  },
+
+  async getCalendarEvents({ time_min, time_max } = {}) {
+    const params = new URLSearchParams({ timeMin: time_min || new Date().toISOString(), singleEvents: 'true', orderBy: 'startTime', maxResults: '50' });
+    if (time_max) params.set('timeMax', time_max);
+    const result = await this.apiFetch('calendar', `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`);
+    return result.items || [];
+  },
+
+  async appendSheetRow({ spreadsheet_id, range = 'Sheet1!A:Z', values = [] }) {
+    const encodedRange = encodeURIComponent(range);
+    return this.apiFetch('sheets', `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheet_id)}/values/${encodedRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
+      method: 'POST', body: JSON.stringify({ values })
+    });
+  },
+
+  async readSheetData({ spreadsheet_id, range }) {
+    const result = await this.apiFetch('sheets', `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheet_id)}/values/${encodeURIComponent(range)}`);
+    return result.values || [];
   }
 };
 

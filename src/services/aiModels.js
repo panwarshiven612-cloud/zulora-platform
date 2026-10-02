@@ -40,7 +40,7 @@ export function toGeminiInlineData(attachment) {
   const source = String(attachment?.base64 || '');
   const match = source.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=\r\n]+)$/i);
   const mimeType = String(attachment?.mimeType || match?.[1] || '').toLowerCase();
-  if (!match || !(/^(?:image\/(?:png|jpe?g|webp|gif)|application\/pdf)$/i.test(mimeType))) return null;
+  if (!match || !(/^(?:image\/(?:png|jpe?g|webp|gif)|application\/pdf|video\/(?:mp4|webm|mpeg|quicktime))$/i.test(mimeType))) return null;
   return { mimeType, data: match[2].replace(/\s/g, '') };
 }
 

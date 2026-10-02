@@ -19,6 +19,8 @@ import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from './systemPrompt';
 import { AI_STUDIO_SYSTEM_PROMPT } from './aiStudioPrompt';
 import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_FLASH_MODEL_ID, GEMINI_MODELS, GEMINI_MODEL_FALLBACKS, GEMINI_PRO_MODEL_FALLBACKS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from './aiModels';
 import { buildImagePrompt } from './imageGen';
+import connectorManager from './connectorManager';
+import { executeGoogleConnectorFunction, getGoogleConnectorFunctionDeclarations, getGoogleConnectorToolInstructions, isGoogleReconnectError } from './googleConnectorTools';
 
 // ─── SAFE ENVIRONMENT EXTRACTOR ──────────────────────────────────────────────
 const clientEnv = import.meta.env || {};
@@ -64,6 +66,9 @@ const OPENROUTER_KEYS = [
   getEnv('VITE_OPENROUTER_KEY_2') || getEnv('VITE_OPENROUTER_API_KEY_2'),
   getEnv('VITE_OPENROUTER_API_KEY')
 ].filter(Boolean);
+const BACKUP_API_KEY = getEnv('VITE_BACKUP_API_KEY');
+const BACKUP_API_URL = getEnv('VITE_BACKUP_API_URL') || 'https://api.openai.com/v1/chat/completions';
+const BACKUP_API_MODEL = getEnv('VITE_BACKUP_API_MODEL') || 'gpt-4o-mini';
 const MISTRAL_KEY = getEnv('VITE_MISTRAL_KEY');
 const POLLINATIONS_KEY = getEnv('VITE_POLLINATIONS_KEY');
 const FAL_KEY = getEnv('VITE_FAL_KEY');
@@ -76,6 +81,7 @@ const geminiKeyPerformance = new Map();
 
 const providerSystemPrompt = options => [
   buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault),
+  getGoogleConnectorToolInstructions(),
   options.connectorContext ? `NATIVE CONNECTORS CONTEXT:\n${options.connectorContext}` : '',
   options.flagship ? FLAGSHIP_SYSTEM_PROMPT : '',
   options.studioMode ? AI_STUDIO_SYSTEM_PROMPT : ''
@@ -529,6 +535,159 @@ async function tryGeminiKeyWaterfall(prompt, contextMessages, preferredModel, op
   return null;
 }
 
+const toOpenAiSchema = schema => ({
+  ...schema,
+  ...(schema?.type ? { type: String(schema.type).toLowerCase() } : {}),
+  ...(schema?.properties ? { properties: Object.fromEntries(Object.entries(schema.properties).map(([key, value]) => [key, toOpenAiSchema(value)])) } : {}),
+  ...(schema?.items ? { items: toOpenAiSchema(schema.items) } : {})
+});
+
+async function runConnectorToolProvider({ provider, key, keyIndex, prompt, contextMessages, model, options, declarations }) {
+  const isGemini = provider === 'Google Gemini';
+  const isBackup = provider === 'Backup API';
+  const endpoint = isGemini
+    ? 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'
+    : isBackup ? BACKUP_API_URL : 'https://openrouter.ai/api/v1/chat/completions';
+  const tools = declarations.map(declaration => ({
+    type: 'function',
+    function: { name: declaration.name, description: declaration.description, parameters: toOpenAiSchema(declaration.parameters) }
+  }));
+  const messages = [
+    { role: 'system', content: providerSystemPrompt(options) },
+    ...buildHistory(contextMessages),
+    { role: 'user', content: prompt }
+  ];
+  const attachments = (options.attachments || []).map(toGeminiInlineData).filter(Boolean);
+  if (attachments.length) {
+    const latest = messages[messages.length - 1];
+    latest.content = [
+      { type: 'text', text: prompt },
+      ...attachments.map(({ mimeType, data }) => ({ type: 'image_url', image_url: { url: `data:${mimeType};base64,${data}` } }))
+    ];
+  }
+  const maxTokens = options.coding || options.flagship ? 16_384 : (MODEL_TIERS[options.tier]?.maxTokens || 8192);
+  let totalTokens = 0;
+  let reconnectProvider = '';
+  const toolResults = [];
+  const executedCalls = new Map();
+  const completedResult = () => ({
+    text: `Connector results:\n${toolResults.map(({ name, result }) => `${name}: ${result?.error || JSON.stringify(result)}`).join('\n')}`,
+    model,
+    provider,
+    tokenUsage: { totalTokens },
+    connectorData: toolResults,
+    ...(reconnectProvider ? { needsReconnect: true, connectorProvider: reconnectProvider } : {})
+  });
+
+  for (let round = 0; round < 4; round += 1) {
+    if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+    let response;
+    let data;
+    try {
+      response = await fetchWithTimeout(endpoint, {
+        method: 'POST',
+        signal: options.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${key}`,
+          ...(!isGemini && !isBackup ? { 'HTTP-Referer': 'https://zulora.in', 'X-Title': 'Zulora AI' } : {})
+        },
+        body: JSON.stringify({ model, messages, tools, tool_choice: 'auto', max_tokens: maxTokens, temperature: 0.4 })
+      }, isGemini ? 15_000 : 18_000);
+      data = await response.json().catch(() => ({}));
+    } catch (error) {
+      if (toolResults.length) return completedResult();
+      throw error;
+    }
+    if (!response.ok) {
+      const error = new Error(`${provider} HTTP ${response.status}: ${data.error?.message || response.statusText}`);
+      error.status = response.status;
+      if (toolResults.length) return completedResult();
+      throw error;
+    }
+    totalTokens += Number(data.usage?.total_tokens || data.usage?.totalTokens || 0);
+    const assistantMessage = data.choices?.[0]?.message;
+    if (!assistantMessage) {
+      if (toolResults.length) return completedResult();
+      throw new Error(`${provider} returned an empty connector response.`);
+    }
+    const calls = Array.isArray(assistantMessage.tool_calls) ? assistantMessage.tool_calls : [];
+    if (!calls.length) {
+      const text = typeof assistantMessage.content === 'string'
+        ? assistantMessage.content.trim()
+        : Array.isArray(assistantMessage.content) ? assistantMessage.content.map(part => part.text || '').join('').trim() : '';
+      if (!text) {
+        if (toolResults.length) return completedResult();
+        throw new Error(`${provider} returned no text after connector execution.`);
+      }
+      const asksForConnector = /\b(?:gmail|e-?mails?|calendar|meetings?|google\s*sheets?|spreadsheets?)\b/i.test(prompt)
+        && /\b(?:send|read|review|summari[sz]e|schedule|book|create|list|show|check|find|append|write|update|add)\b/i.test(prompt);
+      if (!toolResults.length && asksForConnector && /\b(?:don't|do not|cannot|can't|unable to|lack|no)\s+(?:have\s+)?(?:direct\s+)?(?:access|use|connect|view)|connect your (?:gmail|google|calendar)/i.test(text)) {
+        throw new Error(`${provider} declined to use an active Google connector; trying the next model key.`);
+      }
+      options.onProvider?.({ provider, model });
+      if (options.onToken) options.onToken(text);
+      return {
+        text,
+        model,
+        provider,
+        tokenUsage: { totalTokens },
+        connectorData: toolResults,
+        ...(reconnectProvider ? { needsReconnect: true, connectorProvider: reconnectProvider } : {})
+      };
+    }
+
+    messages.push(assistantMessage);
+    for (const call of calls) {
+      const name = call.function?.name || '';
+      let args = {};
+      try {
+        const rawArguments = call.function?.arguments;
+        args = rawArguments && typeof rawArguments === 'object' ? rawArguments : JSON.parse(rawArguments || '{}');
+      }
+      catch { args = {}; }
+      const signature = `${name}:${JSON.stringify(args)}`;
+      let result = executedCalls.get(signature);
+      if (!executedCalls.has(signature)) {
+        try { result = await executeGoogleConnectorFunction(name, args); }
+        catch (error) {
+          result = { error: error.message || 'The Google connector request failed.' };
+          if (isGoogleReconnectError(error)) {
+            reconnectProvider = ({ send_gmail: 'gmail', read_emails: 'gmail', create_calendar_event: 'calendar', get_calendar_events: 'calendar', append_sheet_row: 'sheets', read_sheet_data: 'sheets' })[name] || '';
+          }
+        }
+        executedCalls.set(signature, result);
+      }
+      toolResults.push({ name, result });
+      messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
+    }
+  }
+
+  return completedResult();
+}
+
+async function tryGoogleConnectorToolWaterfall(prompt, contextMessages, model, options, errors) {
+  const activeProviders = connectorManager.getActiveGoogleProviders();
+  const declarations = getGoogleConnectorFunctionDeclarations(activeProviders);
+  if (!declarations.length) return null;
+  const keys = getGeminiKeyPool();
+  const openrouterKeys = OPENROUTER_KEYS;
+  const candidates = [
+    ...keys.map((key, index) => ({ provider: 'Google Gemini', key, keyIndex: index, model })),
+    ...openrouterKeys.map((key, index) => ({ provider: 'OpenRouter', key, keyIndex: index, model: (MODEL_TIERS[options.tier] || MODEL_TIERS.auto).openrouterModel })),
+    ...(BACKUP_API_KEY ? [{ provider: 'Backup API', key: BACKUP_API_KEY, keyIndex: 0, model: BACKUP_API_MODEL }] : [])
+  ];
+  for (const candidate of candidates) {
+    try {
+      return await runConnectorToolProvider({ ...candidate, prompt, contextMessages, options, declarations });
+    } catch (error) {
+      if (options.signal?.aborted) throw error;
+      errors.push(`${candidate.provider} connector tools (key ${candidate.keyIndex + 1}): ${error.message}`);
+    }
+  }
+  return null;
+}
+
 /**
  * Groq Adapter
  */
@@ -672,6 +831,27 @@ const tryOpenRouter = async (prompt, contextMessages, tier = 'pro', keyIdx = 0, 
     model: `OpenRouter (${model.split('/').pop().split(':')[0]})`,
     provider: 'OpenRouter'
   };
+};
+
+const tryBackupApi = async (prompt, contextMessages, options = {}) => {
+  if (!BACKUP_API_KEY) throw new Error('No backup API key available');
+  const tierConfig = MODEL_TIERS[options.tier] || MODEL_TIERS.auto;
+  const messages = [
+    { role: 'system', content: providerSystemPrompt(options) },
+    ...buildHistory(contextMessages),
+    { role: 'user', content: prompt }
+  ];
+  const response = await fetchWithTimeout(BACKUP_API_URL, {
+    method: 'POST',
+    signal: options.signal,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${BACKUP_API_KEY}` },
+    body: JSON.stringify({ model: BACKUP_API_MODEL, messages, max_tokens: options.coding || options.flagship ? 16_384 : tierConfig.maxTokens, ...(options.onToken ? { stream: true } : {}) })
+  }, 16_000);
+  if (!response.ok) throw new Error(`Backup API HTTP ${response.status}`);
+  options.onProvider?.({ provider: 'Backup API', model: BACKUP_API_MODEL });
+  const text = await readOpenAiText(response, options);
+  if (!text) throw new Error('Backup API returned empty text');
+  return { text, model: BACKUP_API_MODEL, provider: 'Backup API' };
 };
 
 /**
@@ -850,7 +1030,7 @@ export const apiRouter = {
       ? directGeminiModel ? requestedTier : (geminiSelected ? 'gemini' : requestedTier === 'think' || requestedTier === 'pro' ? requestedTier : 'flash')
       : requestedTier === 'auto' ? (coding ? 'think' : complex ? 'pro' : 'flash') : requestedTier;
     const highTierCodeRequest = coding && (flagship || requestedTier === 'pro' || (directGeminiModel && /pro/i.test(requestedTier)));
-    options = { ...options, coding, flagship: highTierCodeRequest, preferBestKey: flagship || highTierCodeRequest, streamState: options.streamState || { sent: false } };
+    options = { ...options, coding, flagship: highTierCodeRequest, tier, preferBestKey: flagship || highTierCodeRequest, streamState: options.streamState || { sent: false } };
     const errors = [];
     const messages = [...buildHistory(contextMessages), { role: 'user', content: prompt }];
     const geminiModel = options.computerAgent && options.computerVision
@@ -863,6 +1043,16 @@ export const apiRouter = {
       coding,
       skipTokenLimit: highTierCodeRequest
     });
+
+    if (!options.skipConnectorTools && connectorManager.hasActiveGoogleConnectors()) {
+      try {
+        const connectorResult = await tryGoogleConnectorToolWaterfall(prompt, contextMessages, geminiModel, options, errors);
+        if (connectorResult?.text) return await syncUsage(connectorResult, 'chat', options.currentUser);
+      } catch (error) {
+        if (options.signal?.aborted || isQuotaAuthorityError(error)) throw error;
+        errors.push(`Google connector tool execution: ${error.message}`);
+      }
+    }
 
     let emittedStreamTokens = false;
     if (!options.computerAgent) {
@@ -905,10 +1095,10 @@ export const apiRouter = {
     const providerOrder = hasGeminiAttachments
       ? ['gemini']
       : options.computerAgent
-        ? options.computerVision ? ['gemini', 'mistral', 'openrouter'] : ['cerebras', 'groq', 'mistral', 'openrouter']
+        ? options.computerVision ? ['gemini', 'openrouter', 'backup', 'mistral'] : ['cerebras', 'groq', 'openrouter', 'backup', 'mistral']
       : requestedTier === 'groq' || requestedTier === 'llama'
-      ? ['groq', 'gemini', 'cerebras', 'mistral', 'openrouter']
-      : ['gemini', 'cerebras', 'groq', 'mistral', 'openrouter'];
+      ? ['groq', 'gemini', 'openrouter', 'backup', 'cerebras', 'mistral']
+      : ['gemini', 'openrouter', 'backup', 'cerebras', 'groq', 'mistral'];
     for (const provider of providerOrder) {
       if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
       if (provider === 'gemini') {
@@ -923,6 +1113,8 @@ export const apiRouter = {
             ? await withProviderRetry(() => tryCerebras(prompt, contextMessages, options.computerAgent ? 'flash' : 'auto', options), 2, options.signal)
             : provider === 'mistral'
               ? await withProviderRetry(() => tryMistral(prompt, contextMessages, 'auto', options), 2, options.signal)
+              : provider === 'backup'
+                ? await withProviderRetry(() => tryBackupApi(prompt, contextMessages, options), 2, options.signal)
               : await (async () => {
                 let lastError;
                 for (let keyIndex = 0; keyIndex < OPENROUTER_KEYS.length; keyIndex += 1) {

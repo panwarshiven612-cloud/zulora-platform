@@ -29,7 +29,7 @@ const SAFE_AUTH_CONTEXT = {
 const AuthContext = createContext(SAFE_AUTH_CONTEXT);
 const PROFILE_TIMEOUT_MS = 8_000;
 const AUTH_BOOTSTRAP_TIMEOUT_MS = 12_000;
-const TOKEN_WINDOW_MS = 6 * 60 * 60 * 1000;
+const TOKEN_WINDOW_MS = 4 * 60 * 60 * 1000;
 const LIGHT_THEME_MIGRATION_KEY = 'zulora_light_workspace_migrated_v1';
 const FALLBACK_AVATAR = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#38bdf8"/><stop offset="1" stop-color="#6366f1"/></linearGradient></defs><rect width="64" height="64" rx="18" fill="url(#g)"/><circle cx="32" cy="25" r="11" fill="#eaf7ff"/><path d="M12 58c2-13 9-20 20-20s18 7 20 20" fill="#eaf7ff"/></svg>')}`;
 
