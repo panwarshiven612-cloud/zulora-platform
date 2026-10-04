@@ -16,7 +16,7 @@ import {
 } from '../services/browserAgentEngine';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../services/firebase';
-import { doc, getDoc, setDoc, increment } from 'firebase/firestore';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 
 // ─── Status Badge Config ──────────────────────────────────────────────────────
 const STATUS_CONFIG = {
@@ -88,8 +88,6 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   const [command, setCommand] = useState('');
   const [taskStatus, setTaskStatus] = useState('idle');
   const [actionLog, setActionLog] = useState([]);
-  const [taskOutput, setTaskOutput] = useState(null);
-  const [outputActionMessage, setOutputActionMessage] = useState('');
   const [isLogOpen, setIsLogOpen] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [loginRequired, setLoginRequired] = useState(null);
@@ -97,23 +95,20 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   const [parsedPreview, setParsedPreview] = useState([]);
   const [showPreview, setShowPreview] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  const [tokenDelta, setTokenDelta] = useState(0);
 
   // Token Tracking & Daily 10-Use Gatekeeper state
   const [sessionTokens, setSessionTokens] = useState(() => {
-    return Math.max(0, Number(localStorage.getItem('zulora_total_tokens') || 0) || 0);
+    return parseInt(localStorage.getItem('zulora_total_tokens') || '0', 10);
   });
   const [dailyUsage, setDailyUsage] = useState(getInitialDailyUsage);
   const [showUpgradeGate, setShowUpgradeGate] = useState(false);
   const [floatingMicEnabled, setFloatingMicEnabled] = useState(() => {
     return localStorage.getItem('zulora_floating_mic') !== 'false';
   });
-  const [autoListenEnabled, setAutoListenEnabled] = useState(() => localStorage.getItem('zulora_continuous_listening') === 'true');
 
   const logEndRef = useRef(null);
   const inputRef  = useRef(null);
   const recognitionRef = useRef(null);
-  const waterfallLogsRef = useRef([]);
 
   // ── Sync Firestore daily usage ──────────────────────────────────────────────
   const syncDailyUsageToFirestore = async (userId, count, date) => {
@@ -140,14 +135,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
         const userRef = doc(db, 'users', currentUser.uid);
         const snap = await getDoc(userRef);
         if (snap.exists() && isMounted) {
-          const userData = snap.data() || {};
-          const savedTokens = Math.max(0, Number(userData.tokensUsed ?? userData.tokenUsage) || 0);
-          setSessionTokens(previous => {
-            const total = Math.max(previous, savedTokens, parseInt(localStorage.getItem('zulora_total_tokens') || '0', 10));
-            localStorage.setItem('zulora_total_tokens', String(total));
-            return total;
-          });
-          const data = userData.dailyPluginUsage;
+          const data = snap.data()?.dailyPluginUsage;
           const today = getTodayDateString();
           if (data && data.date === today && typeof data.count === 'number') {
             setDailyUsage(prev => {
@@ -189,16 +177,8 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
         window.chrome.storage.local.set({ floatingMicEnabled: enabled });
       }
     } catch {}
-    const el = document.getElementById('zulora-voice-mic');
+    const el = document.getElementById('zulora-floating-mic');
     if (el) el.style.display = enabled ? 'flex' : 'none';
-  }, []);
-
-  const toggleAutoListen = useCallback((enabled) => {
-    setAutoListenEnabled(enabled);
-    localStorage.setItem('zulora_continuous_listening', enabled ? 'true' : 'false');
-    window.dispatchEvent(new CustomEvent('ZULORA_EXECUTE_AGENT_TASK', {
-      detail: { type: 'SET_CONTINUOUS_LISTENING', enabled }
-    }));
   }, []);
 
   // ── Extension Connection Check ──────────────────────────────────────────────
@@ -229,11 +209,7 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     const unsubscribe = onStatusUpdate((data) => {
       if (data.type === 'ZULORA_STATUS_UPDATE') {
         setTaskStatus(data.taskStatus);
-        setActionLog([...waterfallLogsRef.current, ...(data.actionLog || [])]);
-        if (data.taskOutput?.type === 'GMAIL_ANALYSIS_RESULT') {
-          setTaskOutput(data.taskOutput);
-          setOutputActionMessage('');
-        }
+        setActionLog(data.actionLog || []);
         if (data.taskStatus === 'done' || data.taskStatus === 'error') {
           setIsRunning(false);
           setIsLogOpen(true);
@@ -248,51 +224,18 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   }, []);
 
   useEffect(() => {
-    const handleWaterfallLog = event => {
-      const entry = event.detail || {};
-      if (!entry.label) return;
-      const logEntry = {
-        index: waterfallLogsRef.current.length + 1,
-        label: entry.label,
-        status: entry.status || 'running',
-        detail: entry.detail || '',
-        timestamp: entry.timestamp || Date.now()
-      };
-      waterfallLogsRef.current = [...waterfallLogsRef.current, logEntry].slice(-40);
-      setActionLog(previous => [...previous, logEntry]);
-    };
-    window.addEventListener('ZULORA_ACTION_LOG_UPDATE', handleWaterfallLog);
-    return () => window.removeEventListener('ZULORA_ACTION_LOG_UPDATE', handleWaterfallLog);
-  }, []);
-
-  useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [actionLog]);
 
   useEffect(() => {
     const handleTokenUpdate = (e) => {
-      const stepTokens = Math.max(0, Number(e.detail?.stepTokens ?? e.detail?.delta ?? e.detail?.taskTokens) || 0);
-      const reportedTotal = Math.max(0, Number(e.detail?.tokensUsed) || 0);
-      if (!stepTokens && !reportedTotal) return;
-      if (stepTokens) setTokenDelta(previous => previous + stepTokens);
-      setSessionTokens(previous => {
-        const stored = Math.max(0, Number(localStorage.getItem('zulora_total_tokens') || 0) || 0);
-        const next = stepTokens > 0
-          ? Math.max(previous, stored) + stepTokens
-          : Math.max(previous, stored, reportedTotal);
-        if (e.detail?.source === 'extension') localStorage.setItem('zulora_total_tokens', String(next));
-        return next;
-      });
-      if (stepTokens) window.setTimeout(() => setTokenDelta(0), 5000);
-      if (stepTokens && e.detail?.source === 'extension' && currentUser?.uid && db) {
-        const userRef = doc(db, 'users', currentUser.uid);
-        setDoc(userRef, { tokensUsed: increment(stepTokens), tokenUsage: increment(stepTokens) }, { merge: true })
-          .catch(error => console.warn('[ComputerPluginModal] Extension token sync warning:', error.message));
+      if (e.detail?.taskTokens) {
+        recordTokens(e.detail.taskTokens);
       }
     };
     window.addEventListener('ZULORA_TOKEN_UPDATE', handleTokenUpdate);
     return () => window.removeEventListener('ZULORA_TOKEN_UPDATE', handleTokenUpdate);
-  }, [currentUser?.uid]);
+  }, [recordTokens]);
 
   // ── Live Action Plan Preview ────────────────────────────────────────────────
   useEffect(() => {
@@ -394,9 +337,6 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     setIsRunning(true);
     setTaskStatus('running');
     setActionLog([]);
-    setTaskOutput(null);
-    setOutputActionMessage('');
-    waterfallLogsRef.current = [];
     setLoginRequired(null);
     setIsLogOpen(true);
 
@@ -417,11 +357,8 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
     }, currentUser);
 
     if (result.newTotalTokens !== undefined && result.newTotalTokens !== null) {
-      setSessionTokens(previous => {
-        const next = Math.max(previous, parseInt(localStorage.getItem('zulora_total_tokens') || '0', 10), Number(result.newTotalTokens) || 0);
-        localStorage.setItem('zulora_total_tokens', String(next));
-        return next;
-      });
+      setSessionTokens(result.newTotalTokens);
+      localStorage.setItem('zulora_total_tokens', String(result.newTotalTokens));
     } else if (result.tokensUsed) {
       recordTokens(result.tokensUsed);
     }
@@ -465,9 +402,6 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   const handleReset = useCallback(() => {
     setTaskStatus('idle');
     setActionLog([]);
-    waterfallLogsRef.current = [];
-    setTaskOutput(null);
-    setOutputActionMessage('');
     setLoginRequired(null);
     setIsRunning(false);
     setCommand('');
@@ -478,28 +412,6 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
 
   const sc = STATUS_CONFIG[taskStatus] || STATUS_CONFIG.idle;
-
-  const downloadInboxCsv = () => {
-    if (!taskOutput?.csv) return;
-    const blobUrl = URL.createObjectURL(new Blob([taskOutput.csv], { type: 'text/csv;charset=utf-8' }));
-    const anchor = document.createElement('a');
-    anchor.href = blobUrl;
-    anchor.download = 'gmail-inbox.csv';
-    anchor.click();
-    URL.revokeObjectURL(blobUrl);
-    setOutputActionMessage('CSV downloaded.');
-  };
-
-  const openInboxCanvas = async (url, label) => {
-    if (!taskOutput) return;
-    window.open(url, '_blank', 'noopener,noreferrer');
-    try {
-      await navigator.clipboard.writeText(taskOutput.csv || JSON.stringify(taskOutput.emails, null, 2));
-      setOutputActionMessage(`${label} opened; inbox data copied. Paste it into the page.`);
-    } catch {
-      setOutputActionMessage(`${label} opened. Use Download CSV if clipboard access is unavailable.`);
-    }
-  };
 
   return (
     <>
@@ -576,28 +488,25 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
         <div className="flex items-center justify-between px-5 py-2.5 bg-slate-50 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800 text-[11px]">
           <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300 font-medium">
             <Zap className="w-3.5 h-3.5 text-sky-500 animate-pulse" />
-            <span>Tokens Used: <strong className="font-bold text-sky-600 dark:text-sky-400">{(Number(sessionTokens) || 0).toLocaleString()}</strong> Tokens{tokenDelta > 0 && <strong className="ml-1 text-emerald-600 dark:text-emerald-400">+{tokenDelta.toLocaleString()}</strong>}</span>
+            <span>Tokens Used: <strong className="font-bold text-sky-600 dark:text-sky-400">{sessionTokens.toLocaleString()}</strong> Tokens</span>
             <span className="text-slate-300 dark:text-slate-700 mx-1">|</span>
             <span className={isPro ? "text-amber-500 font-bold" : "text-slate-500 dark:text-slate-400 font-medium"}>
               {isPro ? 'Unlimited Pro Runs' : `${Math.max(0, DAILY_RUN_LIMIT - dailyUsage)}/10 Runs Left Today`}
             </span>
           </div>
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={() => toggleAutoListen(!autoListenEnabled)}
-              className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold transition-colors ${autoListenEnabled ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400' : 'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400'}`}
-              title="Resume speech listening after each completed task"
-            >
-              <Mic className="w-2.5 h-2.5" /> Auto-listen {autoListenEnabled ? 'ON' : 'OFF'}
-            </button>
-            <button
-              onClick={() => toggleFloatingMic(!floatingMicEnabled)}
-              className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold transition-colors ${floatingMicEnabled ? 'bg-sky-100 dark:bg-sky-900/40 text-sky-600 dark:text-sky-400' : 'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400'}`}
-              title="Toggle floating mic widget on browser tabs"
-            >
-              <Mic className="w-2.5 h-2.5" /> Floating Mic {floatingMicEnabled ? 'ON' : 'OFF'}
-            </button>
-          </div>
+          {/* Floating Mic Toggle */}
+          <button
+            onClick={() => toggleFloatingMic(!floatingMicEnabled)}
+            className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold transition-colors ${
+              floatingMicEnabled
+                ? 'bg-sky-100 dark:bg-sky-900/40 text-sky-600 dark:text-sky-400'
+                : 'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400'
+            }`}
+            title="Toggle floating mic widget on browser tabs"
+          >
+            <Mic className="w-2.5 h-2.5" />
+            Floating Mic {floatingMicEnabled ? 'ON' : 'OFF'}
+          </button>
         </div>
 
 
@@ -901,39 +810,6 @@ const ComputerPluginModal = ({ isOpen, onClose }) => {
           )}
 
           {/* ── Success Card ──────────────────────────────────────────────── */}
-          {taskOutput?.type === 'GMAIL_ANALYSIS_RESULT' && taskOutput.emails?.length > 0 && (
-            <section className="rounded-2xl border border-sky-200 dark:border-sky-900/70 bg-sky-50/70 dark:bg-sky-950/20 overflow-hidden">
-              <div className="px-4 py-3 border-b border-sky-100 dark:border-sky-900/70">
-                <h3 className="text-xs font-black text-slate-800 dark:text-slate-100">Gmail Inbox Analysis</h3>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">{taskOutput.emails.length} emails · source: {taskOutput.source || 'DOM'}</p>
-              </div>
-              <div className="max-h-56 overflow-auto divide-y divide-sky-100 dark:divide-sky-900/50">
-                {taskOutput.emails.map((email, index) => (
-                  <article key={`${email.subject}-${index}`} className="px-4 py-2.5">
-                    <div className="flex items-start justify-between gap-3">
-                      <p className="text-[11px] font-bold text-slate-800 dark:text-slate-100 truncate">{email.subject || '(No subject)'}</p>
-                      <span className="shrink-0 text-[9px] text-slate-500 dark:text-slate-400">{email.date || ''}</span>
-                    </div>
-                    <p className="text-[10px] text-sky-700 dark:text-sky-300 mt-0.5">{email.sender || 'Unknown sender'}</p>
-                    <p className="text-[10px] leading-snug text-slate-500 dark:text-slate-400 mt-1">{email.preview || ''}</p>
-                  </article>
-                ))}
-              </div>
-              <div className="flex flex-wrap gap-2 p-3 border-t border-sky-100 dark:border-sky-900/70">
-                <button type="button" onClick={downloadInboxCsv} className="inline-flex items-center gap-1.5 rounded-lg bg-white dark:bg-slate-900 px-3 py-2 text-[10px] font-bold text-slate-700 dark:text-slate-200 border border-sky-200 dark:border-slate-700 hover:border-sky-500">
-                  <Download className="w-3 h-3" /> Download CSV
-                </button>
-                <button type="button" onClick={() => openInboxCanvas('https://sheets.new', 'Google Sheets')} className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-[10px] font-bold text-white hover:bg-emerald-700">
-                  <ExternalLink className="w-3 h-3" /> Open in Google Sheets
-                </button>
-                <button type="button" onClick={() => openInboxCanvas('https://notepad.pw', 'Default Notepad Canvas')} className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-2 text-[10px] font-bold text-white hover:bg-sky-700">
-                  <FileText className="w-3 h-3" /> Open in Default Notepad Canvas
-                </button>
-              </div>
-              {outputActionMessage && <p className="px-3 pb-3 text-[10px] text-sky-700 dark:text-sky-300">{outputActionMessage}</p>}
-            </section>
-          )}
-
           {taskStatus === 'done' && (
             <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800/60 bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-950/30 dark:to-teal-950/20 p-4 text-center space-y-2">
               <div className="w-10 h-10 mx-auto rounded-full bg-emerald-500/20 flex items-center justify-center">

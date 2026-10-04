@@ -14,7 +14,8 @@ import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyDU2mwqs-pZjW37FOruKgSoxpIm3GJ3baY',
-  authDomain: 'zulora-al.firebaseapp.com',
+  // MODULE 4: Use custom domain for cross-subdomain SSO (zulora.in, drive.zulora.in, school.zulora.in)
+  authDomain: 'zulora.in',
   projectId: 'zulora-al',
   storageBucket: 'zulora-al.firebasestorage.app',
   messagingSenderId: '791256936681',

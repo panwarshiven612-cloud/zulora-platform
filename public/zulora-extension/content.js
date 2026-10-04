@@ -56,58 +56,8 @@
   if (isExtensionValid()) {
     try {
       chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-        if (message?.type === 'ZULORA_CONTENT_HELLO') {
-          sendResponse({ ready: true, url: location.href });
-          return true;
-        }
-        if (message?.type === 'ZULORA_RUN_AGENT_STEP') {
-          const step = message.step || {};
-          const action = String(step.action || '').toUpperCase();
-          const params = step.params || {};
-          Promise.resolve(tryDirectExecution(action, params)).then(result => {
-            if (!result) throw new Error(`Content script could not execute ${action || 'the requested action'}.`);
-            sendResponse({ type: 'STEP_COMPLETE', stepId: message.stepId, success: true, result });
-          }).catch(error => sendResponse({ type: 'STEP_COMPLETE', stepId: message.stepId, success: false, error: error.message }));
-          return true;
-        }
-        if (message?.type === 'ZULORA_STEP_SYNC') {
-          window.postMessage({ source: 'ZULORA_EXTENSION', type: 'ZULORA_AGENT_STEP_UPDATE', stepId: message.stepId, step: message.step, result: message.result }, '*');
-          sendResponse({ type: 'STEP_COMPLETE', stepId: message.stepId, success: true });
-          return true;
-        }
-        if (message && message.type === 'ZULORA_GET_DOM_CONTEXT') {
-          const emailRows = Array.from(document.querySelectorAll('tr.zA, [role="main"] [role="row"], [role="main"] tr')).slice(0, 50).map(row => ({
-            text: (row.innerText || row.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 500),
-            sender: row.querySelector('.yW [email], [email], .yW')?.getAttribute('email') || row.querySelector('.yW')?.innerText?.trim() || '',
-            subject: row.querySelector('.bog, .bqe')?.innerText?.trim() || '',
-            date: row.querySelector('.xW span[title], .xW')?.getAttribute('title') || row.querySelector('.xW')?.innerText?.trim() || '',
-            preview: row.querySelector('.y2')?.innerText?.replace(/^\s*[-–—]\s*/, '').trim() || ''
-          })).filter(row => row.text);
-          const main = document.querySelector('main, [role="main"], article') || document.body;
-          sendResponse({
-            title: document.title,
-            url: location.href,
-            headings: Array.from(document.querySelectorAll('h1,h2,h3')).map(item => item.innerText?.trim()).filter(Boolean).slice(0, 10),
-            bodyText: (main?.innerText || '').slice(0, 15000),
-            emailRows
-          });
-          return true;
-        }
-        if (message && message.type === 'ZULORA_TOKEN_UPDATE') {
-          window.dispatchEvent(new CustomEvent('ZULORA_TOKEN_UPDATE', { detail: {
-            tokensUsed: message.tokensUsed,
-            stepTokens: message.stepTokens ?? message.delta ?? message.taskTokens,
-            taskTokens: message.taskTokens,
-            delta: message.delta ?? message.stepTokens,
-            source: message.source || 'extension'
-          } }));
-          if (sendResponse) sendResponse({ ok: true });
-        }
         if (message && (message.type === 'ZULORA_STATUS_UPDATE' || message.type === 'ZULORA_AGENT_STEP_UPDATE' || message.type === 'ZULORA_SCREEN_STATE_UPDATE')) {
           window.postMessage({ ...message, source: 'ZULORA_EXTENSION' }, '*');
-          if (message.type === 'ZULORA_STATUS_UPDATE') {
-            window.dispatchEvent(new CustomEvent('ZULORA_AGENT_TASK_STATUS', { detail: message }));
-          }
           if (sendResponse) sendResponse({ ok: true });
         }
         if (message && message.type === 'ZULORA_READ_SCREEN_TTS') {
@@ -129,12 +79,8 @@
   window.addEventListener('ZULORA_EXECUTE_AGENT_TASK', (event) => {
     const detail = event.detail || {};
     if (detail.type === 'SET_FLOATING_MIC') {
-      const mic = document.getElementById('zulora-voice-mic');
+      const mic = document.getElementById('zulora-floating-mic');
       if (mic) mic.style.display = detail.enabled ? 'flex' : 'none';
-      return;
-    }
-    if (detail.type === 'SET_CONTINUOUS_LISTENING') {
-      safeSendMessage({ type: 'SET_CONTINUOUS_LISTENING', enabled: detail.enabled });
       return;
     }
     safeSendMessage({ type: 'EXECUTE_ACTION', payload: detail }, (response) => {
@@ -147,13 +93,6 @@
   window.addEventListener('ZULORA_SYNC_API_KEYS', (event) => {
     const keys = event.detail || {};
     safeSendMessage({ type: 'SYNC_API_KEYS', payload: keys });
-  });
-
-  window.addEventListener('ZULORA_EXPORT_TO_DRIVE', event => {
-    const detail = event.detail || {};
-    safeSendMessage({ type: 'EXPORT_TO_DRIVE_FILE', html: detail.html, fileName: detail.fileName }, response => {
-      window.dispatchEvent(new CustomEvent('ZULORA_DRIVE_EXPORT_RESULT', { detail: response || { ok: false, error: 'No response from the Zulora extension.' } }));
-    });
   });
 
   window.addEventListener('ZULORA_PING', () => {
@@ -255,29 +194,6 @@
   }
 
   // ─── Direct JS Executor Engine (Agent 2 - <300ms Latency) ───────────────────
-  function dispatchTypingEvents(el, text) {
-    el.focus();
-    if (el.isContentEditable) {
-      el.replaceChildren(document.createTextNode(text));
-      el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: text, bubbles: true }));
-    } else {
-      const prototype = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-      setter ? setter.call(el, text) : (el.value = text);
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-  }
-
-  function submitAfterTyping(el, params) {
-    const searchTarget = el.matches('input[type="search"], [role="searchbox"]') ||
-      /search|query/i.test(`${el.getAttribute('placeholder') || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('name') || ''}`);
-    if (params.submit !== true && !searchTarget) return;
-    ['keydown', 'keypress', 'keyup'].forEach(type => el.dispatchEvent(new KeyboardEvent(type, {
-      key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true
-    })));
-  }
-
   function tryDirectExecution(action, params = {}) {
     try {
       if ((action === 'TYPE' || action === 'FILL_INPUT') && params.text !== undefined) {
@@ -294,10 +210,17 @@
         }
 
         if (el) {
-          dispatchTypingEvents(el, text);
-          submitAfterTyping(el, params);
           const rect = el.getBoundingClientRect();
-          animateTurtleCursorTo(rect.left + rect.width / 2, rect.top + rect.height / 2);
+          animateTurtleCursorTo(rect.left + rect.width / 2, rect.top + rect.height / 2, () => {
+            el.focus();
+            if (el.isContentEditable) {
+              el.innerText = text;
+            } else {
+              el.value = text;
+            }
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          });
           return { success: true, method: 'direct_js', target: el.tagName };
         }
       }
@@ -386,7 +309,7 @@
 
   // ─── Draggable Pearl & Azure Floating Voice Widget ──────────────────────────
   function injectVoiceWidget() {
-    if (document.getElementById('zulora-voice-mic')) return;
+    if (document.getElementById('zulora-floating-mic')) return;
 
     if (isExtensionValid()) {
       try {
@@ -401,7 +324,7 @@
   }
 
   function buildWidget() {
-    if (document.getElementById('zulora-voice-mic')) return;
+    if (document.getElementById('zulora-floating-mic')) return;
 
     // Inject Styles for Mic & Turtle Cursor
     const style = document.createElement('style');
@@ -437,7 +360,7 @@
       }
 
       /* Pearl & Azure Glassmorphism Floating Mic */
-      #zulora-voice-mic {
+      #zulora-floating-mic {
         position: fixed;
         bottom: 28px;
         right: 28px;
@@ -458,17 +381,17 @@
         touch-action: none;
         transition: transform 0.15s ease, box-shadow 0.2s ease;
       }
-      #zulora-voice-mic:hover {
+      #zulora-floating-mic:hover {
         transform: scale(1.06);
         box-shadow: 0 10px 36px 0 rgba(2, 132, 199, 0.55), inset 0 1px 2px rgba(255, 255, 255, 0.9);
       }
-      #zulora-voice-mic.listening {
+      #zulora-floating-mic.listening {
         background: linear-gradient(135deg, rgba(239, 68, 68, 0.92) 0%, rgba(220, 38, 38, 0.92) 100%);
         border: 1.5px solid rgba(255, 255, 255, 0.8);
         box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.8);
         animation: zuloraPulseRing 1.3s infinite cubic-bezier(0.4, 0, 0.6, 1);
       }
-      #zulora-voice-mic svg { pointer-events: none; }
+      #zulora-floating-mic svg { pointer-events: none; }
       
       /* Visualizer waves inside mic while listening */
       .zulora-wave-bar {
@@ -478,14 +401,14 @@
         margin: 0 1.5px;
         display: none;
       }
-      #zulora-voice-mic.listening .zulora-mic-icon { display: none; }
-      #zulora-voice-mic.listening .zulora-wave-bar {
+      #zulora-floating-mic.listening .zulora-mic-icon { display: none; }
+      #zulora-floating-mic.listening .zulora-wave-bar {
         display: block;
         animation: zuloraWave 0.8s ease-in-out infinite alternate;
       }
-      #zulora-voice-mic .zulora-wave-bar:nth-child(2) { animation-delay: 0.15s; }
-      #zulora-voice-mic .zulora-wave-bar:nth-child(3) { animation-delay: 0.3s; }
-      #zulora-voice-mic .zulora-wave-bar:nth-child(4) { animation-delay: 0.45s; }
+      #zulora-floating-mic .zulora-wave-bar:nth-child(2) { animation-delay: 0.15s; }
+      #zulora-floating-mic .zulora-wave-bar:nth-child(3) { animation-delay: 0.3s; }
+      #zulora-floating-mic .zulora-wave-bar:nth-child(4) { animation-delay: 0.45s; }
       @keyframes zuloraWave {
         0%   { height: 6px; }
         100% { height: 22px; }
@@ -548,7 +471,7 @@
 
     // Create Widget Button with Wave Visualizer
     const mic = document.createElement('div');
-    mic.id = 'zulora-voice-mic';
+    mic.id = 'zulora-floating-mic';
     mic.setAttribute('title', 'Zulora AI Voice Agent (Click to speak / click to stop)');
     mic.innerHTML = `
       <svg class="zulora-mic-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -639,32 +562,10 @@
     let recognition = null;
     let silenceTimer = null;
     let fullTranscript = '';
-    let autoListenEnabled = false;
-    let agentTaskRunning = false;
-
-    try {
-      chrome.storage.local.get(['continuousListening'], settings => {
-        autoListenEnabled = Boolean(settings?.continuousListening);
-        if (autoListenEnabled) window.setTimeout(startListening, 500);
-      });
-      chrome.storage.onChanged.addListener((changes, area) => {
-        if (area === 'local' && changes.continuousListening) {
-          autoListenEnabled = Boolean(changes.continuousListening.newValue);
-          if (autoListenEnabled) window.setTimeout(startListening, 250);
-          else if (isListening) {
-            clearTimeout(silenceTimer);
-            isListening = false;
-            try { recognition?.stop(); } catch {}
-            mic.classList.remove('listening');
-          }
-        }
-      });
-    } catch {}
 
     // Smart Voice Polisher - strips um, ah, stutters
     function cleanInterimSpeech(text) {
       return text.replace(/\b(um|uh|ah|like|you know|so|basically)\b/gi, '')
-                 .replace(/\b([\p{L}\p{N}]+)(?:\s+\1\b)+/giu, '$1')
                  .replace(/\s+/g, ' ').trim();
     }
 
@@ -730,95 +631,6 @@
       });
     }
 
-    function startListening() {
-      if (isListening || agentTaskRunning || document.visibilityState !== 'visible') return;
-      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SR) {
-        showToast('⚠ Speech recognition not supported in this browser.');
-        return;
-      }
-      recognition = new SR();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
-      recognition.maxAlternatives = 1;
-      fullTranscript = '';
-
-      recognition.onstart = () => {
-        isListening = true;
-        mic.classList.add('listening');
-        showToast('🎙 Listening… speak your command (Click to stop)', 0);
-        resetSilenceTimer();
-      };
-      recognition.onresult = (event) => {
-        let interimText = '';
-        let finalChunk = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const piece = event.results[i][0].transcript;
-          if (event.results[i].isFinal) finalChunk += `${piece} `;
-          else interimText += piece;
-        }
-        if (finalChunk) {
-          const normalized = cleanInterimSpeech(finalChunk);
-          const existing = cleanInterimSpeech(fullTranscript).toLowerCase();
-          if (normalized && !existing.endsWith(normalized.toLowerCase())) {
-            fullTranscript = cleanInterimSpeech(`${fullTranscript} ${normalized}`);
-          }
-        }
-        const currentDisplay = cleanInterimSpeech(`${fullTranscript} ${interimText}`);
-        if (currentDisplay) {
-          showToast(`🎙 "${currentDisplay.slice(-40)}"`, 0);
-          resetSilenceTimer();
-        }
-      };
-      recognition.onerror = (event) => {
-        console.warn('[Web Speech Error]', event.error);
-        if (event.error === 'no-speech') return;
-        isListening = false;
-        mic.classList.remove('listening');
-        showToast(`⚠ Speech: ${event.error}`, 3000);
-      };
-      recognition.onend = () => {
-        if (agentTaskRunning) return;
-        if (isListening && !fullTranscript) {
-          try { recognition.start(); } catch {}
-        } else if (isListening) {
-          finalizeVoiceCommand();
-        }
-      };
-      try { recognition.start(); }
-      catch (error) { showToast(`⚠ Could not activate mic: ${error.message}`, 3000); }
-    }
-
-    window.addEventListener('ZULORA_AGENT_TASK_STATUS', event => {
-      const status = event.detail?.taskStatus;
-      if (status === 'running') {
-        agentTaskRunning = true;
-        clearTimeout(silenceTimer);
-        if (isListening) {
-          isListening = false;
-          fullTranscript = '';
-          try { recognition?.stop(); } catch {}
-          mic.classList.remove('listening');
-        }
-        return;
-      }
-      if (status === 'done' || status === 'error' || status === 'idle') {
-        agentTaskRunning = false;
-        if (status === 'done' && autoListenEnabled) window.setTimeout(startListening, 700);
-      }
-    });
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && autoListenEnabled && !agentTaskRunning) {
-        window.setTimeout(startListening, 250);
-      } else if (document.visibilityState !== 'visible' && isListening) {
-        clearTimeout(silenceTimer);
-        isListening = false;
-        try { recognition?.stop(); } catch {}
-        mic.classList.remove('listening');
-      }
-    });
-
     mic.addEventListener('click', () => {
       if (hasMoved) {
         hasMoved = false;
@@ -831,11 +643,73 @@
         return;
       }
 
-      if (agentTaskRunning) {
-        showToast('Agent is working. Auto-listening resumes when it finishes.', 2500);
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) {
+        showToast('⚠ Speech recognition not supported in this browser.');
         return;
       }
-      startListening();
+
+      recognition = new SR();
+      recognition.continuous = true;       // CONTINUOUS: Do NOT cut off early while speaking
+      recognition.interimResults = true;   // Live transcript stream
+      recognition.lang = 'en-US';
+      recognition.maxAlternatives = 1;
+
+      fullTranscript = '';
+
+      recognition.onstart = () => {
+        isListening = true;
+        mic.classList.add('listening');
+        showToast('🎙 Listening… speak your command (Click to stop)', 0);
+        resetSilenceTimer();
+      };
+
+      recognition.onresult = (event) => {
+        let interimText = '';
+        let finalChunk = '';
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const piece = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalChunk += piece + ' ';
+          } else {
+            interimText += piece;
+          }
+        }
+
+        if (finalChunk) {
+          fullTranscript += finalChunk;
+        }
+
+        const rawDisplay = (fullTranscript + interimText).trim();
+        const currentDisplay = cleanInterimSpeech(rawDisplay);
+        if (currentDisplay) {
+          showToast(`🎙 "${currentDisplay.slice(-40)}"`, 0);
+          resetSilenceTimer();
+        }
+      };
+
+      recognition.onerror = (e) => {
+        console.warn('[Web Speech Error]', e.error);
+        if (e.error === 'no-speech') return; // Keep listening
+        isListening = false;
+        mic.classList.remove('listening');
+        showToast('⚠ Speech: ' + e.error, 3000);
+      };
+
+      recognition.onend = () => {
+        if (isListening && !fullTranscript) {
+          try { recognition.start(); } catch {}
+        } else if (isListening) {
+          finalizeVoiceCommand();
+        }
+      };
+
+      try {
+        recognition.start();
+      } catch (e) {
+        showToast('⚠ Could not activate mic: ' + e.message, 3000);
+      }
     });
   }
 

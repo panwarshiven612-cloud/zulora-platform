@@ -1,5 +1,5 @@
-/**
- * ZULORA AI — Client-Side API Waterfall Router
+﻿/**
+ * ZULORA AI â€” Client-Side API Waterfall Router
  * =============================================
  * Complete Multi-Engine Resilience & Dynamic Fallback Pool
  * 
@@ -11,18 +11,19 @@
  * - Video Studio delegates to the Pollinations-first server video router, with Fal AI / Replicate fallbacks
  * - Returns both `url` and `imageUrl`/`videoUrl` so all studio consumers work seamlessly
  *
- * Founded & Created by Shiven Panwar — Zulora AI
+ * Founded & Created by Shiven Panwar â€” Zulora AI
  */
 import { requestGeneration, requestGenerationStream, trackSuccessfulUsage, checkGenerationAllowance, GenerationApiError } from './generationApi';
 import { generateVideo as generateVideoWithProviders } from './videoService';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from './systemPrompt';
+import { webSearch, formatCitations } from './webSearch';
 import { AI_STUDIO_SYSTEM_PROMPT } from './aiStudioPrompt';
 import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_FLASH_MODEL_ID, GEMINI_MODELS, GEMINI_MODEL_FALLBACKS, GEMINI_PRO_MODEL_FALLBACKS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from './aiModels';
 import { buildImagePrompt } from './imageGen';
 import connectorManager from './connectorManager';
 import { executeGoogleConnectorFunction, getGoogleConnectorFunctionDeclarations, getGoogleConnectorFunctionProvider, getGoogleConnectorToolInstructions, isGoogleReconnectError } from './googleConnectorTools';
 
-// ─── SAFE ENVIRONMENT EXTRACTOR ──────────────────────────────────────────────
+// â”€â”€â”€ SAFE ENVIRONMENT EXTRACTOR â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const clientEnv = import.meta.env || {};
 const getEnv = (key) => String(clientEnv[key] || '').trim();
 export const GROQ_MODELS = Object.freeze({
@@ -36,7 +37,7 @@ const GEMINI_HIGH_CAPACITY_MODEL = getEnv('VITE_GEMINI_HIGH_CAPACITY_MODEL') || 
 const GEMINI_FLASH_VARIANTS = [...new Set([GEMINI_HIGH_CAPACITY_MODEL, ...GEMINI_MODEL_FALLBACKS])];
 export { GEMINI_MODELS };
 
-// ─── DYNAMIC GEMINI KEY POOL ─────────────────────────────────────────────────
+// â”€â”€â”€ DYNAMIC GEMINI KEY POOL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const GEMINI_KEYS = Array.from({ length: 7 }, (_, index) => getEnv(`VITE_GEMINI_KEY_${index + 1}`) || getEnv(`VITE_GEMINI_API_KEY_${index + 1}`));
 const LEGACY_GEMINI_KEYS = [getEnv('VITE_GEMINI_API_KEY')];
 
@@ -56,7 +57,7 @@ export const getGeminiKeyPool = () => {
   return pool;
 };
 
-// ─── SECONDARY ENGINE KEYS ───────────────────────────────────────────────────
+// â”€â”€â”€ SECONDARY ENGINE KEYS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const GROQ_KEY = getEnv('VITE_GROQ_KEY') || getEnv('VITE_GROQ_API_KEY');
 const HF_IMAGE_KEY = getEnv('VITE_HF_API_KEY') || getEnv('VITE_HUGGINGFACE_API_KEY');
 const REPLICATE_IMAGE_KEY = getEnv('VITE_REPLICATE_API_TOKEN') || getEnv('VITE_REPLICATE_KEY');
@@ -83,18 +84,19 @@ const providerSystemPrompt = options => [
   buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault),
   getGoogleConnectorToolInstructions(),
   options.connectorContext ? `NATIVE CONNECTORS CONTEXT:\n${options.connectorContext}` : '',
+  // MODULE 7: Inject web search grounding
   options.flagship ? FLAGSHIP_SYSTEM_PROMPT : '',
-  options.studioMode ? AI_STUDIO_SYSTEM_PROMPT : ''
+  options._searchContext ? `\nWEB SEARCH RESULTS (cite inline as [1],[2] markers):\n${options._searchContext}` : '',
 ].filter(Boolean).join('\n\n');
 
-// ─── MODEL TIERS ─────────────────────────────────────────────────────────────
+// â”€â”€â”€ MODEL TIERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const MODEL_TIERS = {
   auto: {
     id: 'auto',
     label: 'Auto (Smart Route)',
     shortLabel: 'Auto',
     description: 'Automatically selects a fast model or coding model',
-    badge: '✦',
+    badge: 'âœ¦',
     color: 'text-sky-500',
     geminiModel: GEMINI_FAST_MODEL,
     groqModel: GROQ_MODELS.primary,
@@ -109,7 +111,7 @@ export const MODEL_TIERS = {
     label: 'Zulora Flash 3.5',
     shortLabel: 'Flash 3.5',
     description: 'Gemini 3.5 Flash and Flash-Lite with automatic fallbacks',
-    badge: '⚡',
+    badge: 'âš¡',
     color: 'text-sky-500',
     geminiModel: GEMINI_FLASH_MODEL,
     groqModel: GROQ_MODELS.fastStream,
@@ -124,7 +126,7 @@ export const MODEL_TIERS = {
     label: 'Gemini',
     shortLabel: 'Gemini',
     description: 'Selects a Gemini Flash model for the request type',
-    badge: '⚡',
+    badge: 'âš¡',
     color: 'text-sky-500',
     geminiModel: GEMINI_FLASH_MODEL,
     groqModel: GROQ_MODELS.fastStream,
@@ -139,7 +141,7 @@ export const MODEL_TIERS = {
     label: 'Llama 3.3 70B',
     shortLabel: 'Llama 70B',
     description: 'Long-form coding and text generation',
-    badge: '⌘',
+    badge: 'âŒ˜',
     color: 'text-emerald-500',
     geminiModel: GEMINI_FAST_MODEL,
     groqModel: 'llama-3.3-70b-versatile',
@@ -154,7 +156,7 @@ export const MODEL_TIERS = {
     label: 'Zulora Turbo Speed',
     shortLabel: 'Turbo Speed',
     description: 'Fast Groq LPU responses with Gemini Flash fallback',
-    badge: '⚡',
+    badge: 'âš¡',
     color: 'text-orange-500',
     geminiModel: GROQ_MODELS.fallback,
     groqModel: GROQ_MODELS.primary,
@@ -169,7 +171,7 @@ export const MODEL_TIERS = {
     label: 'Zulora Pro 3.14',
     shortLabel: 'Pro',
     description: 'Complex analysis and high-reasoning tasks',
-    badge: '🚀',
+    badge: 'ðŸš€',
     color: 'text-violet-500',
     geminiModel: GEMINI_PRO_MODEL_ID,
     groqModel: GROQ_MODELS.primary,
@@ -184,7 +186,7 @@ export const MODEL_TIERS = {
     label: 'Zulora 3.1 Pro Ultra',
     shortLabel: 'Pro Ultra',
     description: 'Extended reasoning & complex analysis',
-    badge: '🧠',
+    badge: 'ðŸ§ ',
     color: 'text-amber-500',
     geminiModel: GEMINI_PRO_MODEL_ID,
     groqModel: 'openai/gpt-oss-120b',
@@ -196,7 +198,7 @@ export const MODEL_TIERS = {
   },
 };
 
-// ─── TIMEOUT FETCH HELPER ────────────────────────────────────────────────────
+// â”€â”€â”€ TIMEOUT FETCH HELPER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const fetchWithTimeout = async (url, options = {}, timeoutMs = 15000) => {
   const controller = new AbortController();
   const externalSignal = options.signal;
@@ -321,8 +323,14 @@ async function browserReplicateImage(prompt, aspectRatio) {
   return String(url);
 }
 
-const buildHistory = (contextMessages = []) =>
-  contextMessages.map((m) => ({ role: m.role, content: m.content }));
+// MODULE 3: Cap history to last 16 messages (8 turns) to reduce token usage
+const buildHistory = (contextMessages = []) => {
+  const msgs = Array.isArray(contextMessages) ? contextMessages : [];
+  return msgs.slice(-16).map(m => ({
+    role: m.role,
+    content: String(m.content || '').slice(0, 8000)
+  }));
+};
 
 const isCodingPrompt = prompt => isCodeGenerationPrompt(prompt);
 const isComplexPrompt = prompt => /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(String(prompt || ''));
@@ -378,7 +386,7 @@ const ensureGenerationAllowance = async (type, currentUser, requestContext = {})
   }
 };
 
-// ─── PROVIDER ADAPTERS ───────────────────────────────────────────────────────
+// â”€â”€â”€ PROVIDER ADAPTERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * Gemini Adapter with Dual-Endpoint Failover
@@ -938,7 +946,7 @@ const tryPollinationsText = async (prompt, options = {}, contextMessages = []) =
   };
 };
 
-// ─── MASTER UNIFIED ROUTER ───────────────────────────────────────────────────
+// â”€â”€â”€ MASTER UNIFIED ROUTER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function readDocxText(file) {
   if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot unpack DOCX files. Save the document as PDF or plain text and attach that instead.');
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -1035,6 +1043,17 @@ export const apiRouter = {
     const highTierCodeRequest = coding && (flagship || requestedTier === 'pro' || (directGeminiModel && /pro/i.test(requestedTier)));
     options = { ...options, coding, flagship: highTierCodeRequest, tier, preferBestKey: flagship || highTierCodeRequest, streamState: options.streamState || { sent: false } };
     const errors = [];
+    let webCitations = [];
+    // MODULE 7: Web search injection for grounding
+    if (options.webSearch && prompt) {
+      try {
+        const { results, context } = await webSearch(prompt);
+        if (context) {
+          options = { ...options, _searchContext: context };
+          webCitations = results;
+        }
+      } catch (searchErr) { console.warn('[Chat] Web search failed:', searchErr.message); }
+    }
     const messages = [...buildHistory(contextMessages), { role: 'user', content: prompt }];
     const geminiModel = options.computerAgent && options.computerVision
       ? GEMINI_FLASH_MODEL
@@ -1156,7 +1175,7 @@ export const apiRouter = {
     throw new Error('All AI providers are temporarily unavailable. Please retry in a few moments.');
   },
 
-  // ─── IMAGE STUDIO GENERATION ───────────────────────────────────────────────
+  // â”€â”€â”€ IMAGE STUDIO GENERATION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   /**
    * Flexible generateImage supporting both:
    * 1. generateImage(prompt, options)
@@ -1263,7 +1282,7 @@ export const apiRouter = {
       }
     }
 
-    // ── Engine 1: Pollinations FLUX ──
+    // â”€â”€ Engine 1: Pollinations FLUX â”€â”€
     try {
       const selectedPollinationsModel = imageEngine === 'pollinations-hd' ? 'flux-hd' : 'flux';
       const fluxUrl = `https://image.pollinations.ai/prompt/${encoded}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&model=${selectedPollinationsModel}&nologo=true`;
@@ -1297,7 +1316,7 @@ export const apiRouter = {
       }
     }
 
-    // ── Engine 2: Fal AI FLUX Schnell ──
+    // â”€â”€ Engine 2: Fal AI FLUX Schnell â”€â”€
     if (FAL_KEY) {
       try {
         const falRes = await fetchWithTimeout(
@@ -1337,7 +1356,7 @@ export const apiRouter = {
       }
     }
 
-    // ── Engine 4: Cloudflare Workers AI FLUX ──
+    // â”€â”€ Engine 4: Cloudflare Workers AI FLUX â”€â”€
     if (CLOUDFLARE_ACCT && CLOUDFLARE_TOKEN) {
       try {
         const cfRes = await fetchWithTimeout(
@@ -1372,7 +1391,7 @@ export const apiRouter = {
       }
     }
 
-    // ── Final Deterministic High-Definition Fallback ──
+    // â”€â”€ Final Deterministic High-Definition Fallback â”€â”€
     if (REPLICATE_IMAGE_KEY) {
       try {
         const model = 'black-forest-labs/flux-schnell';
@@ -1386,7 +1405,7 @@ export const apiRouter = {
       }
     }
 
-    // ── Resilient Pollinations Failover (Guaranteed image generation) ──
+    // â”€â”€ Resilient Pollinations Failover (Guaranteed image generation) â”€â”€
     const fallbackPollinationsUrl = `https://image.pollinations.ai/prompt/${encoded}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&nologo=true`;
     return await syncUsage({
       url: fallbackPollinationsUrl,
@@ -1399,7 +1418,7 @@ export const apiRouter = {
     }, 'image', currentUser);
   },
 
-  // ─── VIDEO STUDIO GENERATION ───────────────────────────────────────────────
+  // â”€â”€â”€ VIDEO STUDIO GENERATION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   /**
    * Flexible generateVideo supporting both:
    * 1. generateVideo(prompt, options)
@@ -1409,7 +1428,7 @@ export const apiRouter = {
     return generateVideoWithProviders(arg1, arg2);
   },
 
-  // ─── MULTIMODAL FILE READER ───────────────────────────────────────────────
+  // â”€â”€â”€ MULTIMODAL FILE READER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async readFileContent(file) {
     if (!file) return '';
     const maxBytes = 8 * 1024 * 1024;
@@ -1457,3 +1476,4 @@ export const apiRouter = {
 };
 
 export default apiRouter;
+

@@ -93,6 +93,15 @@ const isImageAttachment = file => attachmentMimeType(file).startsWith('image/');
 const isPdfAttachment = file => attachmentMimeType(file) === 'application/pdf';
 const isComputerAutomationIntent = prompt => /\b(?:whatsapp|browser|webpage|website|tab|dom|button|input|text field|element|current page|web app)\b/i.test(String(prompt || ''))
   && /\b(?:open|navigate|go to|click|type|fill|send|message|search|select|press)\b/i.test(String(prompt || ''));
+
+// MODULE 2: In-chat media generation intent detection
+const IMAGE_GEN_REGEX = /\b(?:generate|create|make|draw|design|paint|render|show me|produce|give me)\s+(?:an?\s+)?(?:image|photo|picture|illustration|artwork|painting|portrait|logo|icon|banner|wallpaper|thumbnail|meme|sketch|drawing)\b|\b(?:image|photo|picture)\s+of\b/i;
+const IMAGE_EDIT_REGEX = /\b(?:edit|modify|change|update|transform|enhance|improve|fix|crop|resize|adjust|remove|add)\s+(?:this\s+)?(?:image|photo|picture|background)\b/i;
+const VIDEO_GEN_REGEX = /\b(?:generate|create|make|produce|render|animate|show me)\s+(?:a\s+)?(?:video|animation|clip|motion|reel|short|cinematic|film|movie|timelapse)\b/i;
+
+const isImageGenIntent = prompt => IMAGE_GEN_REGEX.test(String(prompt || ''));
+const isImageEditIntent = (prompt, hasImageAttachment) => hasImageAttachment && IMAGE_EDIT_REGEX.test(String(prompt || ''));
+const isVideoGenIntent = prompt => VIDEO_GEN_REGEX.test(String(prompt || ''));
 const attachWebCitations = (content, sources = []) => {
   const text = String(content || '');
   const validSources = sources.filter(source => {
@@ -1074,6 +1083,75 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         : connectorTask?.handled
         ? connectorTask
         : driveTask?.handled && !driveTask.useLLM ? driveTask : null;
+
+      // MODULE 2: In-chat image/video generation intercept
+      const hasImageAttach = attachmentPayloads.some(p => p.mimeType?.startsWith('image/'));
+      const imageGenRequest = !directTask && (isImageGenIntent(basePrompt) || isImageEditIntent(basePrompt, hasImageAttach));
+      const videoGenRequest = !directTask && !imageGenRequest && isVideoGenIntent(basePrompt);
+
+      if (imageGenRequest) {
+        pushThinkingStep('Generating image with AI 🎨', 'running');
+        try {
+          const imgResult = await apiRouter.generateImage(basePrompt, { currentUser, referenceImage: hasImageAttach ? attachmentPayloads[0]?.base64 : null });
+          const imgUrl = imgResult?.url || imgResult?.imageUrl;
+          const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+          setQueryTime(elapsed);
+          pushThinkingStep('Image ready', 'done');
+          const aiMsg = {
+            id: assistantId, role: 'assistant',
+            content: `Here's your AI-generated image! 🎨\n\n![AI Generated Image](${imgUrl})\n\n*${imgResult?.provider || 'Zulora Image AI'} · ${imgResult?.model || 'FLUX'}*`,
+            timestamp: Date.now(), model: imgResult?.model || 'Image AI',
+            provider: imgResult?.provider || 'Image Studio',
+            generatedImageUrl: imgUrl, queryTime: elapsed,
+            thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps] : undefined
+          };
+          const finalMessages = [...newMessages, aiMsg];
+          setMessages(finalMessages);
+          await recordUsage('image', false, 0);
+          if (currentUser?.uid) {
+            await firestoreService.saveChatSession(currentUser.uid, sessionId, { id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: aiMsg.model, pending: false }).catch(console.warn);
+          }
+          onUpdateSession?.({ id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: aiMsg.model, pending: false });
+          return;
+        } catch (imgErr) {
+          pushThinkingStep('Image generation failed', 'error', imgErr.message);
+          // fall through to LLM
+        } finally {
+          setLoading(false); sendingRef.current = false; setShowThinking(false);
+        }
+      }
+
+      if (videoGenRequest) {
+        pushThinkingStep('Generating video with AI 🎬', 'running');
+        try {
+          const vidResult = await apiRouter.generateVideo(basePrompt, { currentUser });
+          const vidUrl = vidResult?.url || vidResult?.videoUrl;
+          const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+          setQueryTime(elapsed);
+          pushThinkingStep('Video ready', 'done');
+          const aiMsg = {
+            id: assistantId, role: 'assistant',
+            content: `Here's your AI-generated video! 🎬\n\n🎥 [View / Download Video](${vidUrl})\n\n*${vidResult?.provider || 'Zulora Video AI'}*`,
+            timestamp: Date.now(), model: vidResult?.model || 'Video AI',
+            provider: vidResult?.provider || 'Video Studio',
+            generatedVideoUrl: vidUrl, queryTime: elapsed,
+            thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps] : undefined
+          };
+          const finalMessages = [...newMessages, aiMsg];
+          setMessages(finalMessages);
+          await recordUsage('video', false, 0);
+          if (currentUser?.uid) {
+            await firestoreService.saveChatSession(currentUser.uid, sessionId, { id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: aiMsg.model, pending: false }).catch(console.warn);
+          }
+          onUpdateSession?.({ id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: aiMsg.model, pending: false });
+          return;
+        } catch (vidErr) {
+          pushThinkingStep('Video generation failed', 'error', vidErr.message);
+        } finally {
+          setLoading(false); sendingRef.current = false; setShowThinking(false);
+        }
+      }
+
       pushThinkingStep(enableWebSearch ? 'Searching the web and grounding the answer' : 'Sending request to the model');
       const result = directTask
         ? {

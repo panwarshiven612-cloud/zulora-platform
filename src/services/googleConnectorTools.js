@@ -18,6 +18,11 @@ const GOOGLE_FUNCTIONS = Object.freeze({
   create_sheet: fn('sheets', 'Create a new Google spreadsheet with the given title.', { title: text('New spreadsheet title') }, ['title']),
   get_form: fn('forms', 'Read a Google Form structure by form ID.', { form_id: text('Google Form ID') }, ['form_id']),
   read_form_responses: fn('forms', 'Read responses from a Google Form by form ID.', { form_id: text('Google Form ID'), max_results: integer('Maximum responses, from 1 to 500') }, ['form_id']),
+  create_form: fn('forms', 'Create a new Google Form with a title, optional description, and an optional list of questions. Each question has: title (string), type (text|paragraph|multiple_choice|checkbox), required (boolean), options (array of strings for choice types).', {
+    title: text('Form title'),
+    description: text('Optional form description'),
+    questions: { type: 'ARRAY', description: 'Array of question objects with title, type, required, options fields', items: { type: 'OBJECT', properties: { title: text('Question text'), type: text('text, paragraph, multiple_choice, or checkbox'), required: { type: 'BOOLEAN', description: 'Whether question is required' }, options: { type: 'ARRAY', description: 'Options for choice questions', items: { type: 'STRING' } } } } }
+  }, ['title']),
   manage_files: fn('drive', 'List or inspect Google Drive files, or move a file to trash when the user explicitly requests it.', { action: { type: 'STRING', enum: ['list', 'get', 'trash'], description: 'Drive action' }, file_id: text('File ID for get or trash'), name: text('Optional file name search for list'), max_results: integer('Maximum file results') }, ['action']),
   download_file: fn('drive', 'Download a Google Drive file for inline analysis. Only files up to 2 MB are returned.', { file_id: text('Google Drive file ID') }, ['file_id']),
   list_drive: fn('drive', 'List recent Google Drive files or search for files by name.', { query: text('Optional file name search'), max_results: integer('Maximum results, from 1 to 100') }),
@@ -84,6 +89,14 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
         result = await connectorManager.createSpreadsheet({ title: requiredText(args, 'title') }); break;
       case 'get_form':
         result = await connectorManager.getGoogleForm({ form_id: requiredText(args, 'form_id') }); break;
+      case 'create_form':
+        result = await connectorManager.createGoogleForm({
+          title: requiredText(args, 'title'),
+          description: String(args.description || ''),
+          questions: Array.isArray(args.questions) ? args.questions : []
+        });
+        result = { ...result, message: `✅ Google Form created! [Edit Form](${result.formUrl}) · [Preview](${result.viewUrl})` };
+        break;
       case 'read_form_responses':
         result = await connectorManager.getGoogleFormResponses({ form_id: requiredText(args, 'form_id'), max_results: args.max_results }); break;
       case 'manage_files':

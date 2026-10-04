@@ -3,6 +3,8 @@ import { useAuth } from './context/AuthContext';
 import LandingPage from './components/LandingPage';
 import SignIn from './pages/SignIn';
 import Dashboard from './pages/Dashboard';
+import GuestGateModal from './components/GuestGateModal';
+import { useSeoMeta } from './hooks/useSeoMeta';
 
 const AIStudio = lazy(() => import('./pages/AIStudio'));
 
@@ -15,6 +17,8 @@ const WORKSPACE_TABS = {
   '/vault': 'vault',
   '/library': 'library'
 };
+// Routes that require authentication — guests get GuestGateModal
+const AUTH_REQUIRED_PATHS = ['/dashboard', '/chat', '/image', '/video', '/brain', '/vault', '/studio', '/library', '/settings'];
 
 const AppLoading = ({ label = 'Opening your workspace...' }) => (
   <main role="status" aria-live="polite" className="min-h-screen grid place-items-center bg-slate-50 text-slate-700 dark:bg-[#070b14] dark:text-slate-200">
@@ -68,6 +72,10 @@ const AppRouter = () => {
     try { return window.location.pathname || '/'; }
     catch { return '/'; }
   });
+  const [showGuestGate, setShowGuestGate] = useState(false);
+
+  // Module 6: Dynamic SEO — update title/canonical on every route change
+  useSeoMeta(pathname);
 
   const navigate = useCallback((path, replace = true) => {
     const safePath = typeof path === 'string' && path.startsWith('/') ? path : '/';
@@ -99,10 +107,26 @@ const AppRouter = () => {
       return;
     }
     if (loading) return;
-    if (!isAuthenticated && ['/dashboard', '/chat', '/image', '/video', '/brain', '/vault', '/studio', '/library', '/settings'].includes(pathname)) {
+    // Guests can access '/' and '/signin' — block workspace routes
+    if (!isAuthenticated && AUTH_REQUIRED_PATHS.includes(pathname)) {
+      setShowGuestGate(true);
       navigate('/');
     }
   }, [isAuthenticated, loading, navigate, pathname]);
+
+  // Guest gate: show landing + modal
+  if (showGuestGate && !isAuthenticated) {
+    return (
+      <>
+        <LandingPage onSignIn={() => { setShowGuestGate(false); navigate('/login'); }} />
+        <GuestGateModal
+          onSignIn={() => { setShowGuestGate(false); navigate('/login'); }}
+          onClose={() => setShowGuestGate(false)}
+          reason="sign in to access your Zulora workspace"
+        />
+      </>
+    );
+  }
 
   // Dashboard owns its auth-loading state, so a direct /dashboard visit mounts
   // the workspace immediately while authentication finishes in the background.

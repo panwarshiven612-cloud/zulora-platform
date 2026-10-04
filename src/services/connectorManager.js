@@ -151,8 +151,8 @@ export const CONNECTOR_CONFIG = Object.freeze({
   },
   forms: {
     id: 'forms', name: 'Google Forms', icon: 'form',
-    scopes: ['https://www.googleapis.com/auth/forms.body.readonly', 'https://www.googleapis.com/auth/forms.responses.readonly', 'openid', 'email'],
-    description: 'Read selected forms and their responses.'
+    scopes: ['https://www.googleapis.com/auth/forms.body', 'https://www.googleapis.com/auth/forms.body.readonly', 'https://www.googleapis.com/auth/forms.responses.readonly', 'openid', 'email'],
+    description: 'Read and create Google Forms and their responses.'
   },
   drive: {
     id: 'drive', name: 'Google Drive', icon: 'drive',
@@ -650,6 +650,59 @@ export const connectorManager = {
     const params = new URLSearchParams({ pageSize: String(Math.min(500, Math.max(1, Number(max_results) || 100))) });
     const result = await this.apiFetch('forms', `https://forms.googleapis.com/v1/forms/${encodeURIComponent(form_id)}/responses?${params}`);
     return result.responses || [];
+  },
+
+  async createGoogleForm({ title, description = '', questions = [] }) {
+    if (!title) throw new Error('A form title is required to create a Google Form.');
+    // Step 1: Create the form with title
+    const form = await this.apiFetch('forms', 'https://forms.googleapis.com/v1/forms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ info: { title, documentTitle: title } })
+    });
+    const formId = form.formId;
+    if (!formId) throw new Error('Google Forms API did not return a form ID.');
+
+    // Step 2: Batch update to add description + questions
+    const requests = [];
+    if (description) {
+      requests.push({ updateFormInfo: { info: { description }, updateMask: 'description' } });
+    }
+    questions.slice(0, 20).forEach((q, i) => {
+      requests.push({
+        createItem: {
+          item: {
+            title: String(q.title || `Question ${i + 1}`),
+            questionItem: {
+              question: {
+                required: Boolean(q.required),
+                ...(q.type === 'multiple_choice'
+                  ? { choiceQuestion: { type: 'RADIO', options: (q.options || []).map(o => ({ value: String(o) })) } }
+                  : q.type === 'checkbox'
+                  ? { choiceQuestion: { type: 'CHECKBOX', options: (q.options || []).map(o => ({ value: String(o) })) } }
+                  : { textQuestion: { paragraph: q.type === 'paragraph' } })
+              }
+            }
+          },
+          location: { index: i }
+        }
+      });
+    });
+
+    if (requests.length) {
+      await this.apiFetch('forms', `https://forms.googleapis.com/v1/forms/${formId}:batchUpdate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests })
+      });
+    }
+
+    return {
+      formId,
+      formUrl: `https://docs.google.com/forms/d/${formId}/edit`,
+      viewUrl: `https://docs.google.com/forms/d/${formId}/viewform`,
+      title
+    };
   },
 
   async readSheetData({ spreadsheet_id, range }) {
