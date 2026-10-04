@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Chrome, LoaderCircle, ShieldCheck, CheckSquare, Square } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-
-const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
+import ZuloraLogo from '../components/ZuloraLogo';
 
 /* ─── Privacy Policy Modal ─── */
 export const SignIn = ({ onAuthenticated }) => {
@@ -57,9 +56,9 @@ export const SignIn = ({ onAuthenticated }) => {
         <div className="absolute inset-0 bg-grid opacity-40 dark:opacity-30" />
 
         <section className="relative w-full max-w-md glass-pearl dark:glass-dark rounded-3xl border border-white/80 dark:border-slate-700/60 shadow-2xl p-8 sm:p-10 text-center animate-scale-in">
-          {/* Logo */}
-          <div className="mx-auto mb-5 w-16 h-16 rounded-2xl overflow-hidden ring-4 ring-sky-500/20 shadow-xl">
-            <img src={LOGO_URL} alt="Zulora AI" className="w-full h-full object-cover" />
+          {/* Logo with glassmorphic backdrop */}
+          <div className="mx-auto mb-5 w-20 h-20 p-2 rounded-3xl bg-white/40 dark:bg-slate-800/40 backdrop-blur-xl border border-white/60 dark:border-slate-700/50 shadow-2xl flex items-center justify-center ring-4 ring-sky-500/20">
+            <ZuloraLogo className="w-16 h-16 rounded-2xl" imgClassName="w-full h-full object-cover rounded-2xl" />
           </div>
 
           {/* Brand */}

@@ -6,6 +6,8 @@ import Dashboard from './pages/Dashboard';
 import GuestGateModal from './components/GuestGateModal';
 import { useSeoMeta } from './hooks/useSeoMeta';
 
+import SearchEngineView from './components/SearchEngineView';
+
 const AIStudio = lazy(() => import('./pages/AIStudio'));
 
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
@@ -102,23 +104,24 @@ const AppRouter = () => {
   }, []);
 
   useEffect(() => {
-    if (isAuthenticated && ['/', '/signin', '/login', '/chat'].includes(pathname)) {
+    // Only redirect away from login/signin/chat when authenticated; root / remains on SearchEngineView
+    if (isAuthenticated && ['/signin', '/login', '/chat'].includes(pathname)) {
       navigate('/dashboard');
       return;
     }
     if (loading) return;
-    // Guests can access '/' and '/signin' — block workspace routes
+    // Guests can access '/' and '/signin' — block workspace routes and show guest gate
     if (!isAuthenticated && AUTH_REQUIRED_PATHS.includes(pathname)) {
       setShowGuestGate(true);
       navigate('/');
     }
   }, [isAuthenticated, loading, navigate, pathname]);
 
-  // Guest gate: show landing + modal
+  // Guest gate: show SearchEngineView + modal
   if (showGuestGate && !isAuthenticated) {
     return (
       <>
-        <LandingPage onSignIn={() => { setShowGuestGate(false); navigate('/login'); }} />
+        <SearchEngineView onNavigate={navigate} onSignIn={() => { setShowGuestGate(false); navigate('/login'); }} />
         <GuestGateModal
           onSignIn={() => { setShowGuestGate(false); navigate('/login'); }}
           onClose={() => setShowGuestGate(false)}
@@ -128,9 +131,26 @@ const AppRouter = () => {
     );
   }
 
+  // Root domain route: Search Engine View
+  if (pathname === '/') {
+    return <SearchEngineView onNavigate={navigate} onSignIn={() => navigate('/login')} />;
+  }
+
   // Dashboard owns its auth-loading state, so a direct /dashboard visit mounts
   // the workspace immediately while authentication finishes in the background.
   if (pathname in WORKSPACE_TABS) {
+    if (!isAuthenticated && !loading) {
+      return (
+        <>
+          <SearchEngineView onNavigate={navigate} onSignIn={() => navigate('/login')} />
+          <GuestGateModal
+            onSignIn={() => navigate('/login')}
+            onClose={() => navigate('/')}
+            reason="sign in to access your Zulora workspace"
+          />
+        </>
+      );
+    }
     return <Dashboard initialTab={WORKSPACE_TABS[pathname]} onNavigate={navigate} />;
   }
 
@@ -140,7 +160,7 @@ const AppRouter = () => {
     if (pathname === '/login' || pathname === '/signin') {
       return <SignIn onAuthenticated={() => navigate('/dashboard')} />;
     }
-    return <LandingPage onSignIn={() => navigate('/login')} />;
+    return <SearchEngineView onNavigate={navigate} onSignIn={() => navigate('/login')} />;
   }
 
   if (pathname === '/studio') {

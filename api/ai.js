@@ -899,7 +899,7 @@ async function pollinationsImage(prompt, sourceImage, aspectRatio, seed, quality
   const width = ratioW >= ratioH ? longest : Math.round(longest * ratioW / ratioH);
   const height = ratioH >= ratioW ? longest : Math.round(longest * ratioH / ratioW);
   const url = key
-    ? `https://gen.pollinations.ai/image/${encodeURIComponent(prompt)}?model=flux&width=${width}&height=${height}&seed=${encodeURIComponent(seed || 0)}`
+    ? `https://gen.pollinations.ai/image/${encodeURIComponent(prompt)}?model=flux&width=${width}&height=${height}&seed=${encodeURIComponent(seed || 0)}&nologo=true`
     : `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${width}&height=${height}&seed=${encodeURIComponent(seed || 0)}&nologo=true`;
   const response = await fetchWithTimeout(url, { headers: key ? { Authorization: `Bearer ${key}` } : {} }, 28_000);
   if (!response.ok) throw new Error('Pollinations image generation failed.');

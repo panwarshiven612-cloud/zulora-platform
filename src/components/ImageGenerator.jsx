@@ -515,7 +515,7 @@ export const ImageGenerator = () => {
             {/* Bottom Actions */}
             <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800">
               <div className="text-xs text-slate-400">
-                Provider: <span className="text-slate-200 font-semibold">{lightboxImage.provider || 'Pollinations FLUX'}</span>
+                Created with <span className="text-sky-400 font-semibold">Zulora AI Image Studio</span>
               </div>
               <div className="flex items-center gap-2">
                 <button

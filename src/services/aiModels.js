@@ -53,6 +53,51 @@ export function estimateTextTokens(value) {
   return Math.max(0, Math.ceil(String(value || '').length / 4));
 }
 
+/**
+ * Strict image generation & media viewing intent detection.
+ * Matches terms like "show image", "photo of", "picture of", "generate image",
+ * "show me apple image", "draw a sunset", etc.
+ */
+export function isImageGenIntent(value) {
+  const p = String(value || '').trim().toLowerCase();
+  if (!p) return false;
+
+  // Negative check: coding, HTML tags, or explanatory queries about images
+  if (/\b(?:how to|explain|what is|why is|code an? image|html image|img tag|read image|ocr|analyze image|extract text)\b/i.test(p)) {
+    return false;
+  }
+
+  // 1. Explicit triggers: "show image", "photo of", "picture of", "generate image", "create image", "draw image"
+  if (/\b(?:show\s+(?:me\s+)?(?:an?\s+)?image|photo\s+of|picture\s+of|image\s+of|generate\s+(?:an?\s+)?image|create\s+(?:an?\s+)?image|draw\s+(?:an?\s+)?image|make\s+(?:an?\s+)?image|paint\s+(?:an?\s+)?image)\b/i.test(p)) {
+    return true;
+  }
+
+  // 2. "Show [anything] image/photo/picture" e.g. "show me apple image", "show apple photo", "show sunset picture"
+  if (/\bshow\s+(?:me\s+)?.*?\b(?:image|photo|picture|wallpaper|artwork|portrait|drawing|sketch)\b/i.test(p)) {
+    return true;
+  }
+
+  // 3. "[action] ... [image keyword]" e.g. "generate a red car picture", "create an apple image", "draw a lion"
+  if (/\b(?:generate|create|render|draw|paint|design|sketch|make)\b.*?\b(?:image|photo|picture|wallpaper|illustration|artwork|portrait|logo|avatar|drawing)\b/i.test(p)) {
+    return true;
+  }
+
+  // 4. "Photo of ...", "Picture of ...", "Image of ..." anywhere
+  if (/\b(?:photo|picture|image|illustration|painting|wallpaper)\s+of\b/i.test(p)) {
+    return true;
+  }
+
+  // 5. Short queries ending with image keyword, e.g. "apple image", "cute cat photo", "car wallpaper"
+  const words = p.split(/\s+/);
+  if (words.length <= 6 && /\b(?:image|photo|picture|wallpaper|artwork)$/i.test(p)) {
+    return true;
+  }
+
+  return false;
+}
+
 export function isCodeGenerationPrompt(value) {
+  // Bypasses code generation output if the user is asking for an image!
+  if (isImageGenIntent(value)) return false;
   return /(?:\bcode\b|\bhtml\b|\bcss\b|\bjavascript\b|\btypescript\b|\breact\b|\bfunction\b|\bfrontend\b|\bweb development\b|\bbuild\s+(?:a\s+)?(?:mobile\s+)?(?:website|web app|application|app|site|ui|tool|dashboard)\b|\bwebsite\b|\bwebpage\b|\bweb app\b|\blanding page\b|\binteractive app\b|\bcomplete application\b|\bportfolio site\b)/i.test(String(value || ''));
 }

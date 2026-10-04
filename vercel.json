@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/__/auth/:path*",
+      "destination": "https://zulora-al.firebaseapp.com/__/auth/:path*"
+    },
+    {
       "source": "/privacy",
       "destination": "/privacy.html"
     },

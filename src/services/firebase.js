@@ -13,13 +13,12 @@ import { getFirestore, enableMultiTabIndexedDbPersistence } from 'firebase/fires
 import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
-  apiKey: 'AIzaSyDU2mwqs-pZjW37FOruKgSoxpIm3GJ3baY',
-  // MODULE 4: Use custom domain for cross-subdomain SSO (zulora.in, drive.zulora.in, school.zulora.in)
-  authDomain: 'zulora.in',
-  projectId: 'zulora-al',
-  storageBucket: 'zulora-al.firebasestorage.app',
-  messagingSenderId: '791256936681',
-  appId: '1:791256936681:web:5c52af9f5b76676b2c0078'
+  apiKey: "AIzaSyDU2mwqs-pZjW37FOruKgSoxpIm3GJ3baY",
+  authDomain: "zulora-al.firebaseapp.com",
+  projectId: "zulora-al",
+  storageBucket: "zulora-al.firebasestorage.app",
+  messagingSenderId: "791256936681",
+  appId: "1:791256936681:web:5c52af9f5b76676b2c0078"
 };
 
 const app = initializeApp(firebaseConfig);
@@ -69,14 +68,22 @@ export const performGoogleSignIn = async () => {
     const result = await signInWithPopup(auth, googleProvider);
     return result.user;
   } catch (error) {
-    console.warn('Google popup sign-in failed; falling back to redirect:', error);
+    console.warn('Google popup sign-in failed; evaluating fallback:', error.code, error.message);
+    // Only fall back to redirect if popup is strictly blocked by the browser or unsupported
     if (
       error.code === 'auth/popup-blocked' ||
+      error.code === 'auth/operation-not-supported-in-this-environment'
+    ) {
+      console.log('Popup blocked; falling back to signInWithRedirect...');
+      await signInWithRedirect(auth, googleProvider);
+      return null;
+    }
+    // If user cancelled or closed the popup, do not redirect to prevent infinite redirect loops
+    if (
       error.code === 'auth/popup-closed-by-user' ||
       error.code === 'auth/cancelled-popup-request'
     ) {
-      await signInWithRedirect(auth, googleProvider);
-      return null;
+      throw new Error('Sign-in popup was closed before completing. Please try again.');
     }
     throw error;
   }
