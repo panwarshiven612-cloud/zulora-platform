@@ -8,6 +8,18 @@ import { buildImagePrompt } from '../src/services/imageGen.js';
 export const maxDuration = 60;
 export const config = { maxDuration };
 
+// Helper to push stream frames securely over SSE or WebSocket
+export const publishStreamFrame = (res, stepData) => {
+  try {
+    if (res && typeof res.write === "function") {
+      res.write(`data: ${JSON.stringify(stepData)}\n\n`);
+      res.flush?.();
+    }
+  } catch (err) {
+    console.error("Error publishing stream frame:", err);
+  }
+};
+
 const CHAT_ORDER = ['gemini', 'openrouter', 'backup', 'cerebras', 'groq', 'mistral'];
 const GEMINI_FAST_MODEL = process.env.GEMINI_FAST_MODEL || GEMINI_FAST_MODEL_ID;
 const GEMINI_FLASH_MODEL = process.env.GEMINI_FLASH_MODEL || GEMINI_FLASH_MODEL_ID;
@@ -1492,9 +1504,13 @@ export default async function handler(req, res) {
       const activeProvider = { provider: '', model: '' };
       let announcedProvider = '';
       const sendEvent = (name, data) => {
-        if (!res.headersSent) res.flushHeaders?.();
-        res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
-        res.flush?.();
+        try {
+          if (!res.headersSent) res.flushHeaders?.();
+          res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+          res.flush?.();
+        } catch (err) {
+          console.error("Error sending SSE event:", err);
+        }
       };
       sendEvent('status', { status: 'connected' });
       const streamState = { sent: false };
@@ -1544,9 +1560,13 @@ export default async function handler(req, res) {
       res.setHeader('Connection', 'keep-alive');
       res.setHeader('X-Accel-Buffering', 'no');
       const sendEvent = (name, data) => {
-        if (!res.headersSent) res.flushHeaders?.();
-        res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
-        res.flush?.();
+        try {
+          if (!res.headersSent) res.flushHeaders?.();
+          res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+          res.flush?.();
+        } catch (err) {
+          console.error("Error sending SSE event:", err);
+        }
       };
       try {
         const output = await generateVideo(body, progress => sendEvent('progress', progress));

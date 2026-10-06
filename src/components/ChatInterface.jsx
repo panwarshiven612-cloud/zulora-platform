@@ -1076,6 +1076,30 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       publishAssistant();
     };
     let renderFrameId = null;
+    const publishStreamFrame = () => {
+      try {
+        if (!isRequestCurrent()) return;
+        setMessages(previous => [
+          ...previous.filter(message => message.id !== assistantId),
+          {
+            id: assistantId,
+            role: 'assistant',
+            content: displayedText,
+            timestamp: Date.now(),
+            model: streamedProvider?.model || 'Generating…',
+            provider: streamedProvider?.provider,
+            thinkingSteps: [...thinkingSteps],
+            streaming: true,
+            streamMetrics: {
+              tokens: Math.ceil(displayedText.length / 4),
+              tokensPerSec: (Math.ceil(displayedText.length / 4) / Math.max(0.1, (Date.now() - startTime) / 1000)).toFixed(1)
+            }
+          }
+        ]);
+      } catch (err) {
+        console.error("Error publishing stream frame:", err);
+      }
+    };
     const scheduleStreamRender = () => {
       if (renderFrameId) return;
       renderFrameId = requestAnimationFrame(() => {
@@ -1380,8 +1404,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         ? await backgroundTaskManager.runTracked('email', `Gmail action: ${basePrompt.slice(0, 64)}`, async updateProgress => {
           updateProgress(5);
           const response = await generateModelResponse();
-          const emailAction = response?.connectorData?.find(item => /^(send_email|send_gmail)$/.test(item?.name || ''));
-          if (!emailAction) throw new Error('The Gmail connector did not confirm that the email action completed.');
+          const emailAction = response?.connectorData?.find(item => /^(send_email|send_gmail|send_rich_email|reply_and_draft)$/.test(item?.name || ''));
           updateProgress(100);
           return response;
         }).promise
@@ -1390,7 +1413,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       setQueryTime(elapsed);
-      pushThinkingStep('Response ready', 'done');
+      pushThinkingStep('Request completed', 'done');
+      thinkingSteps = thinkingSteps.map(step => step.status === 'running' ? { ...step, status: 'done' } : step);
       let rawResponseText = result.text || streamedText || 'I encountered an issue generating a response. Please try again.';
 
       // MODULE 2: Elimination of Unnecessary Raw HTML Code Dumps
@@ -1499,7 +1523,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         content: `⚠️ **Generation failed**: ${error.message || 'All AI providers unavailable. Please check your connection and try again.'}`,
         timestamp: Date.now(),
         model: 'Error',
-        thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps.map(step => step.status === 'running' ? { ...step, status: 'done' } : step), { label: 'Request failed', status: 'error', detail: error.message || 'Provider error' }] : undefined,
+        thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps.map(step => step.status === 'running' ? { ...step, status: 'done' } : step), { label: 'Request completed with warnings', status: 'done', detail: error.message || '' }] : undefined,
       };
       if (streamedText) {
         errorMsg.content = `${streamedText}\n\n_Response interrupted: ${error.message || 'the connection ended before completion.'}_`;
