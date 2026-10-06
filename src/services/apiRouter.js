@@ -83,10 +83,10 @@ const geminiKeyPerformance = new Map();
 const providerSystemPrompt = options => [
   buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault),
   getGoogleConnectorToolInstructions(),
-  options.connectorContext ? `NATIVE CONNECTORS CONTEXT:\n${String(options.connectorContext).slice(0, 1_000)}` : '',
+  options.connectorContext ? `NATIVE CONNECTORS CONTEXT:\n${options.connectorContext}` : '',
   // MODULE 7: Inject web search grounding
   options.flagship ? FLAGSHIP_SYSTEM_PROMPT : '',
-  options._searchContext ? `\nWEB SEARCH RESULTS (cite inline as [1],[2] markers):\n${String(options._searchContext).slice(0, 1_000)}` : '',
+  options._searchContext ? `\nWEB SEARCH RESULTS (cite inline as [1],[2] markers):\n${options._searchContext}` : '',
 ].filter(Boolean).join('\n\n');
 
 // â”€â”€â”€ MODEL TIERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -323,14 +323,30 @@ async function browserReplicateImage(prompt, aspectRatio) {
   return String(url);
 }
 
-// MODULE 1: Restrict chat history to last 6 turns (12 messages) and cap context under 2,000 input tokens (~8,000 chars)
-const buildHistory = (contextMessages = []) => {
-  const recent = (Array.isArray(contextMessages) ? contextMessages : []).slice(-12);
-  let remainingChars = 2_000; // About 500 tokens; the current request receives its own budget.
+// MODULE 1: Adaptive Dynamic Context & Thinking Tokens Allocation
+const isComplexPrompt = (prompt, options = {}) => {
+  if (options.coding || options.flagship || options.connectorContext || options.complex || options.analysis) return true;
+  return /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|audit|architecture|derive|evaluate|proof|step by step|high reason|calendar|schedule|meeting|email|inbox|workflow|automate|draft)\b/i.test(String(prompt || ''));
+};
+
+const buildHistory = (contextMessages = [], isComplex = false) => {
+  const msgs = Array.isArray(contextMessages) ? contextMessages : [];
+  if (isComplex) {
+    // Complex tasks: full model context window without rigid truncation
+    return msgs.map(m => ({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: String(m.content || '')
+    }));
+  }
+  // Fast path for simple queries: lean context up to 24 recent turns with 64k char budget
+  const recent = msgs.slice(-24);
+  let remainingChars = 64_000;
   const pruned = [];
   for (let i = recent.length - 1; i >= 0 && remainingChars > 0; i -= 1) {
     const message = recent[i];
-    const content = String(message?.content || '').slice(-remainingChars);
+    const text = String(message?.content || '');
+    const sliceLen = Math.min(text.length, remainingChars);
+    const content = text.slice(-sliceLen);
     if (content) {
       pruned.unshift({ role: message.role === 'assistant' ? 'assistant' : 'user', content });
       remainingChars -= content.length;
@@ -340,7 +356,6 @@ const buildHistory = (contextMessages = []) => {
 };
 
 const isCodingPrompt = prompt => isCodeGenerationPrompt(prompt);
-const isComplexPrompt = prompt => /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(String(prompt || ''));
 const normalizeModelPreference = value => {
   const raw = String(value || 'auto').trim().toLowerCase();
   const modelId = normalizeGeminiModelId(raw);
@@ -405,7 +420,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
 
   const messages = [
     { role: 'system', content: providerSystemPrompt(options) },
-    ...buildHistory(contextMessages),
+    ...buildHistory(contextMessages, isComplexPrompt(prompt, options)),
     { role: 'user', content: prompt },
   ];
   const inlineParts = (options.attachments || []).map(toGeminiInlineData).filter(Boolean)
@@ -569,7 +584,7 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
   }));
   const messages = [
     { role: 'system', content: providerSystemPrompt(options) },
-    ...buildHistory(contextMessages),
+    ...buildHistory(contextMessages, isComplexPrompt(prompt, options)),
     { role: 'user', content: prompt }
   ];
   const attachments = (options.attachments || []).map(toGeminiInlineData).filter(Boolean);
@@ -716,7 +731,7 @@ const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
 
   const messages = [
     { role: 'system', content: providerSystemPrompt(options) },
-    ...buildHistory(contextMessages),
+    ...buildHistory(contextMessages, isComplexPrompt(prompt, options)),
     { role: 'user', content: prompt }
   ];
 
@@ -767,7 +782,7 @@ const tryCerebras = async (prompt, contextMessages, tier = 'pro', options = {}) 
 
   const messages = [
     { role: 'system', content: providerSystemPrompt(options) },
-    ...buildHistory(contextMessages),
+    ...buildHistory(contextMessages, isComplexPrompt(prompt, options)),
     { role: 'user', content: prompt }
   ];
 
@@ -814,7 +829,7 @@ const tryOpenRouter = async (prompt, contextMessages, tier = 'pro', keyIdx = 0, 
 
   const messages = [
     { role: 'system', content: providerSystemPrompt(options) },
-    ...buildHistory(contextMessages),
+    ...buildHistory(contextMessages, isComplexPrompt(prompt, options)),
     { role: 'user', content: prompt }
   ];
 

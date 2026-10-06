@@ -527,9 +527,14 @@ export const connectorManager = {
     ].join('\r\n');
     const raw = btoa(unescape(encodeURIComponent(mime)))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-    return this.apiFetch('gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    const res = await this.apiFetch('gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
       method: 'POST', body: JSON.stringify({ raw })
     });
+    return { ...res, success: true, to, subject, delivered: true, timestamp: Date.now() };
+  },
+
+  async sendRichEmail({ to, subject, body }) {
+    return this.sendGmailMessage({ to, subject, body });
   },
 
   async createGmailDraft({ to, subject, body }) {
@@ -550,9 +555,39 @@ export const connectorManager = {
     ].join('\r\n');
     const raw = btoa(unescape(encodeURIComponent(mime)))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-    return this.apiFetch('gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/drafts', {
+    const res = await this.apiFetch('gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/drafts', {
       method: 'POST', body: JSON.stringify({ message: { raw } })
     });
+    return { ...res, success: true, isDraft: true, to, subject };
+  },
+
+  async replyAndDraft({ to, subject, body, thread_id = null, is_draft = false }) {
+    if (is_draft) {
+      return this.createGmailDraft({ to, subject, body });
+    }
+    let cleanBody = String(body || '').trim();
+    if (cleanBody.startsWith('```html')) {
+      cleanBody = cleanBody.replace(/^```html\s*/i, '').replace(/```\s*$/i, '').trim();
+    } else if (cleanBody.startsWith('```')) {
+      cleanBody = cleanBody.replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/i, '').trim();
+    }
+    const encodedSubject = `=?UTF-8?B?${btoa(unescape(encodeURIComponent(String(subject || '').replace(/[\r\n]+/g, ' ').trim())))}?=`;
+    const mime = [
+      `To: ${String(to || '').trim()}`,
+      `Subject: ${encodedSubject}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/html; charset=UTF-8',
+      '',
+      cleanBody
+    ].join('\r\n');
+    const raw = btoa(unescape(encodeURIComponent(mime)))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+    const payload = { raw };
+    if (thread_id) payload.threadId = thread_id;
+    const res = await this.apiFetch('gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST', body: JSON.stringify(payload)
+    });
+    return { ...res, success: true, replied: Boolean(thread_id), to, subject, threadId: thread_id };
   },
 
   async readEmails({ query = 'in:inbox', max_results = 5 } = {}) {
@@ -567,10 +602,52 @@ export const connectorManager = {
     return messages;
   },
 
+  async analyzeInbox({ query = 'in:inbox', max_results = 10 } = {}) {
+    const emails = await this.readEmails({ query, max_results });
+    const now = new Date();
+    const todayStr = now.toDateString();
+    let todayCount = 0;
+    const senders = new Map();
+    for (const email of emails) {
+      if (email.date && new Date(email.date).toDateString() === todayStr) {
+        todayCount++;
+      }
+      const sender = email.from || 'Unknown';
+      senders.set(sender, (senders.get(sender) || 0) + 1);
+    }
+    return {
+      totalAnalyzed: emails.length,
+      todayCount,
+      topSenders: Array.from(senders.entries()).map(([sender, count]) => ({ sender, count })),
+      emails: emails.map(e => ({ id: e.id, from: e.from, subject: e.subject, date: e.date, preview: e.snippet }))
+    };
+  },
+
   async createCalendarEvent({ title, start_time, end_time, description = '' }) {
     return this.apiFetch('calendar', 'https://www.googleapis.com/calendar/v3/calendars/primary/events', {
       method: 'POST', body: JSON.stringify({ summary: title, description, start: { dateTime: start_time }, end: { dateTime: end_time } })
     });
+  },
+
+  async scheduleEvents({ events = [], title, start_time, end_time, description = '' } = {}) {
+    if (Array.isArray(events) && events.length > 0) {
+      const created = [];
+      for (const ev of events) {
+        const res = await this.createCalendarEvent({
+          title: ev.title || ev.summary,
+          start_time: ev.start_time || ev.start,
+          end_time: ev.end_time || ev.end,
+          description: ev.description || ''
+        });
+        created.push(res);
+      }
+      return { success: true, count: created.length, events: created };
+    }
+    if (title && start_time && end_time) {
+      const res = await this.createCalendarEvent({ title, start_time, end_time, description });
+      return { success: true, count: 1, event: res };
+    }
+    throw new Error('Provide event details (title, start_time, end_time) or a list of events to schedule.');
   },
 
   async getCalendarEvents({ time_min, time_max } = {}) {
@@ -578,6 +655,22 @@ export const connectorManager = {
     if (time_max) params.set('timeMax', time_max);
     const result = await this.apiFetch('calendar', `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`);
     return result.items || [];
+  },
+
+  async analyzeCalendar({ time_min, time_max } = {}) {
+    const events = await this.getCalendarEvents({ time_min, time_max });
+    return {
+      totalEvents: events.length,
+      timeWindow: { timeMin: time_min || 'now', timeMax: time_max || 'upcoming' },
+      events: events.map(ev => ({
+        id: ev.id,
+        summary: ev.summary || '(no title)',
+        start: ev.start?.dateTime || ev.start?.date,
+        end: ev.end?.dateTime || ev.end?.date,
+        location: ev.location || '',
+        description: ev.description || ''
+      }))
+    };
   },
 
   async deleteCalendarEvent({ event_id }) {

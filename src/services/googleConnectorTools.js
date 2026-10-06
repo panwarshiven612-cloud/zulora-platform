@@ -6,11 +6,19 @@ const rowValues = { type: 'ARRAY', description: 'Rows to append; each row is an 
 const fn = (provider, description, properties, required = []) => ({ provider, description, parameters: { type: 'OBJECT', properties, ...(required.length ? { required } : {}) } });
 
 const GOOGLE_FUNCTIONS = Object.freeze({
-  send_email: fn('gmail', 'Send an email from the active Gmail account. Only call when the user explicitly asks to send it.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Email body') }, ['to', 'subject', 'body']),
+  send_email: fn('gmail', 'Send an email from the active Gmail account. Only call when the user explicitly asks to send it. Construct rich HTML in the body silently.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Email body (HTML or text)') }, ['to', 'subject', 'body']),
+  send_rich_email: fn('gmail', 'Construct and send rich HTML emails in the background using UTF-8 encoding. Do not output raw HTML in final chat response unless asked.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Rich HTML email body') }, ['to', 'subject', 'body']),
+  reply_and_draft: fn('gmail', 'Automatically compose drafts and reply to email threads based on user directive.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Email body (HTML or text)'), thread_id: text('Optional thread ID to reply to'), is_draft: { type: 'BOOLEAN', description: 'True to save as draft instead of sending' } }, ['to', 'subject', 'body']),
+  analyze_inbox: fn('gmail', 'Read, filter, inspect, and summarize inbox messages (e.g., analyze all my emails, count today emails, highlight urgent senders).', { query: text('Gmail search query e.g. "in:inbox" or "newer_than:1d"'), max_results: integer('Number of messages, from 1 to 50') }),
   read_inbox: fn('gmail', 'Read recent Gmail messages matching a Gmail search query.', { query: text('Gmail search query'), max_results: integer('Number of messages, from 1 to 20') }, ['query']),
   summarize_emails: fn('gmail', 'Fetch Gmail messages for the requested period or query so you can summarize their contents.', { query: text('Gmail search query, for example newer_than:7d'), max_results: integer('Number of messages, from 1 to 20') }, ['query']),
   search_threads: fn('gmail', 'Search and return full matching Gmail conversation threads.', { query: text('Gmail search query'), max_results: integer('Number of threads, from 1 to 20') }, ['query']),
   create_event: fn('calendar', 'Create an event in Google Calendar. Use ISO 8601 times including timezone.', { title: text('Event title'), start_time: text('ISO 8601 start time with timezone'), end_time: text('ISO 8601 end time with timezone'), description: text('Optional description') }, ['title', 'start_time', 'end_time']),
+  schedule_events: fn('calendar', 'Book single meetings or batch-schedule weekly routines/tasks via Calendar API.', {
+    title: text('Title if single event'), start_time: text('Start time if single event'), end_time: text('End time if single event'), description: text('Optional description'),
+    events: { type: 'ARRAY', description: 'Batch events list', items: { type: 'OBJECT', properties: { title: text('Event title'), start_time: text('Start time'), end_time: text('End time'), description: text('Description') } } }
+  }),
+  analyze_calendar: fn('calendar', 'Fetch and inspect upcoming schedule (e.g., analyze all my meetings, show my weekly schedule, find free slots).', { time_min: text('ISO 8601 start time'), time_max: text('ISO 8601 end time') }),
   list_events: fn('calendar', 'List events in Google Calendar for the requested time range.', { time_min: text('ISO 8601 start time'), time_max: text('ISO 8601 end time') }, ['time_min', 'time_max']),
   delete_event: fn('calendar', 'Delete a specific Google Calendar event only when the user explicitly requests deletion.', { event_id: text('Calendar event ID') }, ['event_id']),
   append_row: fn('sheets', 'Append one or more rows to a Google Sheet.', { spreadsheet_id: text('Spreadsheet ID from its URL'), range: text('A1 notation range'), values: rowValues }, ['spreadsheet_id', 'range', 'values']),
@@ -47,7 +55,7 @@ export function getGoogleConnectorToolInstructions(activeProviders = connectorMa
   const labels = ['gmail', 'calendar', 'sheets', 'forms', 'drive'].filter(provider => providers.has(provider))
     .map(provider => ({ gmail: 'Gmail', calendar: 'Google Calendar', sheets: 'Google Sheets', forms: 'Google Forms', drive: 'Google Drive' })[provider]);
   if (!labels.length) return '';
-  return `You are equipped with active connectors for ${labels.join(', ')}. When a request asks you to send or read email, summarize email threads, schedule or list or delete a calendar event, read or write Sheets, inspect Forms, or find/download/manage Drive files, call the matching connector function immediately using the user's active session. Never claim you lack access when a connector function is available. Ask a concise follow-up if required details are missing. Only claim a write or deletion succeeded after its function returns success. Never delete or trash anything unless the user explicitly asked for that action.`;
+  return `You are equipped with active connectors for ${labels.join(', ')}. When a request asks you to send or read email, analyze inbox, compose drafts, schedule or list or analyze calendar events, read or write Sheets, inspect Forms, or find/download/manage Drive files, call the matching connector function immediately using the user's active session. When sending or drafting emails, construct clean, professional HTML in the body. Do NOT output raw HTML in your chat response unless the user explicitly requested "show me the code". Never claim you lack access when a connector function is available.`;
 }
 
 export function getGoogleConnectorFunctionProvider(name) {
@@ -66,14 +74,34 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
   try {
     let result;
     switch (name) {
-      case 'send_email': case 'send_gmail':
+      case 'send_email': case 'send_gmail': case 'send_rich_email':
         result = await connectorManager.sendGmailMessage({ to: requiredText(args, 'to'), subject: requiredText(args, 'subject'), body: requiredText(args, 'body') }); break;
+      case 'reply_and_draft':
+        result = await connectorManager.replyAndDraft({
+          to: requiredText(args, 'to'),
+          subject: requiredText(args, 'subject'),
+          body: requiredText(args, 'body'),
+          thread_id: args.thread_id,
+          is_draft: Boolean(args.is_draft)
+        }); break;
+      case 'analyze_inbox':
+        result = await connectorManager.analyzeInbox({ query: String(args.query || 'in:inbox'), max_results: Math.min(50, Math.max(1, Number(args.max_results) || 10)) }); break;
       case 'read_inbox': case 'summarize_emails': case 'read_emails':
         result = await connectorManager.readEmails({ query: String(args.query || 'in:inbox'), max_results: Math.min(20, Math.max(1, Number(args.max_results) || 5)) }); break;
       case 'search_threads':
         result = await connectorManager.searchGmailThreads({ query: String(args.query || 'in:inbox'), max_results: args.max_results }); break;
       case 'create_event': case 'create_calendar_event':
         result = await connectorManager.createCalendarEvent({ title: requiredText(args, 'title'), start_time: requiredText(args, 'start_time'), end_time: requiredText(args, 'end_time'), description: String(args.description || '') }); break;
+      case 'schedule_events':
+        result = await connectorManager.scheduleEvents({
+          events: args.events,
+          title: args.title,
+          start_time: args.start_time,
+          end_time: args.end_time,
+          description: args.description
+        }); break;
+      case 'analyze_calendar':
+        result = await connectorManager.analyzeCalendar({ time_min: args.time_min, time_max: args.time_max }); break;
       case 'list_events': case 'get_calendar_events':
         result = await connectorManager.getCalendarEvents({ time_min: requiredText(args, 'time_min'), time_max: requiredText(args, 'time_max') }); break;
       case 'delete_event':
