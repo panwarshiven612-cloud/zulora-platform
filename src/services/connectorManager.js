@@ -509,13 +509,21 @@ export const connectorManager = {
   },
 
   async sendGmailMessage({ to, subject, body }) {
+    // Strip markdown html code blocks if present
+    let cleanBody = String(body || '').trim();
+    if (cleanBody.startsWith('```html')) {
+      cleanBody = cleanBody.replace(/^```html\s*/i, '').replace(/```\s*$/i, '').trim();
+    } else if (cleanBody.startsWith('```')) {
+      cleanBody = cleanBody.replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/i, '').trim();
+    }
+    const encodedSubject = `=?UTF-8?B?${btoa(unescape(encodeURIComponent(String(subject || '').replace(/[\r\n]+/g, ' ').trim())))}?=`;
     const mime = [
       `To: ${String(to || '').trim()}`,
-      `Subject: ${String(subject || '').replace(/[\r\n]+/g, ' ').trim()}`,
+      `Subject: ${encodedSubject}`,
       'MIME-Version: 1.0',
-      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Type: text/html; charset=UTF-8',
       '',
-      String(body || '')
+      cleanBody
     ].join('\r\n');
     const raw = btoa(unescape(encodeURIComponent(mime)))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
@@ -525,13 +533,20 @@ export const connectorManager = {
   },
 
   async createGmailDraft({ to, subject, body }) {
+    let cleanBody = String(body || '').trim();
+    if (cleanBody.startsWith('```html')) {
+      cleanBody = cleanBody.replace(/^```html\s*/i, '').replace(/```\s*$/i, '').trim();
+    } else if (cleanBody.startsWith('```')) {
+      cleanBody = cleanBody.replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/i, '').trim();
+    }
+    const encodedSubject = `=?UTF-8?B?${btoa(unescape(encodeURIComponent(String(subject || '').replace(/[\r\n]+/g, ' ').trim())))}?=`;
     const mime = [
       `To: ${String(to || '').trim()}`,
-      `Subject: ${String(subject || '').replace(/[\r\n]+/g, ' ').trim()}`,
+      `Subject: ${encodedSubject}`,
       'MIME-Version: 1.0',
-      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Type: text/html; charset=UTF-8',
       '',
-      String(body || '')
+      cleanBody
     ].join('\r\n');
     const raw = btoa(unescape(encodeURIComponent(mime)))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');

@@ -616,22 +616,50 @@ function __zuloraUniversalExecutor(action, payload) {
     return { success: true, downloaded: img.src };
   }
 
-  // ── Dispatcher ──
-  switch (action) {
-    case 'WHATSAPP':        return whatsapp(payload.contact, payload.message);
-    case 'CHATGPT':         return chatgpt(payload.prompt, payload.waitResponse !== false);
-    case 'GEMINI':          return gemini(payload.prompt, payload.waitResponse !== false);
-    case 'GMAIL':           return gmail(payload.to, payload.subject, payload.bodyHtml);
-    case 'READ_SCREEN':     return readScreen(payload.deep);
-    case 'CLICK':           return clickEl(payload.selector, payload.target);
-    case 'TYPE':            return typeEl(payload.selector, payload.text, payload.target);
-    case 'SCROLL':          return scrollPage(payload.direction);
-    case 'DOWNLOAD_IMAGE':  return downloadImage(payload.target);
-    case 'YOUTUBE':         return youtube(payload.query);
-    case 'AUTOFILL':        return autofill();
-    case 'EVAL_TOP_RESULT': return evaluateTopResult();
-    default:                return { error: 'Unknown action: ' + action };
+  // ── Dispatcher with Auto-Retry & Structured Logging ──
+  async function dispatchAction() {
+    switch (action) {
+      case 'WHATSAPP':        return await whatsapp(payload.contact, payload.message);
+      case 'CHATGPT':         return await chatgpt(payload.prompt, payload.waitResponse !== false);
+      case 'GEMINI':          return await gemini(payload.prompt, payload.waitResponse !== false);
+      case 'GMAIL':           return await gmail(payload.to, payload.subject, payload.bodyHtml);
+      case 'READ_SCREEN':     return await readScreen(payload.deep);
+      case 'CLICK':           return await clickEl(payload.selector, payload.target);
+      case 'TYPE':            return await typeEl(payload.selector, payload.text, payload.target);
+      case 'SCROLL':          return await scrollPage(payload.direction);
+      case 'DOWNLOAD_IMAGE':  return await downloadImage(payload.target);
+      case 'YOUTUBE':         return await youtube(payload.query);
+      case 'AUTOFILL':        return await autofill();
+      case 'EVAL_TOP_RESULT': return await evaluateTopResult();
+      default:                return { error: 'Unknown action: ' + action };
+    }
   }
+
+  return (async () => {
+    let attempt = 1;
+    const maxRetries = 3;
+    const logs = [];
+    while (attempt <= maxRetries) {
+      try {
+        logs.push(`[${action}] Attempt ${attempt} started...`);
+        const res = await dispatchAction();
+        if (res && res.error) {
+          logs.push(`[${action}] Attempt ${attempt} error: ${res.error}`);
+          if (attempt === maxRetries) return { error: `[Auto-Retry Exhausted] ${res.error}`, status: 'failed', logs };
+          await sleep(1500);
+          attempt++;
+          continue;
+        }
+        logs.push(`[${action}] Attempt ${attempt} succeeded.`);
+        return { ...res, logs, status: 'success' };
+      } catch (e) {
+        logs.push(`[${action}] Attempt ${attempt} exception: ${e.message}`);
+        if (attempt === maxRetries) return { error: `[System Exception] ${e.message}`, status: 'exception', logs };
+        await sleep(1500);
+        attempt++;
+      }
+    }
+  })();
 }
 
 // ─── 7. Step Execution Engine ─────────────────────────────────────────────────

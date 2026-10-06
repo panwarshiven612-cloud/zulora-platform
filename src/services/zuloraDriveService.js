@@ -6,6 +6,7 @@ import {
   deleteObject, getDownloadURL, ref, uploadBytesResumable
 } from 'firebase/storage';
 import { driveAuth, driveDb, driveStorage } from '../config/firebaseDrive';
+import { uploadToCloudinary } from './cloudinaryService';
 
 const FILES_COLLECTIONS = ['user_drive_files', 'files', 'drive_files', 'driveFiles'];
 const MAX_SEARCH_FILES = 300;
@@ -153,6 +154,16 @@ export const zuloraDriveService = {
       }
       await legacyBatch.commit();
       onProgress?.({ percent: 100, bytesTransferred: file.size, totalBytes: file.size, stage: 'saved' });
+
+      // Non-blocking Cloudinary mirror: runs in background so upload modal never hangs
+      uploadToCloudinary(file, `users/${uid}/drive`, () => {}, 30_000)
+        .then(async cRes => {
+          if (cRes?.url) {
+            await setDoc(doc(driveDb, 'users', uid, 'user_drive_files', id), { cloudinaryUrl: cRes.url }, { merge: true }).catch(() => {});
+          }
+        })
+        .catch(cErr => console.warn('[Drive Cloudinary Mirror] Skipped or timed out:', cErr.message));
+
       return metadata;
     } catch (error) {
       await Promise.all(FILES_COLLECTIONS.map(collectionName => deleteDoc(doc(driveDb, 'users', uid, collectionName, id)).catch(() => {})));

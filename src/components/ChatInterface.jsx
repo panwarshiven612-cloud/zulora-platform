@@ -442,10 +442,27 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                 </div>
               </details>}
               <MarkdownContent content={message.content} />
+              {message.generatedVideoUrl && (
+                <div className="mt-3 overflow-hidden rounded-xl border border-slate-200/80 bg-black dark:border-slate-800 shadow-md">
+                  <video
+                    src={message.generatedVideoUrl}
+                    controls
+                    autoPlay
+                    loop
+                    className="max-h-96 w-full rounded-xl object-contain"
+                  />
+                </div>
+              )}
               {message.needsReconnect && <button type="button" onClick={onReconnect} className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-amber-200/70 bg-amber-50/95 px-3 py-1.5 text-xs font-semibold text-amber-800 shadow-sm hover:bg-amber-100">
                 🔑 Please reconnect your Google Account to use connected features.
               </button>}
-              {message.streaming && <span aria-hidden="true" className="inline-block h-4 ml-0.5 align-middle border-r-2 border-sky-500 animate-pulse" />}
+              {message.streaming && (
+                <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-sky-200/50 bg-sky-50/50 px-2.5 py-1 text-[10px] font-semibold text-sky-600 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-400">
+                  <span className="animate-pulse">⚡</span>
+                  <span>Generating... {message.streamMetrics ? `${message.streamMetrics.tokens} tokens written | ${message.streamMetrics.tokensPerSec} tokens/sec` : ''}</span>
+                  <span aria-hidden="true" className="inline-block h-3 ml-0.5 align-middle border-r-2 border-sky-500 animate-pulse" />
+                </div>
+              )}
             </>
           )}
         </div>
@@ -912,7 +929,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const sendMessage = useCallback(async (promptOverride = null) => {
     const hasAttachments = attachments.length > 0;
     const basePrompt = String(promptOverride ?? inputPrompt).trim() || (hasAttachments ? 'Please analyze the attached image or document.' : '');
-    if (!basePrompt || loading || sendingRef.current) return;
+    if (!basePrompt) return;
 
     const codeGenerationRequest = isCodeGenerationPrompt(basePrompt);
     const highTierCodeRequest = codeGenerationRequest && (modelPreference === 'think' || modelPreference === 'pro' || /-pro(?:-|$)/i.test(modelPreference));
@@ -1146,16 +1163,22 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       }
 
       if (videoGenRequest) {
-        pushThinkingStep('Generating video with AI 🎬', 'running');
+        pushThinkingStep('Generating video with AI 🎬', 'running', '0%');
         try {
-          const vidResult = await apiRouter.generateVideo(basePrompt, { currentUser });
+          const vidResult = await apiRouter.generateVideo(basePrompt, {
+            currentUser,
+            onProgress: progress => {
+              const pct = typeof progress?.percent === 'number' ? `${progress.percent}%` : (progress?.phase || 'Rendering frames');
+              pushThinkingStep(progress?.provider || 'Generating video frames', 'running', pct);
+            }
+          });
           const vidUrl = vidResult?.url || vidResult?.videoUrl;
           const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
           setQueryTime(elapsed);
-          pushThinkingStep('Video ready', 'done');
+          pushThinkingStep('Video ready', 'done', '100%');
           const aiMsg = {
             id: assistantId, role: 'assistant',
-            content: `Here's your AI-generated video! 🎬\n\n🎥 [View / Download Video](${vidUrl})\n\n*${vidResult?.provider || 'Zulora Video AI'}*`,
+            content: `Here's your AI-generated video! 🎬\n\n*${vidResult?.provider || 'Zulora Video AI'}*`,
             timestamp: Date.now(), model: vidResult?.model || 'Video AI',
             provider: vidResult?.provider || 'Video Studio',
             generatedVideoUrl: vidUrl, queryTime: elapsed,
@@ -1209,31 +1232,45 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             }
             clearTimeout(thinkingTimerRef.current);
             setShowThinking(false);
-            setMessages([...newMessages, {
-              id: assistantId,
-              role: 'assistant',
-              content: streamedText,
-              timestamp: Date.now(),
-              model: streamedProvider?.model || 'Generating…',
-              provider: streamedProvider?.provider,
-              thinkingSteps: [...thinkingSteps],
-              streaming: true
-            }]);
+            setMessages(prev => [
+              ...prev.filter(m => m.id !== assistantId),
+              {
+                id: assistantId,
+                role: 'assistant',
+                content: streamedText,
+                timestamp: Date.now(),
+                model: streamedProvider?.model || 'Generating…',
+                provider: streamedProvider?.provider,
+                thinkingSteps: [...thinkingSteps],
+                streaming: true,
+                streamMetrics: {
+                  tokens: Math.ceil(streamedText.length / 4),
+                  tokensPerSec: (Math.ceil(streamedText.length / 4) / Math.max(0.1, (Date.now() - startTime) / 1000)).toFixed(1)
+                }
+              }
+            ]);
           },
           onProvider: route => {
             streamedProvider = route;
             pushThinkingStep(`Connected to ${route.provider || 'model provider'}`, 'done');
             if (!streamedText) return;
-            setMessages([...newMessages, {
-              id: assistantId,
-              role: 'assistant',
-              content: streamedText,
-              timestamp: Date.now(),
-              model: route.model || 'Generating…',
-              provider: route.provider,
-              thinkingSteps: [...thinkingSteps],
-              streaming: true
-            }]);
+            setMessages(prev => [
+              ...prev.filter(m => m.id !== assistantId),
+              {
+                id: assistantId,
+                role: 'assistant',
+                content: streamedText,
+                timestamp: Date.now(),
+                model: route.model || 'Generating…',
+                provider: route.provider,
+                thinkingSteps: [...thinkingSteps],
+                streaming: true,
+                streamMetrics: {
+                  tokens: Math.ceil(streamedText.length / 4),
+                  tokensPerSec: (Math.ceil(streamedText.length / 4) / Math.max(0.1, (Date.now() - startTime) / 1000)).toFixed(1)
+                }
+              }
+            ]);
           },
           onReset: () => {
             streamedText = '';
@@ -1241,7 +1278,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             clearTimeout(thinkingTimerRef.current);
             setShowThinking(true);
             thinkingTimerRef.current = setTimeout(() => setShowThinking(false), 7000);
-            setMessages(newMessages);
             pushThinkingStep('Retrying with the next available provider');
           },
         }
@@ -1267,8 +1303,23 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         queryTime: elapsed,
       };
 
-      const finalMessages = [...newMessages, aiMsg];
-      setMessages(finalMessages);
+      setMessages(prev => {
+        const finalMessages = [...prev.filter(m => m.id !== assistantId), aiMsg];
+        const updatedSession = {
+          id: sessionId,
+          title: sessionTitle,
+          messages: finalMessages,
+          updatedAt: Date.now(),
+          model: result.model,
+          pending: false,
+        };
+        if (currentUser?.uid) {
+          firestoreService.saveChatSession(currentUser.uid, sessionId, updatedSession).catch(console.warn);
+        }
+        onUpdateSession?.(updatedSession);
+        return finalMessages;
+      });
+
       const estimatedTokens = Math.max(512, Math.ceil((fullPrompt.length + String(result.text || '').length) / 4));
       const processedTokens = directTask
         ? 0
@@ -1284,27 +1335,13 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           .catch(error => console.warn('Generated chat code could not be saved to Studio projects:', error.message));
       }
 
-      // Persist to Firestore
-      const updatedSession = {
-        id: sessionId,
-        title: sessionTitle,
-        messages: finalMessages,
-        updatedAt: Date.now(),
-        model: result.model,
-        pending: false,
-      };
-      if (currentUser?.uid) {
-        await firestoreService.saveChatSession(currentUser.uid, sessionId, updatedSession).catch(console.warn);
-      }
-      onUpdateSession?.(updatedSession);
-
     } catch (err) {
       const error = err && typeof err === 'object'
         ? err
         : new Error(String(err || 'Unknown error'));
       console.error('Chat error:', error);
       if (error.status === 429 || (error.payload?.upgradeRequired && error.payload?.usage?.blocked)) {
-        setMessages(newMessages);
+        setMessages(prev => prev.filter(m => m.id !== assistantId));
         setIsUsageModalOpen(true);
         return;
       }
@@ -1323,13 +1360,15 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       if (streamedText) {
         errorMsg.content = `${streamedText}\n\n_Response interrupted: ${error.message || 'the connection ended before completion.'}_`;
       }
-      const failedMessages = [...newMessages, errorMsg];
-      setMessages(failedMessages);
-      if (currentUser?.uid) {
-        const failedSession = { ...pendingSession, messages: failedMessages, pending: false, updatedAt: Date.now() };
-        await firestoreService.saveChatSession(currentUser.uid, sessionId, failedSession).catch(console.warn);
-        onUpdateSession?.(failedSession);
-      }
+      setMessages(prev => {
+        const failedMessages = [...prev.filter(m => m.id !== assistantId), errorMsg];
+        if (currentUser?.uid) {
+          const failedSession = { ...pendingSession, messages: failedMessages, pending: false, updatedAt: Date.now() };
+          firestoreService.saveChatSession(currentUser.uid, sessionId, failedSession).catch(console.warn);
+          onUpdateSession?.(failedSession);
+        }
+        return failedMessages;
+      });
     } finally {
       clearTimeout(thinkingTimerRef.current);
       setShowThinking(false);
@@ -1550,19 +1589,15 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             {/* Right: Send Button */}
             <button
               onClick={() => sendMessage()}
-              disabled={(!inputPrompt.trim() && !attachments.length) || loading}
+              disabled={!inputPrompt.trim() && !attachments.length}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-semibold transition-all duration-200 ${
-                (inputPrompt.trim() || attachments.length > 0) && !loading
+                (inputPrompt.trim() || attachments.length > 0)
                   ? 'azure-gradient-btn text-white shadow-md'
                   : 'bg-slate-100 dark:bg-slate-800/60 text-slate-400 cursor-not-allowed'
               }`}
             >
-              {loading ? (
-                <RefreshCw className="w-4 h-4 animate-spin" />
-              ) : (
-                <Send className="w-4 h-4" />
-              )}
-              <span className="hidden sm:inline">{loading ? 'Generating...' : 'Send'}</span>
+              <Send className="w-4 h-4" />
+              <span className="hidden sm:inline">Send</span>
             </button>
           </div>
         </div>

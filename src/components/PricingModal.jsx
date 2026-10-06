@@ -261,11 +261,17 @@ export const PricingModal = ({ isOpen, onClose }) => {
 
         <div className="p-5 rounded-2xl bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-800 space-y-3">
           <p className="text-sm font-bold text-slate-900 dark:text-white">UPI payment and Pro activation</p>
-          <p className="text-xs text-slate-600 dark:text-slate-300">Pay from any UPI app to UPI ID: <strong>shivenpanwar@fam</strong></p>
-          <a href="upi://pay?pa=shivenpanwar@fam&pn=Zulora%20AI&cu=INR" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">
-            <ExternalLink className="w-4 h-4" />
-            Pay via UPI App
-          </a>
+          <div className="flex flex-col sm:flex-row items-center gap-4">
+            <img src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent('upi://pay?pa=shivenpanwar@fam&pn=Zulora AI&cu=INR')}`} alt="UPI QR Code" className="w-24 h-24 rounded-lg bg-white p-1 shrink-0" />
+            <div className="space-y-2">
+              <p className="text-xs text-slate-600 dark:text-slate-300">Scan QR to pay <strong>₹299</strong> (Pro) or <strong>₹599</strong> (Ultra) from any UPI App.</p>
+              <p className="text-xs text-slate-600 dark:text-slate-300">UPI ID: <strong>shivenpanwar@fam</strong></p>
+              <a href="upi://pay?pa=shivenpanwar@fam&pn=Zulora%20AI&cu=INR" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors">
+                <ExternalLink className="w-4 h-4" />
+                Pay via UPI App on Mobile
+              </a>
+            </div>
+          </div>
           <form onSubmit={submitUtr} className="space-y-2 border-t border-sky-200/70 pt-4 dark:border-sky-800">
             <label htmlFor="utr-input" className="block text-xs font-semibold text-slate-700 dark:text-slate-200">Enter 12-Digit UTR / Transaction ID</label>
             <div className="flex flex-col gap-2 sm:flex-row">

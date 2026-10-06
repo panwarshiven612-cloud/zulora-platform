@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ZULORA AI â€” Client-Side API Waterfall Router
  * =============================================
  * Complete Multi-Engine Resilience & Dynamic Fallback Pool
@@ -323,13 +323,20 @@ async function browserReplicateImage(prompt, aspectRatio) {
   return String(url);
 }
 
-// MODULE 3: Cap history to last 16 messages (8 turns) to reduce token usage
+// MODULE 1: Restrict chat history to last 6 turns (12 messages) and cap context under 2,000 input tokens (~8,000 chars)
 const buildHistory = (contextMessages = []) => {
   const msgs = Array.isArray(contextMessages) ? contextMessages : [];
-  return msgs.slice(-16).map(m => ({
-    role: m.role,
-    content: String(m.content || '').slice(0, 8000)
-  }));
+  const recent = msgs.slice(-12);
+  let totalChars = 0;
+  const pruned = [];
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const m = recent[i];
+    const text = String(m.content || '').slice(0, 2000);
+    if (totalChars + text.length > 8000 && pruned.length >= 2) break;
+    totalChars += text.length;
+    pruned.unshift({ role: m.role, content: text });
+  }
+  return pruned;
 };
 
 const isCodingPrompt = prompt => isCodeGenerationPrompt(prompt);
