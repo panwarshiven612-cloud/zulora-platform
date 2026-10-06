@@ -1,4 +1,4 @@
-import { createPublicKey, createSign, verify as verifySignature } from 'node:crypto';
+import { createHash, createPublicKey, createSign, verify as verifySignature } from 'node:crypto';
 import { GEMINI_KEYS, apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from '../src/services/systemPrompt.js';
 import { AI_STUDIO_SYSTEM_PROMPT } from '../src/services/aiStudioPrompt.js';
@@ -19,6 +19,102 @@ const TOKEN_LIMITS = { free: 60_000, pro: 200_000, ultra: 8_000_000 };
 const TOKEN_WINDOW_MS = 4 * 60 * 60 * 1000;
 let cachedFirestoreToken = null;
 let cachedFirebaseCertificates = null;
+const guestRequestWindows = new Map();
+const GUEST_CHAT_LIMIT = 10;
+const GUEST_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+async function reserveFirestoreGuestRequest(key, now) {
+  const adminToken = await firestoreAccessToken();
+  const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || 'zulora-al';
+  const documentName = `projects/${encodeURIComponent(projectId)}/databases/(default)/documents/guest_demo_limits/${key}`;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const transactionResponse = await fetchWithTimeout(`${firestoreRoot()}:beginTransaction`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ options: { readWrite: {} } })
+    }, 4_000);
+    if (!transactionResponse.ok) throw new Error('Could not begin the guest limit transaction.');
+    const transaction = (await transactionResponse.json()).transaction;
+    if (!transaction) throw new Error('Firestore did not return a guest limit transaction.');
+
+    const readResponse = await fetchWithTimeout(`${firestoreRoot()}/guest_demo_limits/${key}?transaction=${encodeURIComponent(transaction)}`, {
+      headers: { Authorization: `Bearer ${adminToken}` }
+    }, 4_000);
+    if (!readResponse.ok && readResponse.status !== 404) throw new Error(`Could not read the guest limit (${readResponse.status}).`);
+    const existing = readResponse.ok ? await readResponse.json() : null;
+    const existingCount = Number(existing?.fields?.count?.integerValue) || 0;
+    const existingReset = Number(existing?.fields?.resetAtMs?.integerValue) || 0;
+    const count = (existingReset > now ? existingCount : 0) + 1;
+    const resetAt = existingReset > now ? existingReset : now + GUEST_WINDOW_MS;
+    const commit = await fetchWithTimeout(`${firestoreRoot()}:commit`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        transaction,
+        writes: [{
+          update: { name: documentName, fields: { count: { integerValue: String(count) }, resetAtMs: { integerValue: String(resetAt) } } },
+          updateMask: { fieldPaths: ['count', 'resetAtMs'] },
+          ...(!existing ? { currentDocument: { exists: false } } : {})
+        }]
+      })
+    }, 4_000);
+    if (commit.ok) return { allowed: count <= GUEST_CHAT_LIMIT, count, resetAt };
+    const detail = await commit.json().catch(() => ({}));
+    if (attempt === 2 || !/ABORTED|FAILED_PRECONDITION/i.test(JSON.stringify(detail))) {
+      throw new Error(`Could not write the guest limit (${commit.status}).`);
+    }
+  }
+  throw new Error('Guest request reservation retries were exhausted.');
+}
+
+async function reserveGuestRequest(req) {
+  const forwarded = String(req.headers['x-vercel-forwarded-for'] || req.headers['x-real-ip'] || req.headers['x-forwarded-for'] || '')
+    .split(',').map(value => value.trim()).filter(Boolean);
+  const address = forwarded.at(-1) || 'unknown';
+  const key = createHash('sha256').update(address).digest('hex').slice(0, 40);
+  const redisUrl = String(process.env.UPSTASH_REDIS_REST_URL || '').replace(/\/$/, '');
+  const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+  if (redisUrl && redisToken) {
+    try {
+      const response = await fetchWithTimeout(`${redisUrl}/`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${redisToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify([
+          'EVAL',
+          "local count = redis.call('INCR', KEYS[1]); if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]); end; return {count, redis.call('TTL', KEYS[1])}",
+          '1',
+          `zulora:guest-demo:${key}`,
+          String(Math.ceil(GUEST_WINDOW_MS / 1000))
+        ])
+      }, 3_000);
+      if (response.ok) {
+        const result = (await response.json()).result;
+        const count = Array.isArray(result) ? Number(result[0]) || 0 : 0;
+        const ttl = Array.isArray(result) ? Number(result[1]) || -1 : -1;
+        if (!count) throw new Error('Upstash did not return a guest request count.');
+        return { allowed: count <= GUEST_CHAT_LIMIT, count, resetAt: Date.now() + (ttl > 0 ? ttl * 1000 : GUEST_WINDOW_MS) };
+      }
+    } catch (error) {
+      console.warn('Guest Redis rate limit fell back to instance memory:', error.message);
+    }
+  }
+
+  if (firestoreAdminCredentials()) {
+    try { return await reserveFirestoreGuestRequest(key, Date.now()); }
+    catch (error) { console.warn('Guest Firestore rate limit fell back to instance memory:', error.message); }
+  }
+
+  const now = Date.now();
+  const current = guestRequestWindows.get(key);
+  const state = !current || current.resetAt <= now ? { count: 0, resetAt: now + GUEST_WINDOW_MS } : current;
+  state.count += 1;
+  guestRequestWindows.set(key, state);
+  if (guestRequestWindows.size > 5_000) {
+    for (const [entry, value] of guestRequestWindows) if (value.resetAt <= now) guestRequestWindows.delete(entry);
+  }
+  return { allowed: state.count <= GUEST_CHAT_LIMIT, count: state.count, resetAt: state.resetAt };
+}
 
 const json = (res, status, payload) => res.status(status).json(payload);
 const bearer = req => String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i)?.[1] || '';
@@ -460,9 +556,19 @@ function attachmentParts(attachments = []) {
 }
 
 function plainMessages(messages, systemPrompt) {
+  const recent = (Array.isArray(messages) ? messages : []).slice(-12);
+  let remainingChars = Math.min(6_400, Math.max(800, (2_000 - Math.ceil(String(systemPrompt || '').length / 4) - 100) * 4));
+  const bounded = [];
+  for (let index = recent.length - 1; index >= 0 && remainingChars > 0; index -= 1) {
+    const item = recent[index];
+    const content = String(item?.content || '').slice(-remainingChars);
+    if (!content) continue;
+    bounded.unshift({ role: item.role === 'assistant' ? 'assistant' : 'user', content });
+    remainingChars -= content.length;
+  }
   return [
     { role: 'system', content: systemPrompt },
-    ...messages.map(item => ({ role: item.role === 'assistant' ? 'assistant' : 'user', content: String(item.content || '') }))
+    ...bounded
   ];
 }
 
@@ -749,14 +855,14 @@ async function generateChat(body, streamOptions = {}) {
   for (const provider of order) {
     try {
       const result = provider === 'gemini'
-        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: 16_384, ...streamOptions })
+        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: body.guestDemo ? 2_048 : 16_384, ...streamOptions })
         : await tryOpenAiProvider(provider, messages, {
           attachments: body.attachments,
           vision,
           coding,
           model: provider === 'groq' ? groqModel : undefined,
           reasoning: preference === 'think' && provider === 'groq',
-          maxTokens: coding || useProModel || flagship ? 16_384 : 4096,
+          maxTokens: body.guestDemo ? 2_048 : coding || useProModel || flagship ? 16_384 : 4096,
           ...streamOptions
         });
       if (result) return result;
@@ -1276,18 +1382,25 @@ export default async function handler(req, res) {
   const usageOnly = body.action === 'usage';
   const allowanceOnly = body.action === 'allowance';
   const streamChat = body.action === 'chat-stream';
+  const streamGuestChat = body.action === 'guest-chat-stream';
   const streamVideo = body.action === 'video-stream';
   const quotaOnly = usageOnly || allowanceOnly;
   const type = quotaOnly
     ? (['chat', 'image', 'video'].includes(body.usageType) ? body.usageType : null)
-    : (body.action === 'chat' || streamChat) ? 'chat' : body.action === 'image' ? 'image' : (body.action === 'video' || streamVideo) ? 'video' : null;
+    : (body.action === 'chat' || streamChat || streamGuestChat) ? 'chat' : body.action === 'image' ? 'image' : (body.action === 'video' || streamVideo) ? 'video' : null;
   if (!type) return safeError(res, 400, 'Unsupported generation action.');
-  const token = bearer(req);
-  if (!token) return safeError(res, 401, 'Sign in to use Zulora AI.');
   let uid;
-  try { uid = await verifyUser(req); }
-  catch { return safeError(res, 503, 'Could not verify sign-in. Please retry.'); }
-  if (!uid) return safeError(res, 401, 'Your sign-in session has expired. Sign in again.');
+  if (streamGuestChat) {
+    const limit = await reserveGuestRequest(req);
+    if (!limit.allowed) return safeError(res, 429, 'You have used all 10 free demo questions. Sign in with Google to unlock unlimited access.', { guestLimit: GUEST_CHAT_LIMIT, resetAt: new Date(limit.resetAt).toISOString() });
+    body = { ...body, guestDemo: true, modelPreference: 'auto' };
+  } else {
+    const token = bearer(req);
+    if (!token) return safeError(res, 401, 'Sign in to use Zulora AI.');
+    try { uid = await verifyUser(req); }
+    catch { return safeError(res, 503, 'Could not verify sign-in. Please retry.'); }
+    if (!uid) return safeError(res, 401, 'Your sign-in session has expired. Sign in again.');
+  }
   const preference = normalizeModelPreference(body.modelPreference || body.model);
   const highTierRequest = preference === 'think' || preference === 'pro' || preference === 'gemini-3.1-pro-preview' || preference === 'gemini-2.5-pro';
   const flagshipRequest = type === 'chat' && highTierRequest && isCodeGenerationRequest(body);
@@ -1331,7 +1444,7 @@ export default async function handler(req, res) {
     let usageTrackingAvailable = false;
     let profileTier = null;
     let chatReservationId = null;
-    if (firestoreAdminCredentials()) {
+    if (!streamGuestChat && firestoreAdminCredentials()) {
       try {
         const before = await readPlan(uid);
         profileTier = before.planTier;
@@ -1356,7 +1469,7 @@ export default async function handler(req, res) {
       }
     }
 
-    if (firestoreAdminCredentials() && type === 'chat') {
+    if (!streamGuestChat && firestoreAdminCredentials() && type === 'chat') {
       try {
         const promptRate = await registerPromptAttempt(uid, estimatedReservationTokens(body), flagshipRequest);
         if (!promptRate.allowed) {
@@ -1370,7 +1483,7 @@ export default async function handler(req, res) {
       }
     }
 
-    if (streamChat) {
+    if (streamChat || streamGuestChat) {
       res.statusCode = 200;
       res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
       res.setHeader('Cache-Control', 'no-cache, no-transform');

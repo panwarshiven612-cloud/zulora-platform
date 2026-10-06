@@ -13,13 +13,15 @@ import PricingModal from '../components/PricingModal';
 import AccountSettings from './AccountSettings';
 import VoiceAgentModal from '../components/VoiceAgentModal';
 import ComputerPluginModal from '../components/ComputerPluginModal';
+import GuestGateModal from '../components/GuestGateModal';
 import { firestoreService } from '../services/firestoreService';
 
 const AIStudio = lazy(() => import('./AIStudio'));
 
 export const Dashboard = ({
   initialTab = 'chat',
-  onNavigate
+  onNavigate,
+  guestMode = false
 }) => {
   const {
     currentUser,
@@ -41,8 +43,9 @@ export const Dashboard = ({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
   const [isComputerPluginOpen, setIsComputerPluginOpen] = useState(false);
+  const [showGuestUpgrade, setShowGuestUpgrade] = useState(false);
 
-  const safeDisplayName = currentUser?.displayName || userProfile?.displayName || 'Shiven';
+  const safeDisplayName = currentUser?.displayName || userProfile?.displayName || (guestMode ? 'Guest' : 'Shiven');
 
   useEffect(() => {
     if (['chat', 'image', 'video', 'brain', 'vault', 'studio', 'library'].includes(initialTab)) {
@@ -133,7 +136,7 @@ export const Dashboard = ({
         localStorage.setItem(`zulora_active_chat_${currentUser.uid}`, String(updatedSession.id));
       } catch {}
     }
-    setActiveSession(updatedSession);
+    setActiveSession(previous => previous?.id === updatedSession.id ? { ...previous, ...updatedSession } : previous || updatedSession);
   }, [currentUser?.uid]);
 
   const handleSidebarSessionUpdate = useCallback((updatedSession) => {
@@ -144,6 +147,10 @@ export const Dashboard = ({
   }, []);
 
   const handleSelectTab = useCallback((tab) => {
+    if (guestMode && tab !== 'chat') {
+      setShowGuestUpgrade(true);
+      return;
+    }
     setActiveTab(tab);
     const routeByTab = {
       chat: '/dashboard',
@@ -155,16 +162,12 @@ export const Dashboard = ({
       library: '/library'
     };
     if (onNavigate) onNavigate(routeByTab[tab] || '/dashboard');
-  }, [onNavigate]);
-
-  useEffect(() => {
-    if (!loading && !isAuthenticated) onNavigate?.('/');
-  }, [isAuthenticated, loading, onNavigate]);
+  }, [guestMode, onNavigate]);
 
   if (loading && !isAuthenticated) {
     return <div role="status" className="min-h-screen grid place-items-center bg-slate-50 text-slate-700 dark:bg-[#070b14] dark:text-slate-200"><span className="h-10 w-10 animate-spin rounded-full border-4 border-sky-500 border-t-transparent" /></div>;
   }
-  if (!isAuthenticated || !currentUser) {
+  if (!guestMode && (!isAuthenticated || !currentUser)) {
     return <div role="status" className="min-h-screen grid place-items-center bg-slate-50 text-slate-700 dark:bg-[#070b14] dark:text-slate-200">Returning to Zulora AI…</div>;
   }
 
@@ -177,8 +180,10 @@ export const Dashboard = ({
         onOpenMobileSidebar={() => setIsMobileSidebarOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onNewChat={handleNewChat}
-        onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
-        onOpenComputerPlugin={() => setIsComputerPluginOpen(true)}
+        onOpenVoiceAssistant={guestMode ? undefined : () => setIsVoiceModalOpen(true)}
+        onOpenComputerPlugin={guestMode ? undefined : () => setIsComputerPluginOpen(true)}
+        guestMode={guestMode}
+        onSignIn={() => onNavigate?.('/login')}
       />
 
       {/* Main Workspace Layout */}
@@ -192,7 +197,7 @@ export const Dashboard = ({
           isMobileOpen={isMobileSidebarOpen}
           onCloseMobile={() => setIsMobileSidebarOpen(false)}
           setActiveTab={handleSelectTab}
-          onOpenComputerPlugin={() => setIsComputerPluginOpen(true)}
+          onOpenComputerPlugin={guestMode ? undefined : () => setIsComputerPluginOpen(true)}
         />
 
         {/* Main Interactive Area */}
@@ -202,9 +207,11 @@ export const Dashboard = ({
               activeSession={activeSession}
               onUpdateSession={handleUpdateSession}
               onNewChat={handleNewChat}
-              onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
+              onOpenVoiceAssistant={guestMode ? undefined : () => setIsVoiceModalOpen(true)}
               pendingLibraryAsset={pendingLibraryAsset}
               onLibraryAssetConsumed={() => setPendingLibraryAsset(null)}
+              guestMode={guestMode}
+              onNavigate={onNavigate}
             />
           )}
 
@@ -223,7 +230,7 @@ export const Dashboard = ({
       </div>
 
       {/* Voice Assistant Modal Overlay */}
-      <VoiceAgentModal
+      {!guestMode && <VoiceAgentModal
         isOpen={isVoiceModalOpen}
         onClose={() => setIsVoiceModalOpen(false)}
         currentUser={currentUser}
@@ -243,7 +250,7 @@ export const Dashboard = ({
             firestoreService.saveChatSession(currentUser.uid, sid, updated).catch(console.warn);
           }
         }}
-      />
+      />}
 
       {/* Modals */}
       <UsageLimitsModal isOpen={isUsageModalOpen} onClose={() => setIsUsageModalOpen(false)} />
@@ -251,10 +258,16 @@ export const Dashboard = ({
       {isSettingsOpen && <AccountSettings onClose={() => setIsSettingsOpen(false)} />}
 
       {/* Computer Plugin Drawer */}
-      <ComputerPluginModal
+      {!guestMode && <ComputerPluginModal
         isOpen={isComputerPluginOpen}
         onClose={() => setIsComputerPluginOpen(false)}
-      />
+      />}
+      {guestMode && showGuestUpgrade && <GuestGateModal
+        onSignIn={() => { setShowGuestUpgrade(false); onNavigate?.('/login'); }}
+        onClose={() => setShowGuestUpgrade(false)}
+        reason="sign in with Google to unlock this workspace tool"
+        featureName="unlimited Zulora AI"
+      />}
     </div>
   );
 };

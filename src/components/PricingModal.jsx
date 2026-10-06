@@ -10,12 +10,23 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { TIERS } from '../services/firestoreService';
 
+const upiUri = (scheme, payment) => {
+  const query = new URLSearchParams({
+    pa: 'shivenpanwar@fam', pn: 'Zulora AI', am: String(payment.amount), cu: 'INR', tn: `Zulora AI ${payment.plan} monthly`
+  });
+  const base = scheme === 'upi' ? 'upi://pay'
+    : ['bhim', 'tez'].includes(scheme) ? `${scheme}://upi/pay`
+      : `${scheme}://pay`;
+  return `${base}?${query.toString()}`;
+};
+
 export const PricingModal = ({ isOpen, onClose }) => {
   const { currentUser, tier, refreshProfile } = useAuth();
   const [utr, setUtr] = useState('');
   const [submittingUtr, setSubmittingUtr] = useState(false);
   const [utrMessage, setUtrMessage] = useState('');
   const [utrError, setUtrError] = useState('');
+  const [selectedPayment, setSelectedPayment] = useState({ plan: 'Pro', amount: 299 });
 
   const submitUtr = async event => {
     event.preventDefault();
@@ -191,7 +202,7 @@ export const PricingModal = ({ isOpen, onClose }) => {
               </ul>
             </div>
 
-            {tier === TIERS.PRO ? <button disabled className="w-full py-2.5 rounded-xl text-xs font-bold bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-default">Verified Pro Plan</button> : <a href="upi://pay?pa=shivenpanwar@fam&pn=Zulora%20AI&cu=INR" className="flex w-full items-center justify-center py-2.5 rounded-xl text-xs font-bold text-white azure-gradient-btn">Pay via UPI App</a>}
+            {tier === TIERS.PRO ? <button disabled className="w-full py-2.5 rounded-xl text-xs font-bold bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-default">Verified Pro Plan</button> : <button type="button" onClick={() => setSelectedPayment({ plan: 'Pro', amount: 299 })} className="flex w-full items-center justify-center py-2.5 rounded-xl text-xs font-bold text-white azure-gradient-btn">Select Pro · ₹299 / month</button>}
           </div>
 
           {/* 3. Ultra Pro Max Tier (₹599 / month) */}
@@ -261,15 +272,27 @@ export const PricingModal = ({ isOpen, onClose }) => {
 
         <div className="p-5 rounded-2xl bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-800 space-y-3">
           <p className="text-sm font-bold text-slate-900 dark:text-white">UPI payment and Pro activation</p>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => setSelectedPayment({ plan: 'Pro', amount: 299 })} aria-pressed={selectedPayment.plan === 'Pro'} className={`rounded-lg border px-3 py-1.5 text-xs font-bold ${selectedPayment.plan === 'Pro' ? 'border-sky-500 bg-sky-600 text-white' : 'border-sky-200 text-sky-700 dark:border-sky-800 dark:text-sky-300'}`}>Pro · ₹299</button>
+            <button type="button" onClick={() => setSelectedPayment({ plan: 'Ultra Pro Max', amount: 599 })} aria-pressed={selectedPayment.plan === 'Ultra Pro Max'} className={`rounded-lg border px-3 py-1.5 text-xs font-bold ${selectedPayment.plan === 'Ultra Pro Max' ? 'border-amber-500 bg-amber-500 text-white' : 'border-amber-200 text-amber-700 dark:border-amber-800 dark:text-amber-300'}`}>Ultra Pro Max · ₹599</button>
+          </div>
           <div className="flex flex-col sm:flex-row items-center gap-4">
-            <img src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent('upi://pay?pa=shivenpanwar@fam&pn=Zulora AI&cu=INR')}`} alt="UPI QR Code" className="w-24 h-24 rounded-lg bg-white p-1 shrink-0" />
+            <img src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(upiUri('upi', selectedPayment))}`} alt={`UPI QR Code for ₹${selectedPayment.amount} ${selectedPayment.plan} payment`} className="w-28 h-28 rounded-lg bg-white p-1 shrink-0" />
             <div className="space-y-2">
-              <p className="text-xs text-slate-600 dark:text-slate-300">Scan QR to pay <strong>₹299</strong> (Pro) or <strong>₹599</strong> (Ultra) from any UPI App.</p>
+              <p className="text-xs text-slate-600 dark:text-slate-300">Scan to pay <strong>₹{selectedPayment.amount}</strong> for <strong>{selectedPayment.plan}</strong> from any UPI app.</p>
               <p className="text-xs text-slate-600 dark:text-slate-300">UPI ID: <strong>shivenpanwar@fam</strong></p>
-              <a href="upi://pay?pa=shivenpanwar@fam&pn=Zulora%20AI&cu=INR" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors">
+              <a href={upiUri('upi', selectedPayment)} className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors">
                 <ExternalLink className="w-4 h-4" />
-                Pay via UPI App on Mobile
+                Pay ₹{selectedPayment.amount} via UPI
               </a>
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {[
+                  ['Google Pay', upiUri('tez', selectedPayment)],
+                  ['PhonePe', upiUri('phonepe', selectedPayment)],
+                  ['Paytm', upiUri('paytmmp', selectedPayment)],
+                  ['BHIM', upiUri('bhim', selectedPayment)]
+                ].map(([label, href]) => <a key={label} href={href} className="rounded-lg border border-sky-200 px-2.5 py-1.5 text-[10px] font-semibold text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:text-sky-300 dark:hover:bg-sky-950/60">{label}</a>)}
+              </div>
             </div>
           </div>
           <form onSubmit={submitUtr} className="space-y-2 border-t border-sky-200/70 pt-4 dark:border-sky-800">

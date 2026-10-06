@@ -158,9 +158,24 @@ export const zuloraDriveService = {
       // Non-blocking Cloudinary mirror: runs in background so upload modal never hangs
       uploadToCloudinary(file, `users/${uid}/drive`, () => {}, 30_000)
         .then(async cRes => {
-          if (cRes?.url) {
-            await setDoc(doc(driveDb, 'users', uid, 'user_drive_files', id), { cloudinaryUrl: cRes.url }, { merge: true }).catch(() => {});
-          }
+          if (!cRes?.url) throw new Error('Cloudinary returned no file URL.');
+          const cloudinaryMetadata = {
+            cloudinaryUrl: cRes.url,
+            cloudinaryPublicId: cRes.publicId || '',
+            cloudinaryResourceType: cRes.resourceType || '',
+            name,
+            fileName: name,
+            fileType: file.type || 'application/octet-stream',
+            mimeType: file.type || 'application/octet-stream',
+            type: file.type || 'application/octet-stream',
+            fileSize: Number(file.size) || 0,
+            updatedAt: Date.now()
+          };
+          await Promise.all(FILES_COLLECTIONS.map(collectionName => setDoc(
+            doc(driveDb, 'users', uid, collectionName, id), cloudinaryMetadata, { merge: true }
+          ).catch(error => {
+            console.warn(`[Drive Cloudinary Metadata] Could not update ${collectionName}:`, error.message);
+          })));
         })
         .catch(cErr => console.warn('[Drive Cloudinary Mirror] Skipped or timed out:', cErr.message));
 

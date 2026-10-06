@@ -17,7 +17,7 @@ const TAB_CONFIG = [
   { id: 'library', label: 'Library',     icon: FolderOpen,    description: 'Generated and uploaded assets' },
 ];
 
-const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, onNewChat, onOpenVoiceAssistant, onOpenComputerPlugin }) => {
+const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, onNewChat, onOpenVoiceAssistant, onOpenComputerPlugin, guestMode = false, onSignIn }) => {
   const {
     currentUser, theme, toggleTheme, logout, tier,
     setIsUsageModalOpen, setIsPricingModalOpen, userProfile,
@@ -107,7 +107,7 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
           )}
 
           {/* Gemini Live Voice Assistant button */}
-          {onOpenVoiceAssistant && (
+          {!guestMode && onOpenVoiceAssistant && (
             <button
               onClick={onOpenVoiceAssistant}
               className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold text-sky-600 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/60 border border-sky-300/60 dark:border-sky-700/60 hover:border-sky-400 shadow-sm transition-all flex-shrink-0"
@@ -119,7 +119,7 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
           )}
 
           {/* 🔌 Computer Plugin button */}
-          {onOpenComputerPlugin && (
+          {!guestMode && onOpenComputerPlugin && (
             <button
               onClick={onOpenComputerPlugin}
               className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-300/60 dark:border-indigo-700/60 hover:border-indigo-400 shadow-sm transition-all flex-shrink-0"
@@ -131,16 +131,16 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
           )}
 
           {/* Usage */}
-          <button
+          {!guestMode && <button
             onClick={() => setIsUsageModalOpen(true)}
             className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200/60 dark:border-slate-700/50 text-xs font-medium text-slate-600 dark:text-slate-400 hover:border-sky-400/60 hover:text-sky-500 dark:hover:text-sky-400 glass-pearl dark:glass-dark transition-all"
           >
             <BarChart3 className="w-3.5 h-3.5 text-sky-500" />
             <span>Usage</span>
-          </button>
+          </button>}
 
           {/* Upgrade / Tier Badge */}
-          {tier === 'free' ? (
+          {!guestMode && (tier === 'free' ? (
             <button
               onClick={() => setIsPricingModalOpen(true)}
               className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg azure-gradient-btn text-white text-xs font-semibold shadow-sm"
@@ -151,7 +151,7 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
             <div className={`hidden sm:flex items-center gap-1 px-2.5 py-1 rounded-full bg-gradient-to-r ${tierGradient} text-white text-xs font-bold shadow-sm`}>
               <Crown className="w-3 h-3" /> {tierLabel}
             </div>
-          )}
+          ))}
 
           {/* Theme Toggle */}
           <button
@@ -165,17 +165,18 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
           {/* Profile Menu */}
           <div className="relative" ref={profileRef}>
             <button
-              onClick={() => setProfileMenuOpen(v => !v)}
+              onClick={() => guestMode ? onSignIn?.() : setProfileMenuOpen(v => !v)}
               className="flex items-center gap-1.5 h-8 rounded-xl pl-1 pr-2 hover:bg-slate-100 dark:hover:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700/50 transition-all"
-              aria-expanded={profileMenuOpen}
+              aria-expanded={!guestMode && profileMenuOpen}
+              aria-label={guestMode ? 'Sign in' : 'Open user menu'}
             >
               <img
-                src={currentUser?.photoURL || '/default-avatar.svg'}
+                src={guestMode ? '/default-avatar.svg' : currentUser?.photoURL || '/default-avatar.svg'}
                 onError={event => { event.currentTarget.onerror = null; event.currentTarget.src = '/default-avatar.svg'; }}
-                alt={`${currentUser?.displayName || 'Shiven'} avatar`}
+                alt={`${guestMode ? 'Guest' : currentUser?.displayName || 'Shiven'} avatar`}
                 className="w-6 h-6 rounded-lg object-cover flex-shrink-0"
               />
-              <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform duration-200 hidden sm:block ${profileMenuOpen ? 'rotate-180' : ''}`} />
+              {guestMode ? <span className="hidden text-[10px] font-semibold text-sky-600 sm:block">Sign in</span> : <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform duration-200 hidden sm:block ${profileMenuOpen ? 'rotate-180' : ''}`} />}
             </button>
 
             {/* Dropdown */}

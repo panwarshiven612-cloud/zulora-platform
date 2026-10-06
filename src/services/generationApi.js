@@ -96,18 +96,19 @@ export async function requestVoiceAudio(text, voiceId, currentUser) {
 }
 
 /** Requests chat output as authenticated server-sent events and forwards each token to the UI. */
-export async function requestGenerationStream(payload, currentUser, onToken, onReset, onProvider, signal) {
-  if (!currentUser?.getIdToken) return null;
-  let token;
-  try { token = await currentUser.getIdToken(); }
-  catch { return null; }
+export async function requestGenerationStream(payload, currentUser, onToken, onReset, onProvider, signal, guest = false) {
+  let token = '';
+  if (currentUser?.getIdToken) {
+    try { token = await currentUser.getIdToken(); }
+    catch { return null; }
+  } else if (!guest) return null;
 
   let response;
   try {
     response = await fetch('/api/ai', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ action: 'chat-stream', ...payload }),
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ action: guest ? 'guest-chat-stream' : 'chat-stream', ...payload }),
       signal
     });
   } catch (error) {

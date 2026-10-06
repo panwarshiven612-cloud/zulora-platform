@@ -83,10 +83,10 @@ const geminiKeyPerformance = new Map();
 const providerSystemPrompt = options => [
   buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault),
   getGoogleConnectorToolInstructions(),
-  options.connectorContext ? `NATIVE CONNECTORS CONTEXT:\n${options.connectorContext}` : '',
+  options.connectorContext ? `NATIVE CONNECTORS CONTEXT:\n${String(options.connectorContext).slice(0, 1_000)}` : '',
   // MODULE 7: Inject web search grounding
   options.flagship ? FLAGSHIP_SYSTEM_PROMPT : '',
-  options._searchContext ? `\nWEB SEARCH RESULTS (cite inline as [1],[2] markers):\n${options._searchContext}` : '',
+  options._searchContext ? `\nWEB SEARCH RESULTS (cite inline as [1],[2] markers):\n${String(options._searchContext).slice(0, 1_000)}` : '',
 ].filter(Boolean).join('\n\n');
 
 // â”€â”€â”€ MODEL TIERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -325,16 +325,16 @@ async function browserReplicateImage(prompt, aspectRatio) {
 
 // MODULE 1: Restrict chat history to last 6 turns (12 messages) and cap context under 2,000 input tokens (~8,000 chars)
 const buildHistory = (contextMessages = []) => {
-  const msgs = Array.isArray(contextMessages) ? contextMessages : [];
-  const recent = msgs.slice(-12);
-  let totalChars = 0;
+  const recent = (Array.isArray(contextMessages) ? contextMessages : []).slice(-12);
+  let remainingChars = 2_000; // About 500 tokens; the current request receives its own budget.
   const pruned = [];
-  for (let i = recent.length - 1; i >= 0; i--) {
-    const m = recent[i];
-    const text = String(m.content || '').slice(0, 2000);
-    if (totalChars + text.length > 8000 && pruned.length >= 2) break;
-    totalChars += text.length;
-    pruned.unshift({ role: m.role, content: text });
+  for (let i = recent.length - 1; i >= 0 && remainingChars > 0; i -= 1) {
+    const message = recent[i];
+    const content = String(message?.content || '').slice(-remainingChars);
+    if (content) {
+      pruned.unshift({ role: message.role === 'assistant' ? 'assistant' : 'user', content });
+      remainingChars -= content.length;
+    }
   }
   return pruned;
 };
@@ -1036,6 +1036,8 @@ export const apiRouter = {
       options = typeof arg3 === 'object' ? arg3 : {};
     }
 
+    prompt = String(prompt || '').slice(-4_000); // Keep the current request to about 1,000 tokens.
+
     const requestedTier = normalizeModelPreference(options.model);
     const vision = (options.attachments || []).some(item => String(item.mimeType || '').startsWith('image/'));
     const coding = isCodingPrompt(prompt);
@@ -1105,12 +1107,15 @@ export const apiRouter = {
           }, () => {
             emittedStreamTokens = false;
             options.onReset?.();
-          }, route => options.onProvider?.(route), options.signal)
+          }, route => options.onProvider?.(route), options.signal, Boolean(options.guestMode && !options.currentUser?.uid))
           : await requestGeneration('chat', chatPayload, options.currentUser, '/api/ai', options.signal);
         if (serverResult?.text) return await syncUsage(serverResult, 'chat', options.currentUser);
+        if (options.guestMode && !options.currentUser?.uid && !import.meta.env.DEV) {
+          throw new GenerationApiError('The demo service is temporarily unavailable. Please retry in a moment.', 503);
+        }
       } catch (error) {
         if (options.signal?.aborted) throw error;
-        if (isQuotaAuthorityError(error)) throw error;
+        if (isQuotaAuthorityError(error) || (options.guestMode && !import.meta.env.DEV)) throw error;
         if (options.onToken && emittedStreamTokens) {
           options.onReset?.();
           emittedStreamTokens = false;

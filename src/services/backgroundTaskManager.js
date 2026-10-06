@@ -83,6 +83,30 @@ class BackgroundTaskManager {
     return id;
   }
 
+  runTracked(type, label, executeFn) {
+    let resolveResult;
+    let rejectResult;
+    const promise = new Promise((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
+    const id = this.run(type, label, async updateProgress => {
+      try {
+        const result = await executeFn(updateProgress);
+        if (result?.error) throw result.error instanceof Error ? result.error : new Error(String(result.error));
+        if (result?.ok === false || result?.success === false) throw new Error(result.error || 'The background action did not complete.');
+        const connectorFailure = result?.connectorData?.find(item => item?.result?.error)?.result?.error;
+        if (connectorFailure) throw new Error(connectorFailure instanceof Error ? connectorFailure.message : String(connectorFailure));
+        resolveResult(result);
+        return result;
+      } catch (error) {
+        rejectResult(error);
+        throw error;
+      }
+    });
+    return { id, promise };
+  }
+
   getTasks() {
     return Array.from(this.tasks.values());
   }

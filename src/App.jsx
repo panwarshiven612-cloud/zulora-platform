@@ -4,6 +4,7 @@ import LandingPage from './components/LandingPage';
 import SignIn from './pages/SignIn';
 import Dashboard from './pages/Dashboard';
 import GuestGateModal from './components/GuestGateModal';
+import TaskToastHost from './components/TaskToastHost';
 import { useSeoMeta } from './hooks/useSeoMeta';
 
 import SearchEngineView from './components/SearchEngineView';
@@ -13,6 +14,7 @@ const AIStudio = lazy(() => import('./pages/AIStudio'));
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 const WORKSPACE_TABS = {
   '/dashboard': 'chat',
+  '/chat': 'chat',
   '/image': 'image',
   '/video': 'video',
   '/brain': 'brain',
@@ -20,7 +22,7 @@ const WORKSPACE_TABS = {
   '/library': 'library'
 };
 // Routes that require authentication — guests get GuestGateModal
-const AUTH_REQUIRED_PATHS = ['/dashboard', '/chat', '/image', '/video', '/brain', '/vault', '/studio', '/library', '/settings'];
+const AUTH_REQUIRED_PATHS = ['/image', '/video', '/brain', '/vault', '/studio', '/library', '/settings'];
 
 const AppLoading = ({ label = 'Opening your workspace...' }) => (
   <main role="status" aria-live="polite" className="min-h-screen grid place-items-center bg-slate-50 text-slate-700 dark:bg-[#070b14] dark:text-slate-200">
@@ -104,13 +106,13 @@ const AppRouter = () => {
   }, []);
 
   useEffect(() => {
-    // Only redirect away from login/signin/chat when authenticated; root / remains on SearchEngineView
+    // Keep the marketing landing page public and allow a guest demo workspace.
     if (isAuthenticated && ['/signin', '/login', '/chat'].includes(pathname)) {
       navigate('/dashboard');
       return;
     }
     if (loading) return;
-    // Guests can access '/' and '/signin' — block workspace routes and show guest gate
+    // Only media and account tools require sign-in; /dashboard and /chat are demo routes.
     if (!isAuthenticated && AUTH_REQUIRED_PATHS.includes(pathname)) {
       setShowGuestGate(true);
       navigate('/');
@@ -131,15 +133,14 @@ const AppRouter = () => {
     );
   }
 
-  // Root domain route: Search Engine View
+  // Root domain route: full marketing landing page.
   if (pathname === '/') {
-    return <SearchEngineView onNavigate={navigate} onSignIn={() => navigate('/login')} />;
+    return <LandingPage onTryDemo={() => navigate('/dashboard', false)} onSignIn={() => navigate('/login', false)} />;
   }
 
-  // Dashboard owns its auth-loading state, so a direct /dashboard visit mounts
-  // the workspace immediately while authentication finishes in the background.
+  // Dashboard owns its auth-loading state and renders chat in guest mode.
   if (pathname in WORKSPACE_TABS) {
-    if (!isAuthenticated && !loading) {
+    if (!isAuthenticated && !loading && pathname !== '/dashboard' && pathname !== '/chat') {
       return (
         <>
           <SearchEngineView onNavigate={navigate} onSignIn={() => navigate('/login')} />
@@ -151,7 +152,7 @@ const AppRouter = () => {
         </>
       );
     }
-    return <Dashboard initialTab={WORKSPACE_TABS[pathname]} onNavigate={navigate} />;
+    return <Dashboard initialTab={WORKSPACE_TABS[pathname]} onNavigate={navigate} guestMode={!isAuthenticated} />;
   }
 
   if (loading && !isAuthenticated) return <AppLoading label="Checking your secure sign-in..." />;
@@ -177,6 +178,7 @@ const AppRouter = () => {
 export const App = () => (
   <AppErrorBoundary>
     <AppRouter />
+    <TaskToastHost />
   </AppErrorBoundary>
 );
 

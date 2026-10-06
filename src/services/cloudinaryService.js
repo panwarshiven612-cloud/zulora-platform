@@ -17,6 +17,20 @@ const UNSIGNED_PRESET = import.meta.env?.VITE_CLOUDINARY_PRESET || 'zulora_unsig
  */
 export async function uploadToCloudinary(file, folder = '', onProgress, timeoutMs = 90_000) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer;
+    const finish = callback => value => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+    const resolveOnce = finish(resolve);
+    const rejectOnce = finish(reject);
+    const reportProgress = progress => {
+      try { onProgress?.(progress); }
+      catch (error) { console.warn('Cloudinary progress callback failed:', error); }
+    };
     const formData = new FormData();
     formData.append('file', file);
     formData.append('upload_preset', UNSIGNED_PRESET);
@@ -30,12 +44,12 @@ export async function uploadToCloudinary(file, folder = '', onProgress, timeoutM
     xhr.open('POST', `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/${resourceType}/upload`);
 
     xhr.upload.addEventListener('progress', e => {
-      if (e.lengthComputable) onProgress?.({ percent: Math.round((e.loaded / e.total) * 100) });
+      if (e.lengthComputable) reportProgress({ percent: Math.round((e.loaded / e.total) * 100) });
     });
 
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       xhr.abort();
-      reject(new Error(`Cloudinary upload timed out after ${timeoutMs / 1000}s`));
+      rejectOnce(new Error(`Cloudinary upload timed out after ${timeoutMs / 1000}s`));
     }, timeoutMs);
 
     xhr.onload = () => {
@@ -43,8 +57,9 @@ export async function uploadToCloudinary(file, folder = '', onProgress, timeoutM
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
           const data = JSON.parse(xhr.responseText);
-          onProgress?.({ percent: 100 });
-          resolve({
+          if (!data.secure_url) throw new Error('Cloudinary did not return a secure file URL.');
+          reportProgress({ percent: 100 });
+          resolveOnce({
             url: data.secure_url,
             publicId: data.public_id,
             resourceType: data.resource_type,
@@ -53,17 +68,20 @@ export async function uploadToCloudinary(file, folder = '', onProgress, timeoutM
             bytes: data.bytes || file.size,
             format: data.format || ''
           });
-        } catch { reject(new Error('Cloudinary returned invalid JSON')); }
+        } catch (error) {
+          rejectOnce(error instanceof Error ? error : new Error('Cloudinary returned invalid JSON'));
+        }
       } else {
         let msg = `Cloudinary HTTP ${xhr.status}`;
         try { msg = JSON.parse(xhr.responseText)?.error?.message || msg; } catch {}
-        reject(new Error(msg));
+        rejectOnce(new Error(msg));
       }
     };
 
-    xhr.onerror = () => { clearTimeout(timer); reject(new Error('Cloudinary network error')); };
-    xhr.onabort = () => { clearTimeout(timer); reject(new Error('Cloudinary upload aborted')); };
-    xhr.send(formData);
+    xhr.onerror = () => rejectOnce(new Error('Cloudinary network error'));
+    xhr.onabort = () => rejectOnce(new Error('Cloudinary upload aborted'));
+    try { xhr.send(formData); }
+    catch (error) { rejectOnce(error instanceof Error ? error : new Error('Cloudinary upload could not start.')); }
   });
 }
 

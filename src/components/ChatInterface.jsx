@@ -66,6 +66,9 @@ import { checkExtensionConnected, executeCommand } from '../services/browserAgen
 import CodeArtifactRunner from './CodeArtifactRunner';
 import ModelSelector from './ModelSelector';
 import ConnectorsModal from './ConnectorsModal';
+import GuestGateModal from './GuestGateModal';
+import { guestGate } from '../services/guestGate';
+import { backgroundTaskManager } from '../services/backgroundTaskManager';
 
 /* ============================================================
    CONSTANTS
@@ -547,11 +550,9 @@ const WelcomeScreen = ({ user, onSuggestion }) => (
       </div>
       <div className="space-y-1">
         <h1 className="text-2xl md:text-3xl font-black text-slate-900 dark:text-white">
-          Hello, <span className="azure-gradient-text">{user?.displayName?.split(' ')[0] || 'there'}</span> 👋
+          Hello, <span className="azure-gradient-text">{user?.displayName?.split(' ')[0] || 'Guest'}</span> {'\u{1F44B}'} How can Zulora AI help you today?
         </h1>
-        <p className="text-slate-500 dark:text-slate-400 text-sm md:text-base">
-          How can Zulora AI help you today?
-        </p>
+        <p className="text-slate-500 dark:text-slate-400 text-sm md:text-base">Ask a question or choose a prompt to get started.</p>
       </div>
     </div>
 
@@ -584,7 +585,7 @@ const WelcomeScreen = ({ user, onSuggestion }) => (
 /* ============================================================
    MAIN CHAT INTERFACE
    ============================================================ */
-export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpenVoiceAssistant, pendingLibraryAsset, onLibraryAssetConsumed }) => {
+export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpenVoiceAssistant, pendingLibraryAsset, onLibraryAssetConsumed, guestMode = false, onNavigate }) => {
   const { currentUser, isPro, setIsUsageModalOpen, setIsPricingModalOpen, checkUsage, recordUsage } = useAuth();
 
   const [messages, setMessages] = useState([]);
@@ -609,6 +610,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [queryTime, setQueryTime] = useState(null);
+  const [showGuestUpgrade, setShowGuestUpgrade] = useState(false);
+  const [guestUsage, setGuestUsage] = useState(() => guestGate.check());
 
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
@@ -623,8 +626,19 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const speechRef = useRef(null);
   const sendingRef = useRef(false);
   const thinkingTimerRef = useRef(null);
+  const activeStreamCleanupsRef = useRef(new Set());
+  const activeRequestsRef = useRef(new Map());
+  const chatMountedRef = useRef(true);
 
-  useEffect(() => () => clearTimeout(thinkingTimerRef.current), []);
+  useEffect(() => {
+    chatMountedRef.current = true;
+    return () => {
+      chatMountedRef.current = false;
+      clearTimeout(thinkingTimerRef.current);
+      for (const cleanup of activeStreamCleanupsRef.current) cleanup();
+      activeStreamCleanupsRef.current.clear();
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -656,6 +670,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       messagePreviewUrlsRef.current.clear();
     }
     lastActiveSessionIdRef.current = nextSessionId;
+    const sessionIsProcessing = Array.from(activeRequestsRef.current.values()).includes(nextSessionId);
+    setLoading(sessionIsProcessing);
+    setShowThinking(sessionIsProcessing);
   }, [activeSession?.id]);
 
   useEffect(() => () => {
@@ -940,15 +957,19 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     sendingRef.current = true;
     let allowance;
     try {
-      allowance = await checkUsage('chat', { skipTokenLimit: highTierCodeRequest });
+      allowance = currentUser?.uid
+        ? await checkUsage('chat', { skipTokenLimit: highTierCodeRequest })
+        : guestGate.check();
     } catch (error) {
       sendingRef.current = false;
+      if (!currentUser?.uid) setShowGuestUpgrade(true);
       console.warn('Could not check chat usage:', error.message);
       setIsUsageModalOpen(true);
       return;
     }
     if (!allowance.allowed) {
       sendingRef.current = false;
+      if (!currentUser?.uid) setShowGuestUpgrade(true);
       return;
     }
 
@@ -1008,6 +1029,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 
     const newMessages = [...messages, userMsg];
     const sessionId = activeSession?.id || `chat_${Date.now()}`;
+    const isRequestCurrent = () => chatMountedRef.current && lastActiveSessionIdRef.current === sessionId;
     const firstUserPrompt = newMessages.find(message => message.role === 'user')?.displayContent || newMessages.find(message => message.role === 'user')?.content || basePrompt;
     const sessionTitle = activeSession?.title && !['Untitled Chat', 'New Chat'].includes(activeSession.title)
       ? activeSession.title
@@ -1020,18 +1042,22 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       model: modelPreference,
       pending: true
     };
-    const assistantId = (Date.now() + 1).toString();
+    const assistantId = `${Date.now() + 1}_${Math.random().toString(36).slice(2, 8)}`;
+    activeRequestsRef.current.set(assistantId, sessionId);
+    if (!activeSession?.id) lastActiveSessionIdRef.current = sessionId;
+    onUpdateSession?.(pendingSession);
     let streamedText = '';
+    let displayedText = '';
     let streamedProvider = null;
     let thinkingSteps = [];
     let hasLoggedFirstToken = false;
-    const shouldShowThinkingBox = codeGenerationRequest || enableWebSearch || isComputerAutomationIntent(basePrompt)
+    const shouldShowThinkingBox = codeGenerationRequest || enableWebSearch || isComputerAutomationIntent(basePrompt) || isVideoGenIntent(basePrompt)
       || /\b(?:gmail|email|calendar|meeting|sheets|spreadsheet|forms|drive|multi[- ]step|multi[- ]task|multiple actions|and then|after that|step by step|complex|analy[sz]e|architecture|execute|run code)\b/i.test(basePrompt);
     const publishAssistant = (streaming = true) => {
-      if (!shouldShowThinkingBox) return;
+      if (!shouldShowThinkingBox || !isRequestCurrent()) return;
       setMessages(previous => [
         ...previous.filter(message => message.id !== assistantId),
-        { id: assistantId, role: 'assistant', content: streamedText, timestamp: Date.now(), model: streamedProvider?.model || 'Working…', provider: streamedProvider?.provider, thinkingSteps: [...thinkingSteps], streaming }
+        { id: assistantId, role: 'assistant', content: displayedText, timestamp: Date.now(), model: streamedProvider?.model || 'Working…', provider: streamedProvider?.provider, thinkingSteps: [...thinkingSteps], streaming }
       ]);
     };
     const pushThinkingStep = (label, status = 'running', detail = '') => {
@@ -1044,6 +1070,68 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       ].slice(-16);
       publishAssistant();
     };
+    let streamQueue = [];
+    let streamQueueIndex = 0;
+    let typewriterTimer = null;
+    const streamDrainWaiters = [];
+    const publishStreamFrame = () => {
+      if (!isRequestCurrent()) return;
+      setMessages(previous => [
+      ...previous.filter(message => message.id !== assistantId),
+      {
+        id: assistantId,
+        role: 'assistant',
+        content: displayedText,
+        timestamp: Date.now(),
+        model: streamedProvider?.model || 'Generating…',
+        provider: streamedProvider?.provider,
+        thinkingSteps: [...thinkingSteps],
+        streaming: true,
+        streamMetrics: {
+          tokens: Math.ceil(displayedText.length / 4),
+          tokensPerSec: (Math.ceil(displayedText.length / 4) / Math.max(0.1, (Date.now() - startTime) / 1000)).toFixed(1)
+        }
+      }
+      ]);
+    };
+    const stopTypewriter = () => {
+      if (typewriterTimer) {
+        clearInterval(typewriterTimer);
+        typewriterTimer = null;
+      }
+      streamQueue = [];
+      streamQueueIndex = 0;
+      activeStreamCleanupsRef.current.delete(stopTypewriter);
+      streamDrainWaiters.splice(0).forEach(resolve => resolve());
+    };
+    const startTypewriter = () => {
+      if (typewriterTimer) return;
+      activeStreamCleanupsRef.current.add(stopTypewriter);
+      typewriterTimer = setInterval(() => {
+        if (!isRequestCurrent()) {
+          stopTypewriter();
+          return;
+        }
+        if (streamQueueIndex >= streamQueue.length) {
+          stopTypewriter();
+          return;
+        }
+        displayedText += streamQueue[streamQueueIndex++];
+        publishStreamFrame();
+        if (streamQueueIndex >= streamQueue.length) {
+          streamQueue = [];
+          streamQueueIndex = 0;
+          stopTypewriter();
+        } else if (streamQueueIndex > 512) {
+          streamQueue = streamQueue.slice(streamQueueIndex);
+          streamQueueIndex = 0;
+        }
+      }, 12);
+    };
+    const drainTypewriter = () => new Promise(resolve => {
+      if (!typewriterTimer && streamQueueIndex >= streamQueue.length) resolve();
+      else streamDrainWaiters.push(resolve);
+    });
     setMessages(newMessages);
     setInputPrompt('');
     attachments.forEach(file => preparedAttachmentDataRef.current.delete(file));
@@ -1060,7 +1148,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     try {
       // Save the user turn before inference so navigation or reloads do not lose it.
       if (currentUser?.uid) {
-        onUpdateSession?.(pendingSession);
         await firestoreService.saveChatSession(currentUser.uid, sessionId, pendingSession);
         firestoreService.recordUserHistory(currentUser.uid, {
           type: enableWebSearch ? 'search' : 'prompt',
@@ -1079,6 +1166,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         : null;
       pushThinkingStep('Checking active connectors and request context', 'done');
       const detectedConnector = detectConnectorTask(basePrompt);
+      const trackEmailAction = detectedConnector === 'gmail'
+        && /\b(send|draft|compose)\b/i.test(basePrompt)
+        && /\bto\s+[\w.+-]+@[\w.-]+\.[a-z]{2,}/i.test(basePrompt)
+        && /\bsubject\b/i.test(basePrompt)
+        && /\b(body|message|saying)\b/i.test(basePrompt);
       let browserTask = null;
       if (isComputerAutomationIntent(basePrompt) && await checkExtensionConnected()) {
         const today = new Date().toISOString().slice(0, 10);
@@ -1095,7 +1187,15 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             if (currentUser?.uid) setDoc(doc(db, 'users', currentUser.uid), { dailyPluginUsage: { date: today, count: nextRuns, updatedAt: Date.now() } }, { merge: true }).catch(() => {});
           }
           pushThinkingStep('Connecting to the active Computer Plugin');
-          const result = await executeCommand(basePrompt, currentUser, entry => pushThinkingStep(entry.label, entry.status, entry.detail));
+          let result;
+          const automationTask = backgroundTaskManager.runTracked('automation', `Computer action: ${basePrompt.slice(0, 64)}`, async updateProgress => {
+            updateProgress(5);
+            const actionResult = await executeCommand(basePrompt, currentUser, entry => pushThinkingStep(entry.label, entry.status, entry.detail));
+            updateProgress(100);
+            return actionResult;
+          });
+          try { result = await automationTask.promise; }
+          catch (error) { result = { ok: false, error: error.message || 'Computer action failed.' }; }
           browserTask = {
             handled: true,
             text: result?.ok || result?.success
@@ -1109,13 +1209,21 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       }
       const modelToolProvider = ['gmail', 'calendar', 'sheets', 'forms', 'drive'].includes(detectedConnector)
         && connectorManager.getActiveGoogleProviders().includes(detectedConnector);
-      const connectorTask = browserTask?.handled || modelToolProvider || detectedConnector === 'drive' ? null : await executeConnectorTask(basePrompt, {
+      const executeNativeConnector = () => executeConnectorTask(basePrompt, {
         onStatus: status => {
           setShowThinking(Boolean(status));
           if (status) pushThinkingStep('Executing a connected service action');
         },
         onLog: entry => pushThinkingStep(entry.label, entry.status, entry.detail)
       });
+      const connectorTask = browserTask?.handled || modelToolProvider || detectedConnector === 'drive' ? null : trackEmailAction
+        ? await backgroundTaskManager.runTracked('email', `Gmail action: ${basePrompt.slice(0, 64)}`, async updateProgress => {
+          updateProgress(5);
+          const result = await executeNativeConnector();
+          updateProgress(100);
+          return result;
+        }).promise
+        : await executeNativeConnector();
       const driveTask = browserTask?.handled || connectorTask?.handled
         ? null
         : await executeDriveChatIntent(basePrompt, { files: attachments });
@@ -1129,6 +1237,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       const hasImageAttach = attachmentPayloads.some(p => p.mimeType?.startsWith('image/'));
       const imageGenRequest = !directTask && (isImageGenIntent(basePrompt) || isImageEditIntent(basePrompt, hasImageAttach));
       const videoGenRequest = !directTask && !imageGenRequest && isVideoGenIntent(basePrompt);
+
+      if (guestMode && !currentUser?.uid && (imageGenRequest || videoGenRequest)) {
+        setShowGuestUpgrade(true);
+        return;
+      }
 
       if (imageGenRequest) {
         pushThinkingStep('Generating image with AI 🎨', 'running');
@@ -1146,32 +1259,46 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             generatedImageUrl: imgUrl, queryTime: elapsed,
             thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps] : undefined
           };
-          const finalMessages = [...newMessages, aiMsg];
-          setMessages(finalMessages);
+          const finalMessages = [...newMessages.filter(message => message.id !== assistantId), aiMsg];
+          if (isRequestCurrent()) setMessages(previous => [...previous.filter(message => message.id !== assistantId), aiMsg]);
           await recordUsage('image', false, 0);
           if (currentUser?.uid) {
             await firestoreService.saveChatSession(currentUser.uid, sessionId, { id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: aiMsg.model, pending: false }).catch(console.warn);
           }
-          onUpdateSession?.({ id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: aiMsg.model, pending: false });
+          if (isRequestCurrent()) onUpdateSession?.({ id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: aiMsg.model, pending: false });
           return;
         } catch (imgErr) {
           pushThinkingStep('Image generation failed', 'error', imgErr.message);
           // fall through to LLM
-        } finally {
-          setLoading(false); sendingRef.current = false; setShowThinking(false);
         }
       }
 
       if (videoGenRequest) {
         pushThinkingStep('Generating video with AI 🎬', 'running', '0%');
         try {
-          const vidResult = await apiRouter.generateVideo(basePrompt, {
-            currentUser,
-            onProgress: progress => {
-              const pct = typeof progress?.percent === 'number' ? `${progress.percent}%` : (progress?.phase || 'Rendering frames');
-              pushThinkingStep(progress?.provider || 'Generating video frames', 'running', pct);
+          let videoProgress = 3;
+          const videoTask = backgroundTaskManager.runTracked('video', `Video generation: ${basePrompt.slice(0, 64)}`, async updateProgress => {
+            const heartbeat = setInterval(() => {
+              videoProgress = Math.min(91, videoProgress + 1);
+              updateProgress(videoProgress);
+              pushThinkingStep('Rendering video', 'running', `${videoProgress}%`);
+            }, 1_500);
+            try {
+              return await apiRouter.generateVideo(basePrompt, {
+                currentUser,
+                onProgress: progress => {
+                  const phase = String(progress?.phase || '').toLowerCase();
+                  const phaseProgress = phase.includes('ready') ? 100 : phase.includes('playback') ? 92 : phase.includes('another provider') ? 36 : phase.includes('generating') ? 18 : 6;
+                  videoProgress = Math.max(videoProgress, Number(progress?.percent) || phaseProgress);
+                  updateProgress(videoProgress);
+                  pushThinkingStep(progress?.provider || 'Generating video frames', 'running', `${videoProgress}%`);
+                }
+              });
+            } finally {
+              clearInterval(heartbeat);
             }
           });
+          const vidResult = await videoTask.promise;
           const vidUrl = vidResult?.url || vidResult?.videoUrl;
           const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
           setQueryTime(elapsed);
@@ -1184,32 +1311,30 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             generatedVideoUrl: vidUrl, queryTime: elapsed,
             thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps] : undefined
           };
-          const finalMessages = [...newMessages, aiMsg];
-          setMessages(finalMessages);
+          const finalMessages = [...newMessages.filter(message => message.id !== assistantId), aiMsg];
+          if (isRequestCurrent()) setMessages(previous => [...previous.filter(message => message.id !== assistantId), aiMsg]);
           await recordUsage('video', false, 0);
           if (currentUser?.uid) {
             await firestoreService.saveChatSession(currentUser.uid, sessionId, { id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: aiMsg.model, pending: false }).catch(console.warn);
           }
-          onUpdateSession?.({ id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: aiMsg.model, pending: false });
+          if (isRequestCurrent()) onUpdateSession?.({ id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: aiMsg.model, pending: false });
           return;
         } catch (vidErr) {
           pushThinkingStep('Video generation failed', 'error', vidErr.message);
-        } finally {
-          setLoading(false); sendingRef.current = false; setShowThinking(false);
         }
       }
 
       pushThinkingStep(enableWebSearch ? 'Searching the web and grounding the answer' : 'Sending request to the model');
-      const result = directTask
-        ? {
+      const directResult = directTask ? {
           text: directTask.text,
           model: browserTask?.handled ? 'Computer Plugin' : connectorTask?.handled ? 'Zulora Connectors' : 'Zulora Drive',
           provider: browserTask?.handled ? 'Browser Automation' : connectorTask?.handled ? 'Native API Connectors' : 'Zulora Drive Tools',
           connectorData: directTask.data,
           usage: { tracked: false, processedTokens: 0 },
           tokenUsage: { totalTokens: 0 }
-        }
-        : await apiRouter.generateChat(
+        } : null;
+      let updateCodeTaskProgress = () => {};
+      const generateModelResponse = () => apiRouter.generateChat(
         driveTask?.useLLM ? `${fullPrompt}\n\n${driveTask.context}` : fullPrompt,
         contextMessages,
         {
@@ -1220,68 +1345,79 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           contextMemory,
           aiBrain,
           userVault,
+          guestMode: Boolean(guestMode && !currentUser?.uid),
           connectorContext,
           attachments: [...attachmentPayloads, ...(driveTask?.attachments || [])],
           onProgress: entry => pushThinkingStep(entry.label, entry.status, entry.detail),
           onToken: token => {
             if (!token) return;
             streamedText += token;
+            updateCodeTaskProgress(Math.min(95, Math.max(5, Math.floor(streamedText.length / 100))));
+            if (!isRequestCurrent()) return;
+            streamQueue.push(...Array.from(token));
+            startTypewriter();
             if (!hasLoggedFirstToken) {
               hasLoggedFirstToken = true;
               pushThinkingStep('Receiving streamed response', 'running');
             }
             clearTimeout(thinkingTimerRef.current);
             setShowThinking(false);
-            setMessages(prev => [
-              ...prev.filter(m => m.id !== assistantId),
-              {
-                id: assistantId,
-                role: 'assistant',
-                content: streamedText,
-                timestamp: Date.now(),
-                model: streamedProvider?.model || 'Generating…',
-                provider: streamedProvider?.provider,
-                thinkingSteps: [...thinkingSteps],
-                streaming: true,
-                streamMetrics: {
-                  tokens: Math.ceil(streamedText.length / 4),
-                  tokensPerSec: (Math.ceil(streamedText.length / 4) / Math.max(0.1, (Date.now() - startTime) / 1000)).toFixed(1)
-                }
-              }
-            ]);
           },
           onProvider: route => {
             streamedProvider = route;
             pushThinkingStep(`Connected to ${route.provider || 'model provider'}`, 'done');
-            if (!streamedText) return;
+            if (!displayedText || !isRequestCurrent()) return;
             setMessages(prev => [
               ...prev.filter(m => m.id !== assistantId),
               {
                 id: assistantId,
                 role: 'assistant',
-                content: streamedText,
+                content: displayedText,
                 timestamp: Date.now(),
                 model: route.model || 'Generating…',
                 provider: route.provider,
                 thinkingSteps: [...thinkingSteps],
                 streaming: true,
                 streamMetrics: {
-                  tokens: Math.ceil(streamedText.length / 4),
-                  tokensPerSec: (Math.ceil(streamedText.length / 4) / Math.max(0.1, (Date.now() - startTime) / 1000)).toFixed(1)
+                  tokens: Math.ceil(displayedText.length / 4),
+                  tokensPerSec: (Math.ceil(displayedText.length / 4) / Math.max(0.1, (Date.now() - startTime) / 1000)).toFixed(1)
                 }
               }
             ]);
           },
           onReset: () => {
             streamedText = '';
+            displayedText = '';
             streamedProvider = null;
+            stopTypewriter();
+            if (isRequestCurrent()) setMessages(previous => previous.filter(message => message.id !== assistantId));
             clearTimeout(thinkingTimerRef.current);
-            setShowThinking(true);
-            thinkingTimerRef.current = setTimeout(() => setShowThinking(false), 7000);
+            if (isRequestCurrent()) {
+              setShowThinking(true);
+              thinkingTimerRef.current = setTimeout(() => setShowThinking(false), 7000);
+            }
             pushThinkingStep('Retrying with the next available provider');
           },
         }
       );
+
+      const result = directTask ? directResult : codeGenerationRequest
+        ? await backgroundTaskManager.runTracked('code', `Code generation: ${basePrompt.slice(0, 64)}`, updateProgress => {
+          updateCodeTaskProgress = updateProgress;
+          updateCodeTaskProgress(2);
+          return generateModelResponse();
+        }).promise
+        : trackEmailAction && modelToolProvider
+        ? await backgroundTaskManager.runTracked('email', `Gmail action: ${basePrompt.slice(0, 64)}`, async updateProgress => {
+          updateProgress(5);
+          const response = await generateModelResponse();
+          const emailAction = response?.connectorData?.find(item => /^(send_email|send_gmail)$/.test(item?.name || ''));
+          if (!emailAction) throw new Error('The Gmail connector did not confirm that the email action completed.');
+          updateProgress(100);
+          return response;
+        }).promise
+        : await generateModelResponse();
+      await drainTypewriter();
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       setQueryTime(elapsed);
@@ -1303,7 +1439,20 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         queryTime: elapsed,
       };
 
+      if (!isRequestCurrent() && currentUser?.uid) {
+        const backgroundSession = {
+          id: sessionId,
+          title: sessionTitle,
+          messages: [...newMessages.filter(message => message.id !== assistantId), aiMsg],
+          updatedAt: Date.now(),
+          model: result.model,
+          pending: false
+        };
+        firestoreService.saveChatSession(currentUser.uid, sessionId, backgroundSession).catch(console.warn);
+      }
+
       setMessages(prev => {
+        if (!isRequestCurrent()) return prev;
         const finalMessages = [...prev.filter(m => m.id !== assistantId), aiMsg];
         const updatedSession = {
           id: sessionId,
@@ -1325,6 +1474,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         ? 0
         : Number(result.tokenUsage?.totalTokens || result.usage?.processedTokens) || estimatedTokens;
       await recordUsage('chat', Boolean(result.usage?.tracked), processedTokens);
+      if (guestMode && !currentUser?.uid) {
+        const status = guestGate.consume();
+        setGuestUsage(status);
+        if (!status.allowed) setShowGuestUpgrade(true);
+      }
       if (currentUser?.uid) firestoreService.recordQueryContext(currentUser.uid, basePrompt, enableWebSearch ? 'search' : 'chat');
       const generatedCode = Array.from(String(result.text || '').matchAll(/```([^\r\n]*)\r?\n([\s\S]*?)```/g))
         .map(([, language, source]) => `\`\`\`${language.trim()}\n${source.replace(/\n$/, '')}\n\`\`\``)
@@ -1336,13 +1490,18 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       }
 
     } catch (err) {
+      stopTypewriter();
       const error = err && typeof err === 'object'
         ? err
         : new Error(String(err || 'Unknown error'));
       console.error('Chat error:', error);
       if (error.status === 429 || (error.payload?.upgradeRequired && error.payload?.usage?.blocked)) {
-        setMessages(prev => prev.filter(m => m.id !== assistantId));
-        setIsUsageModalOpen(true);
+        if (isRequestCurrent()) setMessages(prev => prev.filter(m => m.id !== assistantId));
+        if (guestMode && !currentUser?.uid) {
+          setGuestUsage({ allowed: false, remaining: 0, count: guestGate.GUEST_LIMIT });
+          setShowGuestUpgrade(true);
+        }
+        else setIsUsageModalOpen(true);
         return;
       }
       if (error.status === 403) {
@@ -1360,7 +1519,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       if (streamedText) {
         errorMsg.content = `${streamedText}\n\n_Response interrupted: ${error.message || 'the connection ended before completion.'}_`;
       }
-      setMessages(prev => {
+      if (isRequestCurrent()) setMessages(prev => {
         const failedMessages = [...prev.filter(m => m.id !== assistantId), errorMsg];
         if (currentUser?.uid) {
           const failedSession = { ...pendingSession, messages: failedMessages, pending: false, updatedAt: Date.now() };
@@ -1371,8 +1530,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       });
     } finally {
       clearTimeout(thinkingTimerRef.current);
-      setShowThinking(false);
-      setLoading(false);
+      activeRequestsRef.current.delete(assistantId);
+      const activeSessionId = lastActiveSessionIdRef.current;
+      const sessionStillProcessing = Array.from(activeRequestsRef.current.values()).includes(activeSessionId);
+      if (isRequestCurrent()) setShowThinking(sessionStillProcessing);
+      setLoading(sessionStillProcessing);
       sendingRef.current = false;
     }
   }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, buildContextMessages, getAttachmentDataUrl, isPro, checkUsage, recordUsage, setIsUsageModalOpen, setIsPricingModalOpen, onUpdateSession, connectorContext]);
@@ -1388,7 +1550,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     <div className="flex-1 min-h-0 min-w-0 flex flex-col h-full overflow-hidden relative">
 
       <header className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200/60 bg-white/55 px-3 py-2 dark:border-slate-800/70 dark:bg-slate-950/25 sm:px-5">
-        <div className="min-w-0"><p className="truncate text-xs font-bold text-slate-800 dark:text-slate-200">Zulora AI Chat</p><p className="hidden text-[10px] text-slate-400 sm:block">Native connectors and media tools are ready in this workspace</p></div>
+        <div className="min-w-0"><p className="truncate text-xs font-bold text-slate-800 dark:text-slate-200">Zulora AI Chat</p><p className="hidden text-[10px] text-slate-400 sm:block">{guestMode ? `${guestUsage.remaining} free demo questions remaining` : 'Native connectors and media tools are ready in this workspace'}</p></div>
       </header>
 
       {/* Messages Area */}
@@ -1398,7 +1560,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-4 md:px-6 py-4 sm:py-6 space-y-6 scroll-smooth"
       >
         {messages.length === 0 ? (
-          <WelcomeScreen user={{ displayName: currentUser?.displayName || 'Shiven' }} onSuggestion={(q) => sendMessage(q)} />
+          <WelcomeScreen user={{ displayName: currentUser?.displayName || (guestMode ? 'Guest' : 'Shiven') }} onSuggestion={(q) => sendMessage(q)} />
         ) : (
           <>
             {messages.map((msg, i) => (
@@ -1493,7 +1655,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             onPaste={handlePaste}
             placeholder="Ask Zulora AI anything... (Shift+Enter for new line)"
             rows={1}
-            disabled={loading}
             className="w-full bg-transparent px-4 pt-3.5 pb-2 text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-600 resize-none outline-none leading-relaxed"
             style={{ maxHeight: '180px' }}
           />
@@ -1617,6 +1778,12 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         <div aria-hidden="true" className="fixed inset-0 z-40" onClick={() => setShowModelMenu(false)} />
       )}
       {showConnectorsModal && <ConnectorsModal currentUser={currentUser} reconnectProvider={connectorReauthProvider} onClose={() => { setShowConnectorsModal(false); setConnectorReauthProvider(''); }} />}
+      {guestMode && showGuestUpgrade && <GuestGateModal
+        onSignIn={() => { setShowGuestUpgrade(false); onNavigate?.('/login'); }}
+        onClose={() => setShowGuestUpgrade(false)}
+        reason="Sign in with Google to unlock unlimited access"
+        limitReached={!guestUsage.allowed}
+      />}
     </div>
   );
 };
