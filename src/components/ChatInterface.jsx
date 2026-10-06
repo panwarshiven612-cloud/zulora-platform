@@ -94,8 +94,10 @@ const normalizeAttachmentFile = file => {
 };
 const isImageAttachment = file => attachmentMimeType(file).startsWith('image/');
 const isPdfAttachment = file => attachmentMimeType(file) === 'application/pdf';
-const isComputerAutomationIntent = prompt => /\b(?:whatsapp|browser|webpage|website|tab|dom|button|input|text field|element|current page|web app)\b/i.test(String(prompt || ''))
-  && /\b(?:open|navigate|go to|click|type|fill|send|message|search|select|press)\b/i.test(String(prompt || ''));
+const isComputerScanToolIntent = prompt => /\b(?:scan|inspect|check)\b.{0,40}\b(?:my\s+)?(?:computer|system|browser)\b/i.test(String(prompt || ''));
+const isComputerAutomationIntent = prompt => !isComputerScanToolIntent(prompt)
+  && /\b(?:whatsapp|browser|webpage|website|tab|dom|button|input|text field|element|current page|web app|computer)\b/i.test(String(prompt || ''))
+  && /\b(?:open|launch|navigate|go to|click|type|fill|send|message|search|select|press|close|switch|scroll|download|export)\b/i.test(String(prompt || ''));
 
 // MODULE 2: In-chat media generation intent detection
 const IMAGE_EDIT_REGEX = /\b(?:edit|modify|change|update|transform|enhance|improve|fix|crop|resize|adjust|remove|add)\s+(?:this\s+)?(?:image|photo|picture|background)\b/i;
@@ -388,7 +390,11 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
           <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">
             {isUser ? 'You' : 'Zulora AI'}
           </span>
-          {message.model && !isUser && (
+          {message.connectorBadge && !isUser ? (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium border bg-sky-100 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border-sky-200/60 dark:border-sky-800/40">
+              {message.connectorBadge}
+            </span>
+          ) : message.model && !isUser && (
             <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${String(message.provider || '').toLowerCase().includes('groq')
               ? 'bg-orange-100 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300 border-orange-200/60 dark:border-orange-800/40'
               : 'bg-sky-100 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 border-sky-200/50 dark:border-sky-800/40'}`}>
@@ -1165,7 +1171,17 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         && /\bsubject\b/i.test(basePrompt)
         && /\b(body|message|saying)\b/i.test(basePrompt);
       let browserTask = null;
-      if (isComputerAutomationIntent(basePrompt) && await checkExtensionConnected()) {
+      if (isComputerAutomationIntent(basePrompt)) {
+        if (!await checkExtensionConnected()) {
+          browserTask = {
+            handled: true,
+            executed: false,
+            provider: 'Computer Plugin',
+            error: 'The Zulora Computer Plugin is not connected.',
+            text: 'Computer action not completed: connect the Zulora Computer Plugin to run browser automation.'
+          };
+          pushThinkingStep('Computer Plugin is not connected', 'error');
+        } else {
         const today = new Date().toISOString().slice(0, 10);
         const lastRunDate = localStorage.getItem('zulora_plugin_last_date');
         const priorRuns = lastRunDate === today ? Math.max(0, Number(localStorage.getItem('zulora_plugin_daily_count')) || 0) : 0;
@@ -1191,6 +1207,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           catch (error) { result = { ok: false, error: error.message || 'Computer action failed.' }; }
           browserTask = {
             handled: true,
+            executed: result?.ok === true && result?.status === 'done',
             text: result?.ok || result?.success
               ? (result.text || result.message || 'The Computer Plugin completed the requested browser actions.')
               : `The Computer Plugin could not complete the browser action: ${result?.error || 'No completion response was received.'}`,
@@ -1198,6 +1215,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             provider: 'Computer Plugin'
           };
           pushThinkingStep('Browser automation finished', result?.ok || result?.success ? 'done' : 'error', result?.error || '');
+        }
         }
       }
       const modelToolProvider = ['gmail', 'calendar', 'sheets', 'forms', 'drive'].includes(detectedConnector)
@@ -1323,6 +1341,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           model: browserTask?.handled ? 'Computer Plugin' : connectorTask?.handled ? 'Zulora Connectors' : 'Zulora Drive',
           provider: browserTask?.handled ? 'Browser Automation' : connectorTask?.handled ? 'Native API Connectors' : 'Zulora Drive Tools',
           connectorData: directTask.data,
+          connectorBadge: directTask.executed === true
+            ? browserTask?.handled ? '💻 Computer Agent Plugin'
+              : directTask.provider === 'gmail' ? '📧 Gmail Connector'
+                : directTask.provider === 'calendar' ? '📅 Google Calendar Connector' : ''
+            : '',
           usage: { tracked: false, processedTokens: 0 },
           tokenUsage: { totalTokens: 0 }
         } : null;
@@ -1417,20 +1440,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       thinkingSteps = thinkingSteps.map(step => step.status === 'running' ? { ...step, status: 'done' } : step);
       let rawResponseText = result.text || streamedText || 'I encountered an issue generating a response. Please try again.';
 
-      // MODULE 2: Elimination of Unnecessary Raw HTML Code Dumps
-      const isEmailSendIntent = /\b(?:send|email|mail|dispatch|deliver)\b/i.test(basePrompt) && /\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b/i.test(basePrompt);
-      const explicitlyAskedForCode = /\b(?:show|give|display|print|view|see)\s+(?:me\s+)?(?:the\s+)?(?:code|html|template|source)\b/i.test(basePrompt);
-      if (isEmailSendIntent && !explicitlyAskedForCode) {
-        const recipientMatch = basePrompt.match(/\b([\w.+-]+@[\w.-]+\.[a-z]{2,})\b/i);
-        const recipient = recipientMatch ? recipientMatch[1] : 'recipient';
-        if (/<!DOCTYPE html>/i.test(rawResponseText) || /```html[\s\S]*?```/i.test(rawResponseText)) {
-          rawResponseText = `### 📬 Executive Email Delivery Report\n- **Step 1:** 🎨 Designing visually rich HTML email... **[DONE]**\n- **Step 2:** 📧 Connecting to Gmail API with UTF-8 encoding... **[DONE]**\n- **Step 3:** 🚀 Email delivered successfully to **${recipient}**! **[DONE]**\n\n*Your email has been constructed with responsive HTML styling, encoded in UTF-8, and delivered successfully via the Gmail API.*`;
-          pushThinkingStep('🎨 Designing visually rich HTML email...', 'done');
-          pushThinkingStep('📧 Connecting to Gmail API with UTF-8 encoding...', 'done');
-          pushThinkingStep(`🚀 Email delivered successfully to ${recipient}!`, 'done');
-        }
-      }
-
       const responseText = attachWebCitations(rawResponseText, result.sources || []);
 
       const aiMsg = {
@@ -1446,6 +1455,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         needsReconnect: Boolean(result.needsReconnect || directTask?.needsReconnect),
         connectorProvider: result.connectorProvider || directTask?.provider || '',
         queryTime: elapsed,
+        // MODULE 2: Dynamic connector badge from real API execution
+        connectorBadge: result.connectorBadge || '',
+        connectorData: result.connectorData || [],
       };
 
       if (!isRequestCurrent() && currentUser?.uid) {

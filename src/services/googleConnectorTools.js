@@ -1,4 +1,5 @@
 import connectorManager from './connectorManager';
+import { scanComputerSystem } from './browserAgentEngine';
 
 const text = description => ({ type: 'STRING', description });
 const integer = description => ({ type: 'INTEGER', description });
@@ -6,6 +7,10 @@ const rowValues = { type: 'ARRAY', description: 'Rows to append; each row is an 
 const fn = (provider, description, properties, required = []) => ({ provider, description, parameters: { type: 'OBJECT', properties, ...(required.length ? { required } : {}) } });
 
 const GOOGLE_FUNCTIONS = Object.freeze({
+  gmail_send_email: fn('gmail', 'Send an email only when the user explicitly asks to send it. The function succeeds only after Gmail returns HTTP 200 with a message ID and thread ID. The backend adds a small Zulora AI footer. Never claim delivery unless this function succeeds.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Email body as plain text or HTML; do not return source code unless the user asks for code') }, ['to', 'subject', 'body']),
+  gmail_read_inbox: fn('gmail', 'Read real Gmail inbox messages using the connected account.', { query: text('Gmail search query, defaults to in:inbox'), max_results: integer('Number of messages, from 1 to 20') }),
+  calendar_create_event: fn('calendar', 'Create a Google Calendar event and return the event ID from the Calendar API. Use ISO 8601 times with timezone.', { title: text('Event title'), start_time: text('ISO 8601 start time with timezone'), end_time: text('ISO 8601 end time with timezone'), description: text('Optional event description') }, ['title', 'start_time', 'end_time']),
+  computer_scan_system: fn('computer', 'Ask the installed Zulora Computer Plugin over its live extension IPC bridge for a browser and active-tab scan. Report only the returned scan fields; never simulate a scan.', { scope: { type: 'STRING', enum: ['active_browser'], description: 'Scan the connected browser agent and the active tab.' } }, ['scope']),
   send_email: fn('gmail', 'Send an email from the active Gmail account. Only call when the user explicitly asks to send it. Construct rich HTML in the body silently.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Email body (HTML or text)') }, ['to', 'subject', 'body']),
   send_rich_email: fn('gmail', 'Construct and send rich HTML emails in the background using UTF-8 encoding. Do not output raw HTML in final chat response unless asked.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Rich HTML email body') }, ['to', 'subject', 'body']),
   reply_and_draft: fn('gmail', 'Automatically compose drafts and reply to email threads based on user directive.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Email body (HTML or text)'), thread_id: text('Optional thread ID to reply to'), is_draft: { type: 'BOOLEAN', description: 'True to save as draft instead of sending' } }, ['to', 'subject', 'body']),
@@ -43,19 +48,38 @@ const GOOGLE_FUNCTIONS = Object.freeze({
   read_sheet_data: fn('sheets', 'Read a Google Sheet range.', { spreadsheet_id: text('Spreadsheet ID'), range: text('A1 range') }, ['spreadsheet_id', 'range'])
 });
 
-export function getGoogleConnectorFunctionDeclarations(activeProviders = connectorManager.getActiveGoogleProviders()) {
+export function getGoogleConnectorFunctionDeclarations(activeProviders = connectorManager.getActiveGoogleProviders(), prompt = '') {
   const providers = new Set(activeProviders);
+  const text = String(prompt || '').toLowerCase();
+  const requestedProvider = providers.has('gmail') && /\b(?:gmail|inbox|e-?mails?|mail messages?)\b/.test(text) ? 'gmail'
+    : providers.has('calendar') && /\b(?:calendar|events?|meetings?|appointments?)\b/.test(text) ? 'calendar'
+      : providers.has('sheets') && /\b(?:spreadsheet|google\s*sheets?)\b/.test(text) ? 'sheets'
+        : providers.has('forms') && /\b(?:google\s+)?forms?\b/.test(text) ? 'forms'
+          : providers.has('drive') && /\bdrive\b/.test(text) ? 'drive'
+            : providers.has('computer') && /\b(?:computer|system|browser)\b/.test(text) ? 'computer' : '';
+  const preferredNames = requestedProvider === 'gmail'
+    ? /\b(?:draft|compose)\b/.test(text) ? ['reply_and_draft'] : /\b(?:send|email|mail)\b/.test(text) ? ['gmail_send_email'] : ['gmail_read_inbox']
+    : requestedProvider === 'calendar'
+      ? /\b(?:delete|remove|cancel)\b/.test(text) ? ['delete_event'] : /\b(?:create|book|schedule|add)\b/.test(text) ? ['calendar_create_event', 'schedule_events'] : ['analyze_calendar', 'list_events']
+      : requestedProvider === 'sheets'
+        ? /\b(?:append|write|update|add|insert)\b/.test(text) ? ['append_row'] : /\bcreate\b/.test(text) ? ['create_sheet'] : ['read_range']
+        : requestedProvider === 'forms'
+          ? /\b(?:create|make|build)\b/.test(text) ? ['create_form'] : ['get_form', 'read_form_responses']
+          : requestedProvider === 'drive'
+            ? /\b(?:download|open)\b/.test(text) ? ['download_file'] : ['list_drive', 'manage_files']
+            : requestedProvider === 'computer' ? ['computer_scan_system'] : [];
+  if (!requestedProvider) return [];
   return Object.entries(GOOGLE_FUNCTIONS)
-    .filter(([, declaration]) => providers.has(declaration.provider))
+    .filter(([name, declaration]) => providers.has(declaration.provider) && preferredNames.includes(name))
     .map(([name, declaration]) => ({ name, description: declaration.description, parameters: declaration.parameters }));
 }
 
 export function getGoogleConnectorToolInstructions(activeProviders = connectorManager.getActiveGoogleProviders()) {
   const providers = new Set(activeProviders);
-  const labels = ['gmail', 'calendar', 'sheets', 'forms', 'drive'].filter(provider => providers.has(provider))
-    .map(provider => ({ gmail: 'Gmail', calendar: 'Google Calendar', sheets: 'Google Sheets', forms: 'Google Forms', drive: 'Google Drive' })[provider]);
+  const labels = ['gmail', 'calendar', 'sheets', 'forms', 'drive', 'computer'].filter(provider => providers.has(provider))
+    .map(provider => ({ gmail: 'Gmail', calendar: 'Google Calendar', sheets: 'Google Sheets', forms: 'Google Forms', drive: 'Google Drive', computer: 'the Zulora Computer Plugin' })[provider]);
   if (!labels.length) return '';
-  return `You are equipped with active connectors for ${labels.join(', ')}. When a request asks you to send or read email, analyze inbox, compose drafts, schedule or list or analyze calendar events, read or write Sheets, inspect Forms, or find/download/manage Drive files, call the matching connector function immediately using the user's active session. When sending or drafting emails, construct clean, professional HTML in the body. Do NOT output raw HTML in your chat response unless the user explicitly requested "show me the code". Never claim you lack access when a connector function is available.`;
+  return `You are equipped with active connectors for ${labels.join(', ')}. When a request asks you to send or read email, analyze inbox, compose drafts, schedule or list or analyze calendar events, read or write Sheets, inspect Forms, find/download/manage Drive files, or scan the computer, call the matching connector function using the live connected API or extension. Never claim an action succeeded until its function result confirms success. When sending or drafting emails, construct clean, professional HTML in the body. Do NOT output raw HTML in your chat response unless the user explicitly requested source code. Never claim you lack access when a connector function is available.`;
 }
 
 export function getGoogleConnectorFunctionProvider(name) {
@@ -74,7 +98,7 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
   try {
     let result;
     switch (name) {
-      case 'send_email': case 'send_gmail': case 'send_rich_email':
+      case 'gmail_send_email': case 'send_email': case 'send_gmail': case 'send_rich_email':
         result = await connectorManager.sendGmailMessage({ to: requiredText(args, 'to'), subject: requiredText(args, 'subject'), body: requiredText(args, 'body') }); break;
       case 'reply_and_draft':
         result = await connectorManager.replyAndDraft({
@@ -86,12 +110,14 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
         }); break;
       case 'analyze_inbox':
         result = await connectorManager.analyzeInbox({ query: String(args.query || 'in:inbox'), max_results: Math.min(50, Math.max(1, Number(args.max_results) || 10)) }); break;
-      case 'read_inbox': case 'summarize_emails': case 'read_emails':
+      case 'gmail_read_inbox': case 'read_inbox': case 'summarize_emails': case 'read_emails':
         result = await connectorManager.readEmails({ query: String(args.query || 'in:inbox'), max_results: Math.min(20, Math.max(1, Number(args.max_results) || 5)) }); break;
       case 'search_threads':
         result = await connectorManager.searchGmailThreads({ query: String(args.query || 'in:inbox'), max_results: args.max_results }); break;
-      case 'create_event': case 'create_calendar_event':
+      case 'calendar_create_event': case 'create_event': case 'create_calendar_event':
         result = await connectorManager.createCalendarEvent({ title: requiredText(args, 'title'), start_time: requiredText(args, 'start_time'), end_time: requiredText(args, 'end_time'), description: String(args.description || '') }); break;
+      case 'computer_scan_system':
+        result = await scanComputerSystem(); break;
       case 'schedule_events':
         result = await connectorManager.scheduleEvents({
           events: args.events,
@@ -144,5 +170,5 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
 }
 
 export function isGoogleReconnectError(error) {
-  return /HTTP\s*(401|403)|needs to be connected again|reconnect|token.{0,20}(expired|invalid)/i.test(String(error?.message || error || ''));
+  return error?.code === 'OAUTH_REQUIRED' || /HTTP\s*(401|403)|needs to be connected again|reconnect|token.{0,20}(expired|invalid)|OAuth Permission Required/i.test(String(error?.message || error || ''));
 }

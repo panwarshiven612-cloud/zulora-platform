@@ -41,12 +41,18 @@ async function readRecentGmail(count) {
     'gmail',
     `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${count}&q=${escapeQuery('in:inbox')}`
   );
+  if (!result || typeof result !== 'object' || (result.messages !== undefined && !Array.isArray(result.messages))
+    || (!Array.isArray(result.messages) && !Number.isFinite(Number(result.resultSizeEstimate)))) {
+    throw new Error('Gmail returned an invalid inbox response. No inbox result is reported.');
+  }
   const ids = (result.messages || []).slice(0, count);
   const messages = await Promise.all(ids.map(async item => {
+    if (!item?.id) throw new Error('Gmail returned a message without an ID. No inbox result is reported.');
     const message = await connectorManager.apiFetch(
       'gmail',
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(item.id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`
     );
+    if (!message?.id || !message?.threadId) throw new Error('Gmail returned an invalid message record. No inbox result is reported.');
     const headers = message.payload?.headers || [];
     return {
       id: message.id,
@@ -140,6 +146,10 @@ export async function listUpcomingCalendarEvents(maxResults = 8) {
     'calendar',
     `https://www.googleapis.com/calendar/v3/calendars/primary/events?${query}`
   );
+  if (!result || typeof result !== 'object' || (result.items !== undefined && !Array.isArray(result.items))
+    || (!Array.isArray(result.items) && result.kind !== 'calendar#events')) {
+    throw new Error('Google Calendar returned an invalid event-list response. No schedule result is reported.');
+  }
   return result.items || [];
 }
 
@@ -210,9 +220,11 @@ export function parseCalendarEvent(prompt) {
 }
 
 export async function createGoogleCalendarEvent(event) {
-  return connectorManager.apiFetch('calendar', 'https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+  const created = await connectorManager.apiFetch('calendar', 'https://www.googleapis.com/calendar/v3/calendars/primary/events', {
     method: 'POST', body: JSON.stringify(event)
   });
+  if (!created?.id) throw new Error('Google Calendar did not return an event ID. The event is not reported as created.');
+  return { ...created, verified: true };
 }
 
 export async function executeConnectorTask(prompt, { onStatus = () => {} } = {}) {
@@ -230,10 +242,10 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
         if (missing.length) return { handled: true, provider, data: [], text: `I have not sent anything. Please provide the ${missing.join(', ')} so I can ${/\bdraft\b|\bcompose\b/i.test(request) ? 'prepare a draft' : 'send the message'}.` };
         if (/\bdraft\b|\bcompose\b/i.test(request)) {
           const draft = await connectorManager.createGmailDraft({ to, subject, body });
-          return { handled: true, provider, data: draft, text: `Created a Gmail draft to ${to} with the subject “${subject}”.` };
+          return { handled: true, executed: true, provider, data: draft, text: `Created a Gmail draft to ${to} with the subject “${subject}”.` };
         }
-        await connectorManager.sendGmailMessage({ to, subject, body });
-        return { handled: true, provider, data: [], text: `Sent the email to ${to} with the subject “${subject}”.` };
+        const sent = await connectorManager.sendGmailMessage({ to, subject, body });
+        return { handled: true, executed: sent.verified === true && Boolean(sent.id && sent.threadId), provider, data: sent, text: `Sent the email to ${to} with the subject “${subject}”.` };
       }
       const emails = await readRecentGmail(extractMessageCount(request));
       const output = formatEmailReport(emails);
@@ -257,7 +269,7 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
         }
       }
       const driveNote = await autoSaveReport('Gmail', emails, request);
-      return { handled: true, provider, data: emails, text: `${output}${sheetNote}${driveNote}` };
+      return { handled: true, executed: true, provider, data: emails, text: `${output}${sheetNote}${driveNote}` };
     }
 
     if (provider === 'sheets') {
@@ -300,12 +312,12 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
         const event = parseCalendarEvent(request);
         if (!event) return { handled: true, provider, data: [], text: 'I have not created an event. Provide a title and a clear date/time such as “2026-10-03 15:30” so Calendar can schedule it accurately.' };
         const created = await createGoogleCalendarEvent(event);
-        return { handled: true, provider, data: created, text: `Created “${created.summary || event.summary}” on Calendar for ${created.start?.dateTime || event.start.dateTime}.` };
+        return { handled: true, executed: created.verified === true && Boolean(created.id), provider, data: created, text: `Created “${created.summary || event.summary}” on Calendar for ${created.start?.dateTime || event.start.dateTime}.` };
       }
       const events = await listUpcomingCalendarEvents(10);
       const driveNote = await autoSaveReport('Calendar', events, request);
       const text = events.length ? `Upcoming Calendar events:\n${events.map(event => `- ${event.summary || '(untitled)'} — ${event.start?.dateTime || event.start?.date || 'time not set'}`).join('\n')}${driveNote}` : 'There are no upcoming Calendar events.';
-      return { handled: true, provider, data: events, text };
+      return { handled: true, executed: true, provider, data: events, text };
     }
 
     const formId = request.match(/forms\/d\/(?:e\/)?([\w-]+)/i)?.[1] || request.match(/\bform\s+(?:id\s+)?([\w-]{8,})/i)?.[1];
@@ -320,11 +332,14 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
     };
   } catch (error) {
     onStatus('Connector request needs attention');
-    const needsReconnect = /needs to be connected again|reconnect|HTTP 401|token is expired/i.test(error.message || '');
+    const needsReconnect = /OAuth Permission Required|needs to be connected again|re-?connect|HTTP 401|HTTP 403|token is expired/i.test(error.message || '');
     if (needsReconnect && typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('zulora-connector-reauth-required', { detail: { provider } }));
     }
-    return { handled: true, provider, error, needsReconnect, text: `I couldn't complete the ${provider} request: ${error.message}` };
+    const text = needsReconnect
+      ? `OAuth Permission Required: Please re-connect your Gmail/Calendar account to continue with ${provider}.`
+      : `I couldn't complete the ${provider} request: ${error.message}`;
+    return { handled: true, executed: false, provider, error, needsReconnect, text };
   }
 }
 

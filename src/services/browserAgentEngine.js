@@ -358,6 +358,16 @@ export async function checkExtensionConnected() {
   });
 }
 
+export async function scanComputerSystem() {
+  const connected = await checkExtensionConnected();
+  if (!connected) throw new Error('The Zulora Computer Plugin is not connected. Install and enable the extension, then retry the scan.');
+  const response = await sendBridgeMessageWithRetry({ type: 'ZULORA_SCAN_SYSTEM' }, 1, 0, 12_000);
+  if (!response?.ok || !response?.scan?.verified || !response?.scan?.scannedAt) {
+    throw new Error(response?.error || 'The Computer Plugin did not return a verified system scan.');
+  }
+  return response.scan;
+}
+
 export function onStatusUpdate(callback) {
   const listener = (event) => {
     if (event.data?.source === 'ZULORA_EXTENSION' && (event.data?.type === 'ZULORA_STATUS_UPDATE' || event.data?.type === 'ZULORA_AGENT_STEP_UPDATE')) {
@@ -1080,11 +1090,11 @@ export async function executeCommand(command, arg2, arg3) {
     type: 'ZULORA_RUN_TASK',
     steps,
     enableVerification: true // Triggers Agent 3 screen verification inside background
-  }, 3, 800, 8000);
+  }, 1, 0, 180_000);
 
   return {
     ...res,
-    ok: res?.ok ?? res?.success ?? true,
+    ok: res?.ok === true && res?.success === true && res?.status === 'done',
     tokensUsed: totalTokensUsed,
     newTotalTokens: updatedTokens
   };

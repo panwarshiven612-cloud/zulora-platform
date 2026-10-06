@@ -941,12 +941,6 @@ async function executeStep(step) {
         break;
       }
 
-      case 'post_data': {
-        log(`POST Data to: ${params.url || 'endpoint'}`, 'done');
-        result = { success: true };
-        break;
-      }
-
       case 'export_pdf': {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
         const tab = tabs[0];
@@ -984,8 +978,7 @@ async function executeStep(step) {
       }
 
       default:
-        log(`Action: ${action}`, 'done');
-        result = {};
+        throw new Error(`Unsupported computer action: ${action || '(missing action)'}`);
     }
 
     return result || {};
@@ -1006,6 +999,7 @@ async function runQueue() {
     try {
       const res = await executeStep(taskQueue[currentStepIndex]);
       if (res?.paused) break;
+      if (res?.skipped) throw new Error(`The computer agent did not execute step ${currentStepIndex + 1}.`);
 
       // ── Agent 3: Vision & Screen Reasoning Verifier ──
       try {
@@ -1044,10 +1038,10 @@ async function runQueue() {
       }
 
       await sleep(250);
-    } catch {
+    } catch (error) {
       taskStatus = 'error';
       broadcastStatus();
-      return;
+      throw error;
     }
     currentStepIndex++;
   }
@@ -1057,11 +1051,46 @@ async function runQueue() {
     safeNotify('✅ Zulora Task Complete', `Completed all ${taskQueue.length} step(s)!`);
     broadcastStatus();
   }
+  if (taskStatus !== 'done') {
+    return { ok: false, success: false, status: taskStatus, error: taskStatus === 'paused' ? 'The computer task paused before completion.' : 'The computer task was not completed.' };
+  }
+  return { ok: true, success: true, status: 'done', completedSteps: currentStepIndex, actionLog: [...actionLog] };
 }
 
 // ─── 9. Task Dispatcher ───────────────────────────────────────────────────────
+async function scanSystem() {
+  const [activeTabs, allTabs, platform] = await Promise.all([
+    chrome.tabs.query({ active: true, currentWindow: true }),
+    chrome.tabs.query({}),
+    chrome.runtime.getPlatformInfo()
+  ]);
+  const activeTab = activeTabs?.[0];
+  const manifest = chrome.runtime.getManifest();
+  let activeTabUrl = '';
+  try {
+    const url = new URL(activeTab?.url || '');
+    activeTabUrl = `${url.origin}${url.pathname}`.slice(0, 1000);
+  } catch {}
+  return {
+    verified: true,
+    scannedAt: new Date().toISOString(),
+    agent: { name: manifest.name, version: manifest.version, status: 'connected' },
+    browser: { platform: platform?.os || 'unknown', architecture: platform?.arch || 'unknown', openTabCount: allTabs.length },
+    activeTab: activeTab ? {
+      title: String(activeTab.title || '').slice(0, 200),
+      url: activeTabUrl,
+      status: activeTab.status || 'unknown'
+    } : null,
+    source: 'zulora-extension-ipc'
+  };
+}
+
 async function handleAgentTask(payload) {
   if (!payload) return { ok: true };
+
+  if (payload.type === 'ZULORA_SCAN_SYSTEM') {
+    return { ok: true, success: true, scan: await scanSystem() };
+  }
 
   if (payload.type === 'ZULORA_RUN_TASK' || payload.steps) {
     taskQueue        = Array.isArray(payload.steps) ? payload.steps : [];
@@ -1069,8 +1098,7 @@ async function handleAgentTask(payload) {
     currentStepIndex = 0;
     taskStatus       = 'idle';
     isCancelled      = false;
-    runQueue();
-    return { ok: true, success: true, queued: taskQueue.length };
+    return await runQueue();
   }
 
   if (payload.type === 'ZULORA_CANCEL' || payload.type === 'STOP_TASK') {

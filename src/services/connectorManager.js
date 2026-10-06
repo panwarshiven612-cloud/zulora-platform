@@ -18,6 +18,76 @@ let tokenDbPromise;
 let tokenWriteQueue = Promise.resolve();
 const silentRefreshes = new Map();
 
+const OAUTH_PERMISSION_REQUIRED = 'OAuth Permission Required: Please re-connect your Gmail/Calendar account';
+
+function encodeBase64Utf8(value) {
+  const bytes = new TextEncoder().encode(String(value));
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+const encodeBase64UrlUtf8 = value => encodeBase64Utf8(value).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[character]);
+}
+
+function buildHtmlMimeMessage({ to, subject, body }) {
+  let html = String(body || '').trim();
+  html = html.replace(/^```html\s*/i, '').replace(/```\s*$/i, '').trim();
+  html = html
+    .replace(/<(script|iframe|object|embed|form|input|button|meta|link)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+    .replace(/<\s*(?:script|iframe|object|embed|form|input|button|meta|link)\b[^>]*\/?>/gi, '')
+    .replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/\s+(href|src|action)\s*=\s*(["'])\s*(?:javascript|data):[\s\S]*?\2/gi, ' $1="#"');
+  if (!/<[a-z][\s\S]*>/i.test(html)) {
+    html = `<div>${escapeHtml(html).replace(/\r?\n/g, '<br>')}</div>`;
+  }
+  if (!/zulora(?:\s+ai)?/i.test(html)) {
+    html += '<div style="margin-top:24px;padding-top:12px;border-top:1px solid #e2e8f0;color:#94a3b8;font:11px Arial,sans-serif">Sent with <a href="https://zulora.in" style="color:#0ea5e9;text-decoration:none">Zulora AI</a></div>';
+  }
+  const plainText = html
+    .replace(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_match, href, label) => `${label.replace(/<[^>]*>/g, '')} (${href})`)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:div|p|li|h[1-6])>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .trim();
+  const boundary = `zulora_${crypto.randomUUID().replaceAll('-', '')}`;
+  const encodedSubject = `=?UTF-8?B?${encodeBase64Utf8(String(subject || '').replace(/[\r\n]+/g, ' ').trim())}?=`;
+  const mime = [
+    `To: ${String(to || '').replace(/[\r\n]+/g, '').trim()}`,
+    `Subject: ${encodedSubject}`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    '',
+    `--${boundary}`,
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: 8bit',
+    '',
+    plainText,
+    `--${boundary}`,
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: 8bit',
+    '',
+    html,
+    `--${boundary}--`,
+    ''
+  ].join('\r\n');
+  return encodeBase64UrlUtf8(mime);
+}
+
 function readStoredConnectorStates() {
   if (typeof window === 'undefined') return {};
   try {
@@ -394,26 +464,51 @@ export const connectorManager = {
       sessionTokens.delete(providerId);
       writeStoredTokens([providerId]);
       if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('zulora-connector-reauth-required', { detail: { provider: providerId } }));
-      throw new Error(`${CONNECTOR_CONFIG[providerId]?.name || providerId} needs to be connected again. Reconnect it in Connectors to continue.`);
+      const error = new Error(`${OAUTH_PERMISSION_REQUIRED}. Open Connectors to authorize ${CONNECTOR_CONFIG[providerId]?.name || providerId}.`);
+      error.code = 'OAUTH_REQUIRED';
+      throw error;
     }
     return token.accessToken;
   },
 
   async apiFetch(providerId, url, options = {}) {
-    const method = String(options.method || 'GET').toUpperCase();
+    const { expectedStatus, ...requestOptions } = options;
+    const method = String(requestOptions.method || 'GET').toUpperCase();
     const retryableMethod = ['GET', 'HEAD', 'DELETE'].includes(method);
     let refreshedAfter401 = false;
     let transientRetries = 0;
     while (true) {
       const accessToken = await this.getAccessToken(providerId);
-      const response = await fetch(url, {
-        ...options,
-        headers: {
-          ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-          ...options.headers,
-          Authorization: `Bearer ${accessToken}`
-        }
-      });
+      let response;
+      if (import.meta.env?.DEV) {
+        response = await fetch(url, {
+          ...requestOptions,
+          headers: {
+            ...(requestOptions.body ? { 'Content-Type': 'application/json' } : {}),
+            ...requestOptions.headers,
+            Authorization: `Bearer ${accessToken}`
+          }
+        });
+      } else {
+        const user = auth.currentUser;
+        if (!user?.getIdToken) throw new Error('Sign in again to use Google connectors.');
+        const firebaseToken = await user.getIdToken();
+        response = await fetch('/api/google-connector', {
+          method: 'POST',
+          signal: requestOptions.signal,
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${firebaseToken}` },
+          body: JSON.stringify({
+            provider: providerId,
+            url,
+            accessToken,
+            request: { method, body: requestOptions.body || null }
+          })
+        });
+      }
+      const data = response.status === 204 ? null : await response.json().catch(() => null);
+      if (data?.code === 'AUTH_REQUIRED') {
+        throw new Error(data.error?.message || 'Sign in again to use Google connectors.');
+      }
       if (response.status === 401 && !refreshedAfter401) {
         refreshedAfter401 = true;
         const current = sessionTokens.get(providerId);
@@ -435,10 +530,19 @@ export const connectorManager = {
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
-      const data = response.status === 204 ? null : await response.json().catch(() => null);
       if (!response.ok) {
         const reason = data?.error?.message || response.statusText || 'Google API request failed';
+        // MODULE 1: Throw explicit OAuth error for 401/403 so caller can prompt reconnect
+        if (response.status === 401 || response.status === 403) {
+          const oauthErr = new Error(`${OAUTH_PERMISSION_REQUIRED}. Your ${CONNECTOR_CONFIG[providerId]?.name || providerId} session has expired or lacks permission.`);
+          oauthErr.code = 'OAUTH_REQUIRED';
+          oauthErr.status = response.status;
+          throw oauthErr;
+        }
         throw new Error(`${CONNECTOR_CONFIG[providerId]?.name || providerId}: ${reason} (HTTP ${response.status})`);
+      }
+      if (expectedStatus && response.status !== expectedStatus) {
+        throw new Error(`${CONNECTOR_CONFIG[providerId]?.name || providerId} returned HTTP ${response.status}; expected HTTP ${expectedStatus}.`);
       }
       return data;
     }
@@ -509,28 +613,14 @@ export const connectorManager = {
   },
 
   async sendGmailMessage({ to, subject, body }) {
-    // Strip markdown html code blocks if present
-    let cleanBody = String(body || '').trim();
-    if (cleanBody.startsWith('```html')) {
-      cleanBody = cleanBody.replace(/^```html\s*/i, '').replace(/```\s*$/i, '').trim();
-    } else if (cleanBody.startsWith('```')) {
-      cleanBody = cleanBody.replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/i, '').trim();
-    }
-    const encodedSubject = `=?UTF-8?B?${btoa(unescape(encodeURIComponent(String(subject || '').replace(/[\r\n]+/g, ' ').trim())))}?=`;
-    const mime = [
-      `To: ${String(to || '').trim()}`,
-      `Subject: ${encodedSubject}`,
-      'MIME-Version: 1.0',
-      'Content-Type: text/html; charset=UTF-8',
-      '',
-      cleanBody
-    ].join('\r\n');
-    const raw = btoa(unescape(encodeURIComponent(mime)))
-      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+    const raw = buildHtmlMimeMessage({ to, subject, body });
     const res = await this.apiFetch('gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-      method: 'POST', body: JSON.stringify({ raw })
+      method: 'POST', body: JSON.stringify({ raw }), expectedStatus: 200
     });
-    return { ...res, success: true, to, subject, delivered: true, timestamp: Date.now() };
+    if (!res?.id || !res?.threadId) {
+      throw new Error('Gmail API did not confirm delivery with both a message ID and thread ID. The email is not reported as sent.');
+    }
+    return { ...res, success: true, to, subject, delivered: true, messageId: res.id, threadId: res.threadId, verified: true, timestamp: Date.now() };
   },
 
   async sendRichEmail({ to, subject, body }) {
@@ -538,63 +628,41 @@ export const connectorManager = {
   },
 
   async createGmailDraft({ to, subject, body }) {
-    let cleanBody = String(body || '').trim();
-    if (cleanBody.startsWith('```html')) {
-      cleanBody = cleanBody.replace(/^```html\s*/i, '').replace(/```\s*$/i, '').trim();
-    } else if (cleanBody.startsWith('```')) {
-      cleanBody = cleanBody.replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/i, '').trim();
-    }
-    const encodedSubject = `=?UTF-8?B?${btoa(unescape(encodeURIComponent(String(subject || '').replace(/[\r\n]+/g, ' ').trim())))}?=`;
-    const mime = [
-      `To: ${String(to || '').trim()}`,
-      `Subject: ${encodedSubject}`,
-      'MIME-Version: 1.0',
-      'Content-Type: text/html; charset=UTF-8',
-      '',
-      cleanBody
-    ].join('\r\n');
-    const raw = btoa(unescape(encodeURIComponent(mime)))
-      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+    const raw = buildHtmlMimeMessage({ to, subject, body });
     const res = await this.apiFetch('gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/drafts', {
       method: 'POST', body: JSON.stringify({ message: { raw } })
     });
-    return { ...res, success: true, isDraft: true, to, subject };
+    if (!res?.id || !res?.message?.id) throw new Error('Gmail API did not return a valid draft ID.');
+    return { ...res, success: true, isDraft: true, to, subject, verified: true };
   },
 
   async replyAndDraft({ to, subject, body, thread_id = null, is_draft = false }) {
     if (is_draft) {
       return this.createGmailDraft({ to, subject, body });
     }
-    let cleanBody = String(body || '').trim();
-    if (cleanBody.startsWith('```html')) {
-      cleanBody = cleanBody.replace(/^```html\s*/i, '').replace(/```\s*$/i, '').trim();
-    } else if (cleanBody.startsWith('```')) {
-      cleanBody = cleanBody.replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/i, '').trim();
-    }
-    const encodedSubject = `=?UTF-8?B?${btoa(unescape(encodeURIComponent(String(subject || '').replace(/[\r\n]+/g, ' ').trim())))}?=`;
-    const mime = [
-      `To: ${String(to || '').trim()}`,
-      `Subject: ${encodedSubject}`,
-      'MIME-Version: 1.0',
-      'Content-Type: text/html; charset=UTF-8',
-      '',
-      cleanBody
-    ].join('\r\n');
-    const raw = btoa(unescape(encodeURIComponent(mime)))
-      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+    const raw = buildHtmlMimeMessage({ to, subject, body });
     const payload = { raw };
     if (thread_id) payload.threadId = thread_id;
     const res = await this.apiFetch('gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-      method: 'POST', body: JSON.stringify(payload)
+      method: 'POST', body: JSON.stringify(payload), expectedStatus: 200
     });
-    return { ...res, success: true, replied: Boolean(thread_id), to, subject, threadId: thread_id };
+    if (!res?.id || !res?.threadId) {
+      throw new Error('Gmail API did not confirm delivery with both a message ID and thread ID. The reply is not reported as sent.');
+    }
+    return { ...res, success: true, replied: Boolean(thread_id), to, subject, messageId: res.id, threadId: res.threadId, verified: true };
   },
 
   async readEmails({ query = 'in:inbox', max_results = 5 } = {}) {
     const params = new URLSearchParams({ q: String(query || 'in:inbox'), maxResults: String(Math.min(20, Math.max(1, Number(max_results) || 5))) });
     const list = await this.apiFetch('gmail', `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`);
+    if (!list || typeof list !== 'object' || (list.messages !== undefined && !Array.isArray(list.messages))
+      || (!Array.isArray(list.messages) && !Number.isFinite(Number(list.resultSizeEstimate)))) {
+      throw new Error('Gmail returned an invalid inbox response. No inbox result is reported.');
+    }
     const messages = await Promise.all((list.messages || []).map(async item => {
+      if (!item?.id) throw new Error('Gmail returned a message without an ID. No inbox result is reported.');
       const message = await this.apiFetch('gmail', `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(item.id)}?format=full`);
+      if (!message?.id || !message?.threadId) throw new Error('Gmail returned an invalid message record. No inbox result is reported.');
       const headers = message.payload?.headers || [];
       const getHeader = name => headers.find(header => header.name?.toLowerCase() === name)?.value || '';
       return { id: message.id, from: getHeader('from'), subject: getHeader('subject'), date: getHeader('date'), snippet: message.snippet || '', body: getGmailText(message.payload) || message.snippet || '' };
@@ -624,9 +692,11 @@ export const connectorManager = {
   },
 
   async createCalendarEvent({ title, start_time, end_time, description = '' }) {
-    return this.apiFetch('calendar', 'https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+    const event = await this.apiFetch('calendar', 'https://www.googleapis.com/calendar/v3/calendars/primary/events', {
       method: 'POST', body: JSON.stringify({ summary: title, description, start: { dateTime: start_time }, end: { dateTime: end_time } })
     });
+    if (!event?.id) throw new Error('Google Calendar did not return an event ID. The event is not reported as created.');
+    return { ...event, verified: true };
   },
 
   async scheduleEvents({ events = [], title, start_time, end_time, description = '' } = {}) {
@@ -654,6 +724,10 @@ export const connectorManager = {
     const params = new URLSearchParams({ timeMin: time_min || new Date().toISOString(), singleEvents: 'true', orderBy: 'startTime', maxResults: '50' });
     if (time_max) params.set('timeMax', time_max);
     const result = await this.apiFetch('calendar', `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`);
+    if (!result || typeof result !== 'object' || (result.items !== undefined && !Array.isArray(result.items))
+      || (!Array.isArray(result.items) && result.kind !== 'calendar#events')) {
+      throw new Error('Google Calendar returned an invalid event-list response. No schedule result is reported.');
+    }
     return result.items || [];
   },
 

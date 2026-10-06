@@ -21,6 +21,7 @@ import { AI_STUDIO_SYSTEM_PROMPT } from './aiStudioPrompt';
 import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_FLASH_MODEL_ID, GEMINI_MODELS, GEMINI_MODEL_FALLBACKS, GEMINI_PRO_MODEL_FALLBACKS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from './aiModels';
 import { buildImagePrompt } from './imageGen';
 import connectorManager from './connectorManager';
+import { checkExtensionConnected } from './browserAgentEngine';
 import { executeGoogleConnectorFunction, getGoogleConnectorFunctionDeclarations, getGoogleConnectorFunctionProvider, getGoogleConnectorToolInstructions, isGoogleReconnectError } from './googleConnectorTools';
 
 // â”€â”€â”€ SAFE ENVIRONMENT EXTRACTOR â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -82,7 +83,7 @@ const geminiKeyPerformance = new Map();
 
 const providerSystemPrompt = options => [
   buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault),
-  getGoogleConnectorToolInstructions(),
+  getGoogleConnectorToolInstructions(options.connectorProviders),
   options.connectorContext ? `NATIVE CONNECTORS CONTEXT:\n${options.connectorContext}` : '',
   // MODULE 7: Inject web search grounding
   options.flagship ? FLAGSHIP_SYSTEM_PROMPT : '',
@@ -572,8 +573,181 @@ const toOpenAiSchema = schema => ({
   ...(schema?.items ? { items: toOpenAiSchema(schema.items) } : {})
 });
 
+function requestedConnectorProvider(prompt, declarations = []) {
+  const text = String(prompt || '');
+  if (/\b(?:should\s+i|should\s+we|how\s+do\s+i|how\s+to|whether\s+i\s+should)\b/i.test(text)) return '';
+  const providers = new Set(declarations.map(declaration => typeof declaration === 'string' ? declaration : getGoogleConnectorFunctionProvider(declaration.name)));
+  if (providers.has('gmail') && /\b(?:gmail|inbox|e-?mails?|mail messages?)\b/i.test(text)
+    && /\b(?:send|read|review|summari[sz]e|draft|compose|search|check|show|list|find|retrieve|fetch|latest|recent|analy[sz]e|how\s+many|tell\s+me|what(?:'s|\s+is)\s+in)\b/i.test(text)) return 'gmail';
+  if (providers.has('calendar') && /\b(?:calendar|events?|meetings?|appointments?)\b/i.test(text)
+    && /\b(?:schedule|book|create|list|show|check|find|delete|remove|cancel|upcoming|analy[sz]e|tell\s+me|what(?:'s|\s+is)\s+on)\b/i.test(text)) return 'calendar';
+  if (providers.has('sheets') && /\b(?:spreadsheet|google\s*sheets?)\b/i.test(text)
+    && /\b(?:read|append|write|update|add|create|list|show|find|search)\b/i.test(text)) return 'sheets';
+  if (providers.has('forms') && /\b(?:google\s+)?forms?\b/i.test(text)
+    && /\b(?:read|create|make|build|show|list|responses?)\b/i.test(text)) return 'forms';
+  if (providers.has('drive') && /\bdrive\b/i.test(text)
+    && /\b(?:list|show|search|find|download|open|manage|delete|trash|inspect)\b/i.test(text)) return 'drive';
+  if (providers.has('computer') && /\b(?:computer|system|browser)\b/i.test(text)
+    && /\b(?:scan|inspect|check)\b/i.test(text)) return 'computer';
+  return '';
+}
+
+const asksForClarification = text => /\b(?:please\s+(?:provide|specify|share)|need(?:s)?\s+(?:the|a|an|more|some)|which\b|who\b|when\b|what\s+(?:date|time|subject|recipient|body|message)|what\s+should\s+i\s+(?:include|write)|would\s+you\s+like|could\s+you\s+(?:specify|share|provide)|before\s+i\s+can)\b/i.test(text);
+
+function connectorBadgeForResults(results = []) {
+  const providers = [...new Set(results
+    .filter(item => item?.executionVerified === true && item?.result && !item.result.error)
+    .map(item => getGoogleConnectorFunctionProvider(item.name)))];
+  const badges = { gmail: '📧 Gmail Connector', calendar: '📅 Google Calendar Connector', computer: '💻 Computer Agent Plugin' };
+  return providers.map(provider => badges[provider]).filter(Boolean).join(' · ');
+}
+
+function connectorFailureResult({ name, error, model, provider, totalTokens, toolResults = [] }) {
+  const connectorProvider = getGoogleConnectorFunctionProvider(name);
+  const needsReconnect = isGoogleReconnectError(error);
+  const providerName = ({ gmail: 'Gmail', calendar: 'Google Calendar', computer: 'Computer Plugin' })[connectorProvider] || 'Google connector';
+  const completedActions = toolResults.filter(item => item?.executionVerified === true).map(item => item.name.replaceAll('_', ' '));
+  const failure = needsReconnect
+    ? 'OAuth Permission Required: Please re-connect your Gmail/Calendar account.'
+    : `${providerName} could not complete the request: ${error?.message || 'The connected service returned an invalid response.'}`;
+  const text = completedActions.length
+    ? `Completed and verified: ${completedActions.join(', ')}. A later connector action failed. ${failure}`
+    : needsReconnect ? failure : `${failure} No success is reported.`;
+  return {
+    text,
+    model,
+    provider,
+    tokenUsage: { totalTokens },
+    connectorData: toolResults,
+    connectorProvider,
+    needsReconnect,
+    connectorExecutionFailed: true
+  };
+}
+
+function verifyConnectorToolResult(name, result) {
+  if (result?.error || result?.success === false) throw new Error(result.error || 'The connector reported failure.');
+  if (name === 'gmail_send_email' || ['send_email', 'send_gmail', 'send_rich_email'].includes(name)) {
+    if (result?.verified !== true || !result?.id || !result?.threadId) {
+      throw new Error('Gmail did not return a verified HTTP 200 message ID and thread ID.');
+    }
+  }
+  if (name === 'calendar_create_event' || ['create_event', 'create_calendar_event'].includes(name)) {
+    if (result?.verified !== true || !result?.id) throw new Error('Google Calendar did not return a verified event ID.');
+  }
+  if (name === 'computer_scan_system' && (result?.verified !== true || !result?.scannedAt)) {
+    throw new Error('The Computer Plugin did not return a verified scan.');
+  }
+}
+
+async function runGeminiConnectorToolProvider({ key, keyIndex, prompt, contextMessages, model, options, declarations }) {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+  const toolResults = [];
+  const executedCalls = new Map();
+  const declaredNames = new Set(declarations.map(item => item.name));
+  let totalTokens = 0;
+  const attachments = (options.attachments || []).map(toGeminiInlineData).filter(Boolean)
+    .map(({ mimeType, data }) => ({ inlineData: { mimeType, data } }));
+  const contents = [
+    ...contextMessages.filter(message => ['user', 'assistant', 'model'].includes(message.role)).map(message => ({
+      role: message.role === 'assistant' || message.role === 'model' ? 'model' : 'user',
+      parts: [{ text: String(message.content || '') }]
+    })),
+    { role: 'user', parts: [{ text: prompt }, ...attachments] }
+  ];
+  const makeResult = text => ({
+    text,
+    model,
+    provider: 'Google Gemini',
+    tokenUsage: { totalTokens },
+    connectorData: toolResults,
+    connectorBadge: connectorBadgeForResults(toolResults),
+    ...(toolResults.length ? { connectorProvider: getGoogleConnectorFunctionProvider(toolResults[0].name) } : {})
+  });
+
+  for (let round = 0; round < 4; round += 1) {
+    if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+    const response = await fetchWithTimeout(endpoint, {
+      method: 'POST',
+      signal: options.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents,
+        system_instruction: { parts: [{ text: `${providerSystemPrompt({ ...options, connectorProviders: [...new Set(declarations.map(item => getGoogleConnectorFunctionProvider(item.name)))] })}\n\nIf a connector action is requested, call its function. Never claim an action succeeded unless the returned function result confirms it.` }] },
+        tools: [{ functionDeclarations: declarations.map(({ name, description, parameters }) => ({ name, description, parameters })) }],
+        toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
+        generationConfig: { maxOutputTokens: Math.min(options.coding || options.flagship ? 16_384 : (MODEL_TIERS[options.tier]?.maxTokens || 8192), 2048), temperature: 0.4 }
+      })
+    }, 18_000);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(`Gemini HTTP ${response.status}: ${data.error?.message || response.statusText}`);
+      error.status = response.status;
+      throw error;
+    }
+    totalTokens += Number(data.usageMetadata?.totalTokenCount || 0);
+    const candidate = data.candidates?.[0];
+    const modelContent = candidate?.content;
+    const parts = Array.isArray(modelContent?.parts) ? modelContent.parts : [];
+    if (!modelContent || !parts.length) throw new Error('Gemini returned an empty connector response.');
+    const calls = parts.map(part => part.functionCall).filter(call => call?.name);
+    if (!calls.length) {
+      const text = parts.map(part => part.text || '').join('').trim();
+      if (!text) {
+        if (toolResults.length) return makeResult('The connected API action completed and its response was verified.');
+        throw new Error('Gemini returned no text or function call.');
+      }
+      const requiredProvider = requestedConnectorProvider(prompt, declarations);
+      if (requiredProvider && !toolResults.length && !asksForClarification(text)) {
+        return connectorFailureResult({
+          name: declarations.find(item => getGoogleConnectorFunctionProvider(item.name) === requiredProvider)?.name || '',
+          error: new Error('Gemini did not issue the required connector function call.'),
+          model, provider: 'Google Gemini', totalTokens
+        });
+      }
+      options.onProvider?.({ provider: 'Google Gemini', model });
+      if (options.onToken) options.onToken(text);
+      return makeResult(text);
+    }
+
+    contents.push(modelContent);
+    const functionResponses = [];
+    for (const call of calls) {
+      const name = call.name;
+      if (!declaredNames.has(name)) {
+        const error = new Error(`Gemini requested an undeclared connector function: ${name}.`);
+        return connectorFailureResult({ name, error, model, provider: 'Google Gemini', totalTokens, toolResults });
+      }
+      let result;
+      const signature = `${name}:${JSON.stringify(call.args || {})}`;
+      if (executedCalls.has(signature)) {
+        result = executedCalls.get(signature);
+      } else {
+        try {
+          options.onProgress?.({ label: `Executing ${name.replaceAll('_', ' ')}`, status: 'running' });
+          result = await executeGoogleConnectorFunction(name, call.args || {}, { onProgress: options.onProgress });
+          verifyConnectorToolResult(name, result);
+          executedCalls.set(signature, result);
+        } catch (error) {
+          const failedResult = { name, result: { error: error.message || 'Connector request failed.' } };
+          toolResults.push(failedResult);
+          options.onProgress?.({ label: `${name.replaceAll('_', ' ')} failed`, status: 'error', detail: error.message });
+          return connectorFailureResult({ name, error, model, provider: 'Google Gemini', totalTokens, toolResults });
+        }
+      }
+      const resultEntry = { name, result, executionVerified: true };
+      toolResults.push(resultEntry);
+      functionResponses.push({ functionResponse: { name, ...(call.id ? { id: call.id } : {}), response: { result } } });
+    }
+    contents.push({ role: 'user', parts: functionResponses });
+  }
+
+  return makeResult('The connected API action completed and its response was verified.');
+}
+
 async function runConnectorToolProvider({ provider, key, keyIndex, prompt, contextMessages, model, options, declarations }) {
   const isGemini = provider === 'Google Gemini';
+  if (isGemini) return runGeminiConnectorToolProvider({ key, keyIndex, prompt, contextMessages, model, options, declarations });
   const isBackup = provider === 'Backup API';
   const endpoint = isGemini
     ? 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'
@@ -606,6 +780,8 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
     provider,
     tokenUsage: { totalTokens },
     connectorData: toolResults,
+    connectorBadge: connectorBadgeForResults(toolResults),
+    ...(toolResults.length ? { connectorProvider: getGoogleConnectorFunctionProvider(toolResults[0].name) } : {}),
     ...(reconnectProvider ? { needsReconnect: true, connectorProvider: reconnectProvider } : {})
   });
 
@@ -650,10 +826,13 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
         if (toolResults.length) return completedResult();
         throw new Error(`${provider} returned no text after connector execution.`);
       }
-      const asksForConnector = /\b(?:gmail|e-?mails?|calendar|meetings?|google\s*sheets?|spreadsheets?)\b/i.test(prompt)
-        && /\b(?:send|read|review|summari[sz]e|schedule|book|create|list|show|check|find|append|write|update|add)\b/i.test(prompt);
-      if (!toolResults.length && asksForConnector && /\b(?:don't|do not|cannot|can't|unable to|lack|no)\s+(?:have\s+)?(?:direct\s+)?(?:access|use|connect|view)|connect your (?:gmail|google|calendar)/i.test(text)) {
-        throw new Error(`${provider} declined to use an active Google connector; trying the next model key.`);
+      const requiredProvider = requestedConnectorProvider(prompt, declarations);
+      if (!toolResults.length && requiredProvider && !asksForClarification(text)) {
+        return connectorFailureResult({
+          name: declarations.find(item => getGoogleConnectorFunctionProvider(item.name) === requiredProvider)?.name || '',
+          error: new Error(`${provider} did not issue the required connector function call.`),
+          model, provider, totalTokens
+        });
       }
       options.onProvider?.({ provider, model });
       if (options.onToken) options.onToken(text);
@@ -682,16 +861,19 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
         try {
           options.onProgress?.({ label: `Executing ${name.replaceAll('_', ' ')}`, status: 'running' });
           result = await executeGoogleConnectorFunction(name, args, { onProgress: options.onProgress });
+          verifyConnectorToolResult(name, result);
         }
         catch (error) {
-          result = { error: error.message || 'The Google connector request failed.' };
           if (isGoogleReconnectError(error)) {
             reconnectProvider = getGoogleConnectorFunctionProvider(name);
           }
+          const failedResult = { name, result: { error: error.message || 'The Google connector request failed.' } };
+          toolResults.push(failedResult);
+          return connectorFailureResult({ name, error, model, provider, totalTokens, toolResults });
         }
         executedCalls.set(signature, result);
       }
-      toolResults.push({ name, result });
+      toolResults.push({ name, result, executionVerified: true });
       messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
     }
   }
@@ -700,8 +882,11 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
 }
 
 async function tryGoogleConnectorToolWaterfall(prompt, contextMessages, model, options, errors) {
-  const activeProviders = connectorManager.getActiveGoogleProviders();
-  const declarations = getGoogleConnectorFunctionDeclarations(activeProviders);
+  const activeProviders = [...connectorManager.getActiveGoogleProviders()];
+  if (/\b(?:computer|system|browser)\b/i.test(prompt) && /\b(?:scan|inspect|check)\b/i.test(prompt) && await checkExtensionConnected()) {
+    activeProviders.push('computer');
+  }
+  const declarations = getGoogleConnectorFunctionDeclarations(activeProviders, prompt);
   if (!declarations.length) return null;
   const keys = getGeminiKeyPool();
   const openrouterKeys = OPENROUTER_KEYS;
@@ -1090,12 +1275,51 @@ export const apiRouter = {
       skipTokenLimit: highTierCodeRequest
     });
 
-    if (!options.skipConnectorTools && connectorManager.hasActiveGoogleConnectors()) {
+    const activeConnectorProviders = connectorManager.getActiveGoogleProviders();
+    const requestedProvider = requestedConnectorProvider(prompt, ['gmail', 'calendar', 'sheets', 'forms', 'drive', 'computer']);
+    if (requestedProvider && ['gmail', 'calendar', 'sheets', 'forms', 'drive'].includes(requestedProvider) && !activeConnectorProviders.includes(requestedProvider)) {
+      return await syncUsage({
+        text: ['gmail', 'calendar'].includes(requestedProvider)
+          ? 'OAuth Permission Required: Please re-connect your Gmail/Calendar account.'
+          : 'OAuth Permission Required: Please re-connect your Google account.',
+        model: 'Zulora AI', provider: 'Native API Connectors', needsReconnect: true,
+        connectorProvider: requestedProvider, connectorExecutionFailed: true, connectorData: []
+      }, 'chat', options.currentUser);
+    }
+    if (requestedProvider === 'computer' && !await checkExtensionConnected()) {
+      return await syncUsage({
+        text: 'Computer scan not completed: install and connect the Zulora Computer Plugin to run a live scan.',
+        model: 'Computer Plugin', provider: 'Computer Agent Plugin',
+        connectorProvider: 'Computer Plugin', connectorExecutionFailed: true, connectorData: []
+      }, 'chat', options.currentUser);
+    }
+
+    if (requestedProvider && (activeConnectorProviders.includes(requestedProvider) || requestedProvider === 'computer')) {
       try {
         const connectorResult = await tryGoogleConnectorToolWaterfall(prompt, contextMessages, geminiModel, options, errors);
         if (connectorResult?.text) return await syncUsage(connectorResult, 'chat', options.currentUser);
+        if (requestedProvider) {
+          return await syncUsage({
+            text: `${requestedProvider === 'computer' ? 'Computer Plugin' : requestedProvider === 'calendar' ? 'Google Calendar' : requestedProvider === 'sheets' ? 'Google Sheets' : 'Gmail'} could not execute the requested action. No successful API or agent response was received.`,
+            model: geminiModel, provider: 'Native API Connectors',
+            connectorProvider: requestedProvider, connectorExecutionFailed: true, connectorData: []
+          }, 'chat', options.currentUser);
+        }
       } catch (error) {
         if (options.signal?.aborted || isQuotaAuthorityError(error)) throw error;
+        if (requestedProvider) {
+          return await syncUsage({
+            text: requestedProvider === 'computer'
+              ? `Computer scan not completed: ${error.message}`
+              : ['gmail', 'calendar'].includes(requestedProvider)
+                ? 'OAuth Permission Required: Please re-connect your Gmail/Calendar account.'
+                : 'OAuth Permission Required: Please re-connect your Google account.',
+            model: geminiModel, provider: 'Native API Connectors',
+            connectorProvider: requestedProvider,
+            needsReconnect: requestedProvider !== 'computer' && isGoogleReconnectError(error),
+            connectorExecutionFailed: true, connectorData: []
+          }, 'chat', options.currentUser);
+        }
         errors.push(`Google connector tool execution: ${error.message}`);
       }
     }
