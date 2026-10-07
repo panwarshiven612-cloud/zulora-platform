@@ -272,7 +272,7 @@ export const CONNECTOR_CONFIG = Object.freeze({
   },
   calendar: {
     id: 'calendar', name: 'Google Calendar', icon: 'calendar',
-    scopes: ['https://www.googleapis.com/auth/calendar.events', 'openid', 'email'],
+    scopes: ['https://www.googleapis.com/auth/calendar', 'openid', 'email'],
     description: 'View and schedule calendar events.'
   },
   forms: {
@@ -369,6 +369,8 @@ function authorizationCodeRequest(oauth, scopes) {
     const client = oauth.initCodeClient({
       client_id: GOOGLE_CLIENT_ID,
       scope: scopes.join(' '),
+      access_type: 'offline',
+      prompt: 'consent',
       include_granted_scopes: true,
       ux_mode: 'popup',
       callback: async response => {
@@ -383,7 +385,7 @@ function authorizationCodeRequest(oauth, scopes) {
         try {
           const session = await oauthApiRequest('exchange', {
             code: response.code,
-            redirectUri: window.location.origin
+            redirectUri: new URL(import.meta.env?.VITE_GOOGLE_REDIRECT_URI || window.location.origin).origin
           });
           resolve(session);
         } catch (error) { reject(error); }

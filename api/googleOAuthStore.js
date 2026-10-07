@@ -12,7 +12,7 @@ export const GOOGLE_SERVICE_SCOPES = Object.freeze({
     'https://www.googleapis.com/auth/drive.file',
     'https://www.googleapis.com/auth/drive.readonly'
   ]),
-  calendar: Object.freeze(['https://www.googleapis.com/auth/calendar.events']),
+  calendar: Object.freeze(['https://www.googleapis.com/auth/calendar']),
   forms: Object.freeze([
     'https://www.googleapis.com/auth/forms.body',
     'https://www.googleapis.com/auth/forms.body.readonly',
@@ -31,7 +31,7 @@ const serviceAccountDocumentPath = uid => `${firestoreRoot()}/users/${encodeURIC
 const serviceAccountCollectionPath = uid => `${firestoreRoot()}/users/${encodeURIComponent(uid)}/private`;
 
 function googleClientId() {
-  return String(process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '').trim();
+  return String(process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '791256936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com').trim();
 }
 
 function googleClientSecret() {
@@ -124,7 +124,7 @@ export async function deleteGoogleSession(uid) {
 async function exchangeToken(params) {
   const clientId = googleClientId();
   const clientSecret = googleClientSecret();
-  if (!clientId || !clientSecret) throw new Error('Google OAuth server credentials are not configured.');
+  if (!clientId || !clientSecret) throw new Error('Google Workspace connection is temporarily unavailable. Please try again later.');
   const response = await fetch(TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -234,7 +234,7 @@ export function googleScopeAllowed(session, provider, url, method) {
       ? ['https://www.googleapis.com/auth/drive.readonly']
       : ['https://www.googleapis.com/auth/drive.file'];
   } else if (provider === 'calendar') {
-    required = ['https://www.googleapis.com/auth/calendar.events'];
+    required = ['https://www.googleapis.com/auth/calendar'];
   } else if (provider === 'forms') {
     required = pathname.endsWith('/responses')
       ? ['https://www.googleapis.com/auth/forms.responses.readonly']
