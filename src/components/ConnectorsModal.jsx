@@ -288,7 +288,7 @@ export default function ConnectorsModal({ currentUser, reconnectProvider = '', o
             {driveFiles.length > 8 && <p className="mt-2 text-[10px] text-slate-400">Showing 8 recent files. Ask Zulora AI to search the full Drive index.</p>}
           </section>}
 
-          <div className="mt-4 flex items-start gap-2 rounded-xl border border-slate-200/70 bg-white/60 p-3 text-[10px] leading-relaxed text-slate-500 dark:border-slate-700/70 dark:bg-slate-900/40 dark:text-slate-400"><ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-500" /><span>OAuth access tokens stay in memory for this browser session and are not written to LocalStorage or Firestore. Reconnect after the session or token expires. Google prompts for consent on first use.</span><ChevronRight className="mt-0.5 ml-auto h-3.5 w-3.5 shrink-0" /></div>
+          <div className="mt-4 flex items-start gap-2 rounded-xl border border-slate-200/70 bg-white/60 p-3 text-[10px] leading-relaxed text-slate-500 dark:border-slate-700/70 dark:bg-slate-900/40 dark:text-slate-400"><ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-500" /><span>Short-lived Google access tokens are stored locally for this signed-in browser and renewed silently when Google allows it. They are cleared when you disconnect or sign out. Google Identity Services does not expose refresh tokens in its browser token flow.</span><ChevronRight className="mt-0.5 ml-auto h-3.5 w-3.5 shrink-0" /></div>
         </div>
       </section>
     </div>

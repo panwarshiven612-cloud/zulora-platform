@@ -74,6 +74,11 @@ import { backgroundTaskManager } from '../services/backgroundTaskManager';
    CONSTANTS
    ============================================================ */
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
+const CHAT_MODEL_PREFERENCE_KEY = 'zulora_chat_model_preference';
+const readStoredModelPreference = key => {
+  try { return localStorage.getItem(key) || 'auto'; }
+  catch { return 'auto'; }
+};
 const ATTACHMENT_MIME_BY_EXTENSION = {
   bmp: 'image/bmp', gif: 'image/gif', jpeg: 'image/jpeg', jpg: 'image/jpeg', png: 'image/png', svg: 'image/svg+xml', webp: 'image/webp',
   mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', mpeg: 'video/mpeg', mpg: 'video/mpeg',
@@ -603,7 +608,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const [inputPrompt, setInputPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const [showThinking, setShowThinking] = useState(false);
-  const [modelPreference, setModelPreference] = useState('auto');
+  const [modelPreference, setModelPreference] = useState(() => readStoredModelPreference(`${CHAT_MODEL_PREFERENCE_KEY}_guest`));
   const [enableWebSearch, setEnableWebSearch] = useState(false);
   const [attachments, setAttachments] = useState([]);
   const [attachmentPreviewUrls, setAttachmentPreviewUrls] = useState(() => new Map());
@@ -640,6 +645,31 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const activeStreamCleanupsRef = useRef(new Set());
   const activeRequestsRef = useRef(new Map());
   const chatMountedRef = useRef(true);
+  const modelPreferenceKey = `${CHAT_MODEL_PREFERENCE_KEY}_${currentUser?.uid || 'guest'}`;
+  const skipModelPreferenceWriteRef = useRef(false);
+
+  useEffect(() => {
+    skipModelPreferenceWriteRef.current = true;
+    setModelPreference(activeSession?.model || readStoredModelPreference(modelPreferenceKey));
+  }, [activeSession?.id, activeSession?.model, modelPreferenceKey]);
+
+  useEffect(() => {
+    if (skipModelPreferenceWriteRef.current) {
+      skipModelPreferenceWriteRef.current = false;
+      return;
+    }
+    try { localStorage.setItem(modelPreferenceKey, modelPreference); }
+    catch { /* The selected model remains active for this chat session. */ }
+  }, [modelPreference, modelPreferenceKey]);
+
+  const handleModelPreferenceChange = useCallback(nextModel => {
+    setModelPreference(nextModel);
+    try { localStorage.setItem(modelPreferenceKey, nextModel); }
+    catch { /* The selected model remains active for this chat session. */ }
+    if (activeSession?.id) {
+      onUpdateSession?.({ ...activeSession, model: nextModel, updatedAt: Date.now() });
+    }
+  }, [activeSession, modelPreferenceKey, onUpdateSession]);
 
   useEffect(() => {
     chatMountedRef.current = true;
@@ -1687,7 +1717,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
               {/* Model Selector */}
               <ModelSelector
                 modelPreference={modelPreference}
-                onModelChange={setModelPreference}
+                onModelChange={handleModelPreferenceChange}
                 isOpen={showModelMenu}
                 onToggle={event => {
                   event.stopPropagation();

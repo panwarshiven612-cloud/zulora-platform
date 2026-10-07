@@ -822,10 +822,10 @@ function normalizeModelPreference(value) {
   const geminiModel = normalizeGeminiModelId(raw);
   if (geminiModel) return geminiModel;
   const selected = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
-  if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra')) return 'think';
-  if (selected === 'llama' || (selected.includes('llama') && selected.includes('70b'))) return 'llama';
+  if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra') || /zulora 3\.1 pro(?: ultra)?/.test(selected)) return 'think';
+  if (selected === 'llama' || (selected.includes('llama') && /(?:70b|3\.3)/.test(selected))) return 'llama';
   if (selected === 'claude' || selected.includes('anthropic')) return 'claude';
-  if (selected === 'groq' || selected.includes('groq')) return 'groq';
+  if (selected === 'groq' || selected.includes('groq') || selected.includes('turbo')) return 'groq';
   if (selected === 'gemini' || selected === 'flash' || selected.includes('gemini flash') || (/^gemini\s+\d/.test(selected) && selected.includes('flash'))) return 'gemini';
   if (selected === 'pro 3.14' || selected === 'zulora pro 3.14' || selected === 'pro' || selected === 'pro 314') return 'pro';
   if (selected === 'auto' || !selected) return 'auto';
@@ -834,9 +834,12 @@ function normalizeModelPreference(value) {
 }
 
 function chooseChatOrder(preference, autoSelected = false) {
-  if (preference === 'claude') return ['openrouter', ...CHAT_ORDER.filter(provider => provider !== 'openrouter')];
-  if (preference === 'groq' && !autoSelected) return ['groq', ...CHAT_ORDER.filter(provider => provider !== 'groq')];
-  return CHAT_ORDER;
+  if (autoSelected) return CHAT_ORDER;
+  if (preference === 'claude') return ['openrouter'];
+  if (preference === 'groq' || preference === 'llama') return ['groq'];
+  if (preference === 'auto') return CHAT_ORDER;
+  // Gemini, Zulora Flash, Pro, and direct Gemini model IDs all map to Gemini.
+  return ['gemini'];
 }
 
 async function generateChat(body, streamOptions = {}) {
@@ -862,11 +865,9 @@ async function generateChat(body, streamOptions = {}) {
     : requestedPreference === 'gemini' ? (coding || complex ? GEMINI_PRO_MODEL_ID : GEMINI_FLASH_MODEL)
       : flagship || useProModel ? GEMINI_PRO_MODEL_ID : GEMINI_FAST_MODEL;
   const groqModel = 'llama-3.3-70b-versatile';
-  const order = body.enableWebSearch
-    ? ['gemini']
-    : attachments.length
-    ? ['gemini']
-    : chooseChatOrder(preference, requestedPreference === 'auto');
+  const order = requestedPreference === 'auto'
+    ? body.enableWebSearch || attachments.length ? ['gemini'] : chooseChatOrder(preference, true)
+    : chooseChatOrder(preference);
   for (const provider of order) {
     try {
       const result = provider === 'gemini'
@@ -891,8 +892,8 @@ async function generateChat(body, streamOptions = {}) {
       throw error;
     }
   }
-  if (body.enableWebSearch) throw new Error('Live web search is temporarily unavailable because Google Search grounding could not complete. Please retry.');
-  if (!vision) {
+  if (requestedPreference === 'auto' && body.enableWebSearch) throw new Error('Live web search is temporarily unavailable because Google Search grounding could not complete. Please retry.');
+  if (requestedPreference === 'auto' && !vision) {
     try {
       const output = await tryPollinationsText(messages, { coding, flagship });
       if (streamOptions.stream) {

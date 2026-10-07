@@ -37,6 +37,14 @@ export function toOpenAiFunctionTool({ name, description, parameters }, { closeO
   };
 }
 
+export function toAnthropicTool({ name, description, parameters }) {
+  return {
+    name,
+    description,
+    input_schema: normalizeToolSchema(parameters, 'lower')
+  };
+}
+
 const snakeCase = key => String(key).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
 
 export function normalizeGoogleConnectorArguments(rawArguments, functionName = '') {
@@ -80,6 +88,11 @@ export function normalizeGoogleConnectorArguments(rawArguments, functionName = '
 }
 
 const GOOGLE_FUNCTIONS = Object.freeze({
+  workspace_create_folder_sheet_email_metrics: fn('workspace', 'Run a verified, ordered workflow: create a Google Drive folder, create and format a Google spreadsheet inside it, read sent Gmail metrics, then write those metrics into the spreadsheet. Use the names and optional Gmail query supplied by the user.', {
+    folder_name: text('Name for the new Google Drive folder'),
+    spreadsheet_title: text('Title for the new Google spreadsheet'),
+    gmail_query: text('Optional Gmail search query; defaults to in:sent')
+  }, ['folder_name', 'spreadsheet_title']),
   gmail_send_email: fn('gmail', 'Send an email only when the user explicitly asks to send it. The Gmail connector formats the body as a responsive HTML email and confirms success with a message ID and thread ID. Never claim delivery unless this function succeeds.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Email body as plain text or HTML; do not return source code unless the user asks for code') }, ['to', 'subject', 'body']),
   gmail_read_inbox: fn('gmail', 'Read real Gmail inbox messages using the connected account.', { query: text('Gmail search query, defaults to in:inbox'), max_results: integer('Number of messages, from 1 to 20') }),
   calendar_create_event: fn('calendar', 'Create a Google Calendar event and return the event ID from the Calendar API. Use ISO 8601 times with timezone.', { title: text('Event title'), start_time: text('ISO 8601 start time with timezone'), end_time: text('ISO 8601 end time with timezone'), description: text('Optional event description') }, ['title', 'start_time', 'end_time']),
@@ -102,6 +115,7 @@ const GOOGLE_FUNCTIONS = Object.freeze({
   append_row: fn('sheets', 'Append one or more rows to a Google Sheet.', { spreadsheet_id: text('Spreadsheet ID from its URL'), range: text('A1 notation range'), values: rowValues }, ['spreadsheet_id', 'range', 'values']),
   read_range: fn('sheets', 'Read values from a Google Sheet range.', { spreadsheet_id: text('Spreadsheet ID from its URL'), range: text('A1 notation range') }, ['spreadsheet_id', 'range']),
   create_sheet: fn('sheets', 'Create a new Google spreadsheet with the given title.', { title: text('New spreadsheet title') }, ['title']),
+  create_drive_folder: fn('drive', 'Create a new Google Drive folder with the given name.', { name: text('New folder name') }, ['name']),
   get_form: fn('forms', 'Read a Google Form structure by form ID.', { form_id: text('Google Form ID') }, ['form_id']),
   read_form_responses: fn('forms', 'Read responses from a Google Form by form ID.', { form_id: text('Google Form ID'), max_results: integer('Maximum responses, from 1 to 500') }, ['form_id']),
   create_form: fn('forms', 'Create a new Google Form with a title, optional description, and an optional list of questions. Each question has: title (string), type (text|paragraph|multiple_choice|checkbox), required (boolean), options (array of strings for choice types).', {
@@ -124,11 +138,17 @@ const GOOGLE_FUNCTIONS = Object.freeze({
 export function getGoogleConnectorFunctionDeclarations(activeProviders = connectorManager.getActiveGoogleProviders(), prompt = '') {
   const providers = new Set(activeProviders);
   const text = String(prompt || '').toLowerCase();
+  const workspaceWorkflow = isWorkspaceMetricsWorkflowRequest(prompt)
+    && ['drive', 'sheets', 'gmail'].every(provider => providers.has(provider));
+  if (workspaceWorkflow) {
+    const declaration = GOOGLE_FUNCTIONS.workspace_create_folder_sheet_email_metrics;
+    return [{ name: 'workspace_create_folder_sheet_email_metrics', description: declaration.description, parameters: declaration.parameters }];
+  }
   const requestedProvider = providers.has('gmail') && /\b(?:gmail|inbox|e-?mails?|mail messages?)\b/.test(text) ? 'gmail'
     : providers.has('calendar') && /\b(?:calendar|events?|meetings?|appointments?)\b/.test(text) ? 'calendar'
       : providers.has('sheets') && /\b(?:spreadsheet|google\s*sheets?)\b/.test(text) ? 'sheets'
         : providers.has('forms') && /\b(?:google\s+)?forms?\b/.test(text) ? 'forms'
-          : providers.has('drive') && /\bdrive\b/.test(text) ? 'drive'
+          : providers.has('drive') && /\b(?:drive|folder|directory)\b/.test(text) ? 'drive'
             : providers.has('computer') && /\b(?:computer|system|browser)\b/.test(text) ? 'computer' : '';
   const preferredNames = requestedProvider === 'gmail'
     ? /\b(?:draft|compose)\b/.test(text) ? ['reply_and_draft'] : /\b(?:send|email|mail)\b/.test(text) ? ['gmail_send_email'] : ['gmail_read_inbox']
@@ -138,13 +158,40 @@ export function getGoogleConnectorFunctionDeclarations(activeProviders = connect
         ? /\b(?:append|write|update|add|insert)\b/.test(text) ? ['append_row'] : /\bcreate\b/.test(text) ? ['create_sheet'] : ['read_range']
         : requestedProvider === 'forms'
           ? /\b(?:create|make|build)\b/.test(text) ? ['create_form'] : ['get_form', 'read_form_responses']
-          : requestedProvider === 'drive'
-            ? /\b(?:download|open)\b/.test(text) ? ['download_file'] : ['list_drive', 'manage_files']
+      : requestedProvider === 'drive'
+            ? /\b(?:create|make|new)\b.{0,40}\b(?:folder|directory)\b/i.test(text) ? ['create_drive_folder']
+              : /\b(?:download|open)\b/.test(text) ? ['download_file'] : ['list_drive', 'manage_files']
             : requestedProvider === 'computer' ? ['computer_scan_system'] : [];
   if (!requestedProvider) return [];
   return Object.entries(GOOGLE_FUNCTIONS)
     .filter(([name, declaration]) => providers.has(declaration.provider) && preferredNames.includes(name))
     .map(([name, declaration]) => ({ name, description: declaration.description, parameters: declaration.parameters }));
+}
+
+export function isWorkspaceMetricsWorkflowRequest(prompt = '') {
+  const text = String(prompt || '').toLowerCase();
+  const asksFolder = /\b(?:create|make|add|set\s+up)\b.{0,60}\b(?:folder|directory)\b|\b(?:folder|directory)\b.{0,60}\b(?:create|make|add)\b/i.test(text);
+  const asksSpreadsheet = /\b(?:spreadsheet|google\s*sheet|sheets)\b/i.test(text)
+    && /\b(?:create|make|build|new|populate|fill|write|add)\b/i.test(text);
+  const asksSentMetrics = /\b(?:gmail|sent\s+(?:emails?|mail)|email(?:s)?\s+stats?)\b/i.test(text)
+    && /\b(?:stats?|metrics?|count|how\s+many|read|fetch|retrieve|analy[sz]e|report|populate)\b/i.test(text);
+  return asksFolder && asksSpreadsheet && asksSentMetrics;
+}
+
+export function classifyGoogleConnectorIntents(prompt = '') {
+  const text = String(prompt || '').toLowerCase();
+  const intents = [];
+  if (/\b(?:gmail|inbox|e-?mails?|mail messages?)\b/.test(text)
+    && /\b(?:send|read|review|summari[sz]e|draft|compose|search|check|show|list|find|retrieve|fetch|latest|recent|analy[sz]e|stats?|metrics?|count|how\s+many)\b/.test(text)) intents.push('gmail');
+  if (/\b(?:spreadsheet|google\s*sheets?)\b/.test(text)
+    && /\b(?:read|append|write|update|add|create|make|populate|fill|list|show|find|search|format)\b/.test(text)) intents.push('sheets');
+  if (/\b(?:drive|folder|directory|drive\s+file)\b/.test(text)
+    && /\b(?:list|show|search|find|download|open|manage|delete|trash|inspect|create|make|move)\b/.test(text)) intents.push('drive');
+  if (/\b(?:calendar|events?|meetings?|appointments?)\b/.test(text)
+    && /\b(?:schedule|book|create|list|show|check|find|delete|remove|cancel|upcoming|analy[sz]e)\b/.test(text)) intents.push('calendar');
+  if (/\b(?:google\s+)?forms?\b/.test(text)
+    && /\b(?:read|create|make|build|show|list|responses?)\b/.test(text)) intents.push('forms');
+  return [...new Set(intents)];
 }
 
 export function getGoogleConnectorToolInstructions(activeProviders = connectorManager.getActiveGoogleProviders()) {
@@ -171,6 +218,14 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
   try {
     let result;
     switch (name) {
+      case 'workspace_create_folder_sheet_email_metrics':
+        result = await connectorManager.createFolderSpreadsheetEmailMetrics({
+          folder_name: requiredText(args, 'folder_name'),
+          spreadsheet_title: requiredText(args, 'spreadsheet_title'),
+          gmail_query: String(args.gmail_query || 'in:sent'),
+          onProgress
+        });
+        break;
       case 'gmail_send_email': case 'send_email': case 'send_gmail': case 'send_rich_email':
         result = await connectorManager.sendGmailMessage({ to: requiredText(args, 'to'), subject: requiredText(args, 'subject'), body: requiredText(args, 'body') }); break;
       case 'reply_and_draft':
@@ -214,6 +269,8 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
         result = await connectorManager.readSheetData({ spreadsheet_id: requiredText(args, 'spreadsheet_id'), range: requiredText(args, 'range') }); break;
       case 'create_sheet':
         result = await connectorManager.createSpreadsheet({ title: requiredText(args, 'title') }); break;
+      case 'create_drive_folder':
+        result = await connectorManager.createDriveFolder({ name: requiredText(args, 'name') }); break;
       case 'get_form':
         result = await connectorManager.getGoogleForm({ form_id: requiredText(args, 'form_id') }); break;
       case 'create_form':
@@ -237,6 +294,12 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
     onProgress?.({ label: `${provider || 'Google'} request complete`, status: 'done' });
     return result;
   } catch (error) {
+    if (provider === 'workspace' && !error.connectorProvider) {
+      const message = String(error.message || '');
+      error.connectorProvider = /(?:Google\s+)?Drive/i.test(message) ? 'drive'
+        : /(?:Google\s+)?Sheets/i.test(message) ? 'sheets'
+          : /Gmail/i.test(message) ? 'gmail' : 'workspace';
+    }
     onProgress?.({ label: `${provider || 'Google'} request failed`, status: 'error', detail: error.message });
     throw error;
   }

@@ -253,7 +253,7 @@ export const CONNECTOR_CONFIG = Object.freeze({
   gmail: {
     id: 'gmail', name: 'Gmail', icon: 'mail',
     scopes: [
-      'https://www.googleapis.com/auth/gmail.modify',
+      'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/gmail.send',
       'https://www.googleapis.com/auth/gmail.compose',
       'openid', 'email'
@@ -264,7 +264,7 @@ export const CONNECTOR_CONFIG = Object.freeze({
     id: 'sheets', name: 'Google Sheets', icon: 'table',
     scopes: [
       'https://www.googleapis.com/auth/spreadsheets',
-      'https://www.googleapis.com/auth/drive.metadata.readonly',
+      'https://www.googleapis.com/auth/drive.file',
       'openid', 'email'
     ],
     description: 'Read and update spreadsheets; list spreadsheet names for quick access.'
@@ -281,7 +281,7 @@ export const CONNECTOR_CONFIG = Object.freeze({
   },
   drive: {
     id: 'drive', name: 'Google Drive', icon: 'drive',
-    scopes: ['https://www.googleapis.com/auth/drive.readonly', 'https://www.googleapis.com/auth/drive.file', 'openid', 'email'],
+    scopes: ['https://www.googleapis.com/auth/drive.file', 'https://www.googleapis.com/auth/drive.readonly', 'openid', 'email'],
     description: 'Find, download, and manage files you have granted access to.'
   }
 });
@@ -422,6 +422,12 @@ export const connectorManager = {
   clientConfigured: Boolean(GOOGLE_CLIENT_ID),
   prepareOAuth: loadIdentityServices,
 
+  clearSession() {
+    sessionTokens.clear();
+    writeStoredTokens(Object.keys(CONNECTOR_CONFIG));
+    emitConnectorChange();
+  },
+
   async restoreSession() {
     const stored = readStoredTokens();
     for (const providerId of Object.keys(CONNECTOR_CONFIG)) {
@@ -487,9 +493,8 @@ export const connectorManager = {
       provider: providerId
     });
     writeStoredTokens();
-    // Persist the short-lived session access token in localStorage and
-    // IndexedDB for reload recovery. GIS does not issue refresh tokens from
-    // its browser token flow; long-lived refresh credentials stay server-side.
+    // Persist the short-lived access token for reload recovery. GIS browser
+    // token clients do not issue refresh tokens; silent token requests renew it.
     emitConnectorChange();
     let metadataSaved = true;
     try { await setDoc(connectorDoc(uid, providerId), connection, { merge: true }); }
@@ -819,6 +824,83 @@ export const connectorManager = {
     });
   },
 
+  async createDriveFolder({ name }) {
+    return this.apiFetch('drive', 'https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType,webViewLink', {
+      method: 'POST',
+      body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder' })
+    });
+  },
+
+  async moveDriveFileToFolder({ file_id, folder_id }) {
+    const fileUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file_id)}?fields=id,parents`;
+    const file = await this.apiFetch('drive', fileUrl);
+    const params = new URLSearchParams({ addParents: folder_id, fields: 'id,name,parents,webViewLink' });
+    if (Array.isArray(file.parents) && file.parents.length) params.set('removeParents', file.parents.join(','));
+    return this.apiFetch('drive', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file_id)}?${params}`, {
+      method: 'PATCH', body: JSON.stringify({})
+    });
+  },
+
+  async formatSpreadsheet({ spreadsheet_id, sheet_id = 0 }) {
+    return this.apiFetch('sheets', `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheet_id)}:batchUpdate`, {
+      method: 'POST',
+      body: JSON.stringify({ requests: [
+        { updateSheetProperties: { properties: { sheetId: Number(sheet_id) || 0, gridProperties: { frozenRowCount: 1 } }, fields: 'gridProperties.frozenRowCount' } },
+        { repeatCell: { range: { sheetId: Number(sheet_id) || 0, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { backgroundColor: { red: 0.03, green: 0.34, blue: 0.62 }, textFormat: { foregroundColor: { red: 1, green: 1, blue: 1 }, bold: true }, verticalAlignment: 'MIDDLE' } }, fields: 'userEnteredFormat(backgroundColor,textFormat,verticalAlignment)' } },
+        { autoResizeDimensions: { dimensions: { sheetId: Number(sheet_id) || 0, dimension: 'COLUMNS', startIndex: 0, endIndex: 2 } } }
+      ] })
+    });
+  },
+
+  async getSentEmailMetrics({ query = 'in:sent' } = {}) {
+    const safeQuery = String(query || 'in:sent').trim() || 'in:sent';
+    const params = new URLSearchParams({ q: safeQuery, maxResults: '5' });
+    const listing = await this.apiFetch('gmail', `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`);
+    const latestMessages = await Promise.all((listing.messages || []).slice(0, 5).map(async item => {
+      const metadata = await this.apiFetch('gmail', `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(item.id)}?format=metadata&metadataHeaders=Date&metadataHeaders=Subject`);
+      const headers = metadata.payload?.headers || [];
+      const getHeader = name => headers.find(header => header.name?.toLowerCase() === name.toLowerCase())?.value || '';
+      return { date: getHeader('date'), subject: getHeader('subject'), snippet: metadata.snippet || '' };
+    }));
+    return { query: safeQuery, sentCount: Number(listing.resultSizeEstimate) || 0, sampledMessageCount: latestMessages.length, latestMessages };
+  },
+
+  async createFolderSpreadsheetEmailMetrics({ folder_name, spreadsheet_title, gmail_query = 'in:sent', onProgress }) {
+    onProgress?.({ label: 'Step 1 of 4: Creating the Google Drive folder', status: 'running' });
+    const folder = await this.createDriveFolder({ name: folder_name });
+    if (!folder?.id) throw new Error('Google Drive did not return the new folder ID.');
+    onProgress?.({ label: 'Step 1 of 4: Google Drive folder created', status: 'done' });
+    onProgress?.({ label: 'Step 2 of 4: Creating and formatting the spreadsheet in that folder', status: 'running' });
+    const spreadsheet = await this.createSpreadsheet({ title: spreadsheet_title });
+    const spreadsheetId = spreadsheet?.spreadsheetId;
+    if (!spreadsheetId) throw new Error('Google Sheets did not return the new spreadsheet ID.');
+    const sheetId = spreadsheet.sheets?.[0]?.properties?.sheetId ?? 0;
+    const file = await this.moveDriveFileToFolder({ file_id: spreadsheetId, folder_id: folder.id });
+    await this.formatSpreadsheet({ spreadsheet_id: spreadsheetId, sheet_id: sheetId });
+    onProgress?.({ label: 'Step 2 of 4: Spreadsheet created, moved, and formatted', status: 'done' });
+    onProgress?.({ label: 'Step 3 of 4: Fetching sent Gmail metrics', status: 'running' });
+    const metrics = await this.getSentEmailMetrics({ query: gmail_query });
+    onProgress?.({ label: 'Step 3 of 4: Sent Gmail metrics retrieved', status: 'done' });
+    const rows = [
+      ['Metric', 'Value'],
+      ['Sent emails matching query', metrics.sentCount],
+      ['Gmail query', metrics.query],
+      ['Messages sampled', metrics.sampledMessageCount],
+      ['Most recent sent email date', metrics.latestMessages[0]?.date || 'No sent emails found'],
+      ['Most recent sent email subject', metrics.latestMessages[0]?.subject || '']
+    ];
+    onProgress?.({ label: 'Step 4 of 4: Writing the metrics to Sheets', status: 'running' });
+    await this.appendSheetRow({ spreadsheet_id: spreadsheetId, range: 'Sheet1!A:B', values: rows });
+    onProgress?.({ label: 'Step 4 of 4: Metrics written to the spreadsheet', status: 'done' });
+    return {
+      success: true,
+      status: 'completed',
+      folder: { id: folder.id, name: folder.name, url: folder.webViewLink || `https://drive.google.com/drive/folders/${folder.id}` },
+      spreadsheet: { id: spreadsheetId, title: spreadsheet.properties?.title || spreadsheet_title, url: file?.webViewLink || spreadsheet.spreadsheetUrl || `https://docs.google.com/spreadsheets/d/${spreadsheetId}` },
+      metrics
+    };
+  },
+
   async searchGmailThreads({ query = 'in:inbox', max_results = 5 } = {}) {
     const params = new URLSearchParams({ q: String(query || 'in:inbox'), maxResults: String(Math.min(20, Math.max(1, Number(max_results) || 5))) });
     const listing = await this.apiFetch('gmail', `https://gmail.googleapis.com/gmail/v1/users/me/threads?${params}`);
@@ -951,8 +1033,8 @@ export const connectorManager = {
 if (typeof window !== 'undefined') {
   connectorManager.restoreSession().catch(() => {});
   onAuthStateChanged(auth, user => {
-    if (!user) return;
-    connectorManager.restoreSession().catch(() => {});
+    if (user) connectorManager.restoreSession().catch(() => {});
+    else connectorManager.clearSession();
   });
 }
 

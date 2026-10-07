@@ -22,7 +22,7 @@ import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_FLASH_MODEL_ID, GEMI
 import { buildImagePrompt } from './imageGen';
 import connectorManager from './connectorManager';
 import { checkExtensionConnected } from './browserAgentEngine';
-import { executeGoogleConnectorFunction, getGoogleConnectorFunctionDeclarations, getGoogleConnectorFunctionProvider, getGoogleConnectorToolInstructions, isGoogleReconnectError, normalizeGoogleConnectorArguments, toGeminiFunctionDeclaration, toOpenAiFunctionTool } from './googleConnectorTools';
+import { classifyGoogleConnectorIntents, executeGoogleConnectorFunction, getGoogleConnectorFunctionDeclarations, getGoogleConnectorFunctionProvider, getGoogleConnectorToolInstructions, isGoogleReconnectError, isWorkspaceMetricsWorkflowRequest, normalizeGoogleConnectorArguments, toGeminiFunctionDeclaration, toOpenAiFunctionTool } from './googleConnectorTools';
 
 // â”€â”€â”€ SAFE ENVIRONMENT EXTRACTOR â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const clientEnv = import.meta.env || {};
@@ -157,7 +157,7 @@ export const MODEL_TIERS = {
     id: 'groq',
     label: 'Zulora Turbo Speed',
     shortLabel: 'Turbo Speed',
-    description: 'Fast Groq LPU responses with Gemini Flash fallback',
+    description: 'Fast responses routed directly through the selected Groq model',
     badge: 'âš¡',
     color: 'text-orange-500',
     geminiModel: GROQ_MODELS.fallback,
@@ -202,7 +202,7 @@ export const MODEL_TIERS = {
     id: 'claude',
     label: 'Anthropic Claude',
     shortLabel: 'Claude',
-    description: 'Claude through OpenRouter with automatic provider fallback',
+    description: 'Claude through the selected OpenRouter model',
     badge: '✦',
     color: 'text-amber-500',
     geminiModel: GEMINI_FAST_MODEL,
@@ -378,10 +378,10 @@ const normalizeModelPreference = value => {
   const modelId = normalizeGeminiModelId(raw);
   if (modelId) return modelId;
   const selected = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
-  if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra') || ['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'think';
-  if (selected === 'llama' || (selected.includes('llama') && selected.includes('70b'))) return 'llama';
+  if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra') || /zulora 3\.1 pro(?: ultra)?/.test(selected) || ['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'think';
+  if (selected === 'llama' || (selected.includes('llama') && /(?:70b|3\.3)/.test(selected))) return 'llama';
   if (selected === 'claude' || selected.includes('anthropic')) return 'claude';
-  if (selected === 'groq' || selected.includes('groq')) return 'groq';
+  if (selected === 'groq' || selected.includes('groq') || selected.includes('turbo')) return 'groq';
   if (selected === 'gemini' || selected === 'flash' || selected.includes('gemini flash') || (/^gemini\s+\d/.test(selected) && selected.includes('flash'))) return 'gemini';
   if (selected === 'pro' || selected === 'pro 314' || selected === 'zulora pro 3.14') return 'pro';
   return 'auto';
@@ -586,6 +586,9 @@ async function tryGeminiKeyWaterfall(prompt, contextMessages, preferredModel, op
 function requestedConnectorProvider(prompt, declarations = []) {
   const text = String(prompt || '');
   if (/\b(?:should\s+i|should\s+we|how\s+do\s+i|how\s+to|whether\s+i\s+should)\b/i.test(text)) return '';
+  if (isWorkspaceMetricsWorkflowRequest(text)) return 'workspace';
+  const intents = classifyGoogleConnectorIntents(text);
+  if (intents.length) return intents[0];
   const providers = new Set(declarations.map(declaration => typeof declaration === 'string' ? declaration : getGoogleConnectorFunctionProvider(declaration.name)));
   if (providers.has('gmail') && /\b(?:gmail|inbox|e-?mails?|mail messages?)\b/i.test(text)
     && /\b(?:send|read|review|summari[sz]e|draft|compose|search|check|show|list|find|retrieve|fetch|latest|recent|analy[sz]e|how\s+many|tell\s+me|what(?:'s|\s+is)\s+in)\b/i.test(text)) return 'gmail';
@@ -608,23 +611,32 @@ function connectorBadgeForResults(results = []) {
   const providers = [...new Set(results
     .filter(item => item?.executionVerified === true && item?.result && !item.result.error)
     .map(item => getGoogleConnectorFunctionProvider(item.name)))];
-  const badges = { gmail: '📧 Gmail Connector', calendar: '📅 Google Calendar Connector', computer: '💻 Computer Agent Plugin' };
+  const badges = { gmail: '📧 Gmail Connector', calendar: '📅 Google Calendar Connector', computer: '💻 Computer Agent Plugin', workspace: 'Google Workspace Workflow' };
   return providers.map(provider => badges[provider]).filter(Boolean).join(' · ');
 }
 
 function connectorFailureResult({ name, error, model, provider, totalTokens, toolResults = [] }) {
-  const connectorProvider = getGoogleConnectorFunctionProvider(name);
+  const declaredProvider = getGoogleConnectorFunctionProvider(name);
   const needsReconnect = isGoogleReconnectError(error);
-  const providerName = ({ gmail: 'Gmail', calendar: 'Google Calendar', computer: 'Computer Plugin' })[connectorProvider] || 'Google connector';
+  const message = String(error?.message || '');
+  const inferredProvider = /(?:Google\s+)?Drive/i.test(message) ? 'drive'
+    : /(?:Google\s+)?Sheets/i.test(message) ? 'sheets'
+      : /Gmail/i.test(message) ? 'gmail' : declaredProvider;
+  const connectorProvider = needsReconnect ? (error?.connectorProvider || inferredProvider) : declaredProvider;
+  const providerName = ({ gmail: 'Gmail', calendar: 'Google Calendar', computer: 'Computer Plugin', workspace: 'Google Workspace workflow', drive: 'Google Drive', sheets: 'Google Sheets' })[connectorProvider] || 'Google connector';
   const completedActions = toolResults.filter(item => item?.executionVerified === true).map(item => item.name.replaceAll('_', ' '));
   const failure = needsReconnect
     ? 'OAuth Permission Required: Please re-connect your Gmail/Calendar account.'
     : `${providerName} could not complete the request: ${error?.message || 'The connected service returned an invalid response.'}`;
+  const structuredError = { status: 'error', message: error?.message || 'The connector request failed.' };
   const text = completedActions.length
     ? `Completed and verified: ${completedActions.join(', ')}. A later connector action failed. ${failure}`
     : needsReconnect ? failure : `${failure} No success is reported.`;
   return {
     text,
+    status: 'error',
+    error: structuredError,
+    message: structuredError.message,
     model,
     provider,
     tokenUsage: { totalTokens },
@@ -637,6 +649,10 @@ function connectorFailureResult({ name, error, model, provider, totalTokens, too
 
 function verifyConnectorToolResult(name, result) {
   if (result?.error || result?.success === false) throw new Error(result.error || 'The connector reported failure.');
+  if (name === 'workspace_create_folder_sheet_email_metrics'
+    && (!result?.folder?.id || !result?.spreadsheet?.id || !Number.isFinite(Number(result?.metrics?.sentCount)))) {
+    throw new Error('The workspace dispatcher did not return verified Drive, Sheets, and Gmail results.');
+  }
   const isEmailSend = name === 'gmail_send_email'
     || ['send_email', 'send_gmail', 'send_rich_email'].includes(name)
     || (name === 'reply_and_draft' && result?.isDraft !== true);
@@ -755,7 +771,8 @@ async function runGeminiConnectorToolProvider({ key, keyIndex, prompt, contextMe
           verifyConnectorToolResult(name, result);
           executedCalls.set(signature, result);
         } catch (error) {
-          const failedResult = { name, result: { error: error.message || 'Connector request failed.' } };
+          const message = error.message || 'Connector request failed.';
+          const failedResult = { name, result: { status: 'error', message, error: message } };
           toolResults.push(failedResult);
           options.onProgress?.({ label: `${name.replaceAll('_', ' ')} failed`, status: 'error', detail: error.message });
           return connectorFailureResult({ name, error, model, provider: 'Google Gemini', totalTokens, toolResults });
@@ -891,7 +908,8 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
           if (isGoogleReconnectError(error)) {
             reconnectProvider = getGoogleConnectorFunctionProvider(name);
           }
-          const failedResult = { name, result: { error: error.message || 'The Google connector request failed.' } };
+          const message = error.message || 'The Google connector request failed.';
+          const failedResult = { name, result: { status: 'error', message, error: message } };
           toolResults.push(failedResult);
           return connectorFailureResult({ name, error, model, provider, totalTokens, toolResults });
         }
@@ -912,19 +930,22 @@ async function tryGoogleConnectorToolWaterfall(prompt, contextMessages, model, o
   }
   const declarations = getGoogleConnectorFunctionDeclarations(activeProviders, prompt);
   if (!declarations.length) return null;
-  const providers = new Set(declarations.map(declaration => getGoogleConnectorFunctionProvider(declaration.name)));
   const connectorOptions = {
     ...options,
-    connectorProviders: [...providers]
+    connectorProviders: activeProviders
   };
   const keys = getGeminiKeyPool();
   const tierConfig = MODEL_TIERS[options.tier] || MODEL_TIERS.auto;
   const requestedModel = String(options.model || '').toLowerCase();
-  const preferenceOrder = options.tier === 'claude' || requestedModel.includes('claude') || requestedModel.includes('anthropic')
-    ? ['openrouter', 'gemini', 'groq', 'backup', 'cerebras', 'mistral']
-    : requestedModel.includes('groq') || options.tier === 'groq' || options.tier === 'llama'
-    ? ['groq', 'openrouter', 'gemini', 'backup', 'cerebras', 'mistral']
-    : ['gemini', 'openrouter', 'groq', 'backup', 'cerebras', 'mistral'];
+  const selectedTier = normalizeModelPreference(options.model);
+  const isExplicitModel = selectedTier !== 'auto';
+  const preferenceOrder = isExplicitModel
+    ? selectedTier === 'claude' ? ['openrouter']
+      : selectedTier === 'groq' || selectedTier === 'llama' ? ['groq']
+        : ['gemini']
+    : requestedModel.includes('claude') || options.tier === 'claude' ? ['openrouter', 'gemini', 'groq', 'backup', 'cerebras', 'mistral']
+      : options.tier === 'groq' || options.tier === 'llama' ? ['groq', 'openrouter', 'gemini', 'backup', 'cerebras', 'mistral']
+        : ['gemini', 'openrouter', 'groq', 'backup', 'cerebras', 'mistral'];
   const candidates = [];
   for (const provider of preferenceOrder) {
     if (provider === 'gemini') {
@@ -941,7 +962,23 @@ async function tryGoogleConnectorToolWaterfall(prompt, contextMessages, model, o
       candidates.push({ provider: 'Mistral AI', key: MISTRAL_KEY, keyIndex: 0, model: tierConfig.mistralModel });
     }
   }
-  for (const candidate of candidates) {
+  if (isExplicitModel && !candidates.length) {
+    const providerName = preferenceOrder[0] === 'openrouter' ? 'OpenRouter Claude'
+      : preferenceOrder[0] === 'groq' ? 'Groq LPU'
+        : 'Google Gemini';
+    const selectedModel = preferenceOrder[0] === 'openrouter' ? tierConfig.openrouterModel
+      : preferenceOrder[0] === 'groq' ? tierConfig.groqModel
+        : model;
+    return connectorFailureResult({
+      name: declarations[0].name,
+      error: new Error(`${providerName} is selected, but no API key is configured for that model route.`),
+      model: selectedModel,
+      provider: providerName,
+      totalTokens: 0
+    });
+  }
+  for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+    const candidate = candidates[candidateIndex];
     try {
       const result = await runConnectorToolProvider({ ...candidate, prompt, contextMessages, options: connectorOptions, declarations });
       if (result?.connectorExecutionFailed) return result;
@@ -949,6 +986,16 @@ async function tryGoogleConnectorToolWaterfall(prompt, contextMessages, model, o
     } catch (error) {
       if (options.signal?.aborted) throw error;
       errors.push(`${candidate.provider} connector tools (key ${candidate.keyIndex + 1}): ${error.message}`);
+      if (isExplicitModel) {
+        if (candidates[candidateIndex + 1]?.provider === candidate.provider) continue;
+        return connectorFailureResult({
+          name: declarations[0].name,
+          error,
+          model: candidate.model,
+          provider: candidate.provider,
+          totalTokens: 0
+        });
+      }
     }
   }
   return null;
@@ -1323,32 +1370,53 @@ export const apiRouter = {
       skipTokenLimit: highTierCodeRequest
     });
 
+    await connectorManager.restoreSession();
     const activeConnectorProviders = connectorManager.getActiveGoogleProviders();
     const requestedProvider = requestedConnectorProvider(prompt, ['gmail', 'calendar', 'sheets', 'forms', 'drive', 'computer']);
+    if (requestedProvider === 'workspace') {
+      const requiredProviders = ['drive', 'sheets', 'gmail'];
+      const missingProviders = requiredProviders.filter(provider => !activeConnectorProviders.includes(provider));
+      if (missingProviders.length) {
+        const labels = { drive: 'Google Drive', sheets: 'Google Sheets', gmail: 'Gmail' };
+        return await syncUsage({
+          text: `Connect ${missingProviders.map(provider => labels[provider]).join(', ')} to run the folder, spreadsheet, and sent-email workflow.`,
+          status: 'error', error: { status: 'error', message: `Missing active connectors: ${missingProviders.join(', ')}.` },
+          model: 'Native API Connectors', provider: 'Google Workspace Dispatcher',
+          connectorProvider: 'workspace', connectorExecutionFailed: true, connectorData: []
+        }, 'chat', options.currentUser);
+      }
+    }
     if (requestedProvider && ['gmail', 'calendar', 'sheets', 'forms', 'drive'].includes(requestedProvider) && !activeConnectorProviders.includes(requestedProvider)) {
+      const message = ['gmail', 'calendar'].includes(requestedProvider)
+        ? 'OAuth Permission Required: Please re-connect your Gmail/Calendar account.'
+        : 'OAuth Permission Required: Please re-connect your Google account.';
       return await syncUsage({
-        text: ['gmail', 'calendar'].includes(requestedProvider)
-          ? 'OAuth Permission Required: Please re-connect your Gmail/Calendar account.'
-          : 'OAuth Permission Required: Please re-connect your Google account.',
+        text: message,
+        status: 'error', error: { status: 'error', message },
         model: 'Zulora AI', provider: 'Native API Connectors', needsReconnect: true,
         connectorProvider: requestedProvider, connectorExecutionFailed: true, connectorData: []
       }, 'chat', options.currentUser);
     }
     if (requestedProvider === 'computer' && !await checkExtensionConnected()) {
+      const message = 'Computer scan not completed: install and connect the Zulora Computer Plugin to run a live scan.';
       return await syncUsage({
-        text: 'Computer scan not completed: install and connect the Zulora Computer Plugin to run a live scan.',
+        text: message,
+        status: 'error', error: { status: 'error', message },
         model: 'Computer Plugin', provider: 'Computer Agent Plugin',
         connectorProvider: 'Computer Plugin', connectorExecutionFailed: true, connectorData: []
       }, 'chat', options.currentUser);
     }
 
-    if (requestedProvider && (activeConnectorProviders.includes(requestedProvider) || requestedProvider === 'computer')) {
+    if (requestedProvider && (activeConnectorProviders.includes(requestedProvider) || requestedProvider === 'computer' || requestedProvider === 'workspace')) {
       try {
         const connectorResult = await tryGoogleConnectorToolWaterfall(prompt, contextMessages, geminiModel, options, errors);
         if (connectorResult?.text) return await syncUsage(connectorResult, 'chat', options.currentUser);
         if (requestedProvider) {
+          const serviceName = requestedProvider === 'computer' ? 'Computer Plugin' : requestedProvider === 'workspace' ? 'Google Workspace workflow' : requestedProvider === 'calendar' ? 'Google Calendar' : requestedProvider === 'sheets' ? 'Google Sheets' : 'Gmail';
+          const message = `${serviceName} could not execute the requested action. No successful API or agent response was received.`;
           return await syncUsage({
-            text: `${requestedProvider === 'computer' ? 'Computer Plugin' : requestedProvider === 'calendar' ? 'Google Calendar' : requestedProvider === 'sheets' ? 'Google Sheets' : 'Gmail'} could not execute the requested action. No successful API or agent response was received.`,
+            text: message,
+            status: 'error', error: { status: 'error', message },
             model: geminiModel, provider: 'Native API Connectors',
             connectorProvider: requestedProvider, connectorExecutionFailed: true, connectorData: []
           }, 'chat', options.currentUser);
@@ -1356,12 +1424,14 @@ export const apiRouter = {
       } catch (error) {
         if (options.signal?.aborted || isQuotaAuthorityError(error)) throw error;
         if (requestedProvider) {
+          const message = requestedProvider === 'computer'
+            ? `Computer scan not completed: ${error.message}`
+            : isGoogleReconnectError(error)
+              ? 'OAuth Permission Required: Please re-connect the requested Google service.'
+              : `${requestedProvider === 'workspace' ? 'Google Workspace workflow' : requestedProvider} could not complete the requested action: ${error.message}`;
           return await syncUsage({
-            text: requestedProvider === 'computer'
-              ? `Computer scan not completed: ${error.message}`
-              : ['gmail', 'calendar'].includes(requestedProvider)
-                ? 'OAuth Permission Required: Please re-connect your Gmail/Calendar account.'
-                : 'OAuth Permission Required: Please re-connect your Google account.',
+            text: message,
+            status: 'error', error: { status: 'error', message: error.message || message },
             model: geminiModel, provider: 'Native API Connectors',
             connectorProvider: requestedProvider,
             needsReconnect: requestedProvider !== 'computer' && isGoogleReconnectError(error),
@@ -1413,15 +1483,15 @@ export const apiRouter = {
     }
 
     const hasGeminiAttachments = (options.attachments || []).some(item => toGeminiInlineData(item));
-    const providerOrder = hasGeminiAttachments
+    const explicitProviderOrder = requestedTier === 'auto' ? null
+      : requestedTier === 'claude' ? ['openrouter']
+        : requestedTier === 'groq' || requestedTier === 'llama' ? ['groq']
+          : ['gemini'];
+    const providerOrder = explicitProviderOrder || (hasGeminiAttachments
       ? ['gemini']
       : options.computerAgent
         ? options.computerVision ? ['gemini', 'openrouter', 'backup', 'mistral'] : ['cerebras', 'groq', 'openrouter', 'backup', 'mistral']
-      : requestedTier === 'claude'
-      ? ['openrouter', 'gemini', 'backup', 'groq', 'cerebras', 'mistral']
-      : requestedTier === 'groq' || requestedTier === 'llama'
-      ? ['groq', 'gemini', 'openrouter', 'backup', 'cerebras', 'mistral']
-      : ['gemini', 'openrouter', 'backup', 'cerebras', 'groq', 'mistral'];
+      : ['gemini', 'openrouter', 'backup', 'groq', 'cerebras', 'mistral']);
     for (const provider of providerOrder) {
       if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
       if (provider === 'gemini') {
@@ -1459,17 +1529,19 @@ export const apiRouter = {
       }
     }
 
-    // Last public fallback after every configured API-key provider has been attempted.
-    try {
-      const result = await tryPollinationsText(prompt, options, contextMessages);
-      if (options.onToken) {
-        options.onProvider?.({ provider: result.provider, model: result.model });
-        options.onToken(result.text);
-        options.streamState.sent = true;
+    // Auto may use the public edge fallback; an explicit model selection never silently changes endpoints.
+    if (requestedTier === 'auto') {
+      try {
+        const result = await tryPollinationsText(prompt, options, contextMessages);
+        if (options.onToken) {
+          options.onProvider?.({ provider: result.provider, model: result.model });
+          options.onToken(result.text);
+          options.streamState.sent = true;
+        }
+        return await syncUsage(result, 'chat', options.currentUser);
+      } catch (error) {
+        errors.push(`Pollinations: ${error.message}`);
       }
-      return await syncUsage(result, 'chat', options.currentUser);
-    } catch (error) {
-      errors.push(`Pollinations: ${error.message}`);
     }
 
     console.error('[Zulora Waterfall Exhausted]', errors);

@@ -24,13 +24,13 @@ const MODEL_OPTIONS = [
   {
     ...MODEL_TIERS.groq,
     label: 'Zulora Turbo Speed',
-    description: 'Fast responses routed through Groq LPU with automatic fallbacks.',
+    description: 'Fast responses routed directly through Groq LPU.',
     icon: Gauge,
   },
   {
     ...MODEL_TIERS.claude,
     label: 'Anthropic Claude',
-    description: 'Claude through OpenRouter with standardized connector tools and automatic fallbacks.',
+    description: 'Claude through OpenRouter with standardized connector tools.',
     icon: Brain,
   },
 ];
