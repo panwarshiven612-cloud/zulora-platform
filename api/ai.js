@@ -25,6 +25,7 @@ const GEMINI_FAST_MODEL = process.env.GEMINI_FAST_MODEL || GEMINI_FAST_MODEL_ID;
 const GEMINI_FLASH_MODEL = process.env.GEMINI_FLASH_MODEL || GEMINI_FLASH_MODEL_ID;
 const GEMINI_HIGH_CAPACITY_MODEL = process.env.GEMINI_HIGH_CAPACITY_MODEL || GEMINI_BEST_MODEL_ID;
 const GEMINI_FLASH_VARIANTS = [...new Set([GEMINI_HIGH_CAPACITY_MODEL, ...GEMINI_MODEL_FALLBACKS])];
+const OPENROUTER_CLAUDE_MODEL = process.env.OPENROUTER_CLAUDE_MODEL || 'anthropic/claude-fable-5.1';
 const CHAT_WINDOW_MS = 4 * 60 * 60 * 1000;
 const CHAT_REQUEST_LIMIT = 60;
 const TOKEN_LIMITS = { free: 60_000, pro: 200_000, ultra: 8_000_000 };
@@ -823,6 +824,7 @@ function normalizeModelPreference(value) {
   const selected = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
   if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra')) return 'think';
   if (selected === 'llama' || (selected.includes('llama') && selected.includes('70b'))) return 'llama';
+  if (selected === 'claude' || selected.includes('anthropic')) return 'claude';
   if (selected === 'groq' || selected.includes('groq')) return 'groq';
   if (selected === 'gemini' || selected === 'flash' || selected.includes('gemini flash') || (/^gemini\s+\d/.test(selected) && selected.includes('flash'))) return 'gemini';
   if (selected === 'pro 3.14' || selected === 'zulora pro 3.14' || selected === 'pro' || selected === 'pro 314') return 'pro';
@@ -832,6 +834,7 @@ function normalizeModelPreference(value) {
 }
 
 function chooseChatOrder(preference, autoSelected = false) {
+  if (preference === 'claude') return ['openrouter', ...CHAT_ORDER.filter(provider => provider !== 'openrouter')];
   if (preference === 'groq' && !autoSelected) return ['groq', ...CHAT_ORDER.filter(provider => provider !== 'groq')];
   return CHAT_ORDER;
 }
@@ -872,7 +875,7 @@ async function generateChat(body, streamOptions = {}) {
           attachments: body.attachments,
           vision,
           coding,
-          model: provider === 'groq' ? groqModel : undefined,
+          model: provider === 'groq' ? groqModel : provider === 'openrouter' && preference === 'claude' ? OPENROUTER_CLAUDE_MODEL : undefined,
           reasoning: preference === 'think' && provider === 'groq',
           maxTokens: body.guestDemo ? 2_048 : coding || useProModel || flagship ? 16_384 : 4096,
           ...streamOptions

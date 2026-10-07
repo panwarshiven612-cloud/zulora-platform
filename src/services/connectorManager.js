@@ -38,22 +38,67 @@ function escapeHtml(value) {
   })[character]);
 }
 
-function buildHtmlMimeMessage({ to, subject, body }) {
-  let html = String(body || '').trim();
-  html = html.replace(/^```html\s*/i, '').replace(/```\s*$/i, '').trim();
-  html = html
-    .replace(/<(script|iframe|object|embed|form|input|button|meta|link)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
-    .replace(/<\s*(?:script|iframe|object|embed|form|input|button|meta|link)\b[^>]*\/?>/gi, '')
+function wrapMimeBase64(value) {
+  return String(value).match(/.{1,76}/g)?.join('\r\n') || '';
+}
+
+function sanitizeEmailContent(value) {
+  const raw = String(value || '').trim()
+    .replace(/^```html\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+  const containsHtml = /<\/?(?:html|head|body|a|p|div|span|h[1-6]|strong|b|em|i|u|ul|ol|li|br|hr|table|thead|tbody|tr|td|th|img|blockquote|pre|code|small|header|footer|section)\b/i.test(raw);
+  if (!containsHtml) {
+    return escapeHtml(raw)
+      .replace(/https?:\/\/[^\s<]+/gi, url => {
+        const cleanUrl = url.replace(/[),.!?;:]+$/g, '');
+        const trailing = url.slice(cleanUrl.length);
+        return '<a href="' + cleanUrl + '">' + cleanUrl + '</a>' + trailing;
+      })
+      .replace(/\r?\n/g, '<br>');
+  }
+
+  if (typeof DOMParser !== 'undefined') {
+    const document = new DOMParser().parseFromString(raw, 'text/html');
+    document.querySelectorAll('script,style,iframe,object,embed,svg,math,video,audio,source,canvas,form,input,button,meta,link,base').forEach(node => node.remove());
+    document.body.querySelectorAll('*').forEach(node => {
+      for (const attribute of [...node.attributes]) {
+        const name = attribute.name.toLowerCase();
+        const content = attribute.value.trim();
+        if (name.startsWith('on') || name === 'srcdoc') {
+          node.removeAttribute(attribute.name);
+        } else if (['href', 'src', 'action', 'xlink:href'].includes(name)
+          && content && !/^(?:https?:|mailto:|tel:|cid:|#)/i.test(content)) {
+          node.removeAttribute(attribute.name);
+        } else if (name === 'style' && /(?:expression\s*\(|url\s*\(|-moz-binding|behavior\s*:)/i.test(content)) {
+          node.removeAttribute(attribute.name);
+        }
+      }
+    });
+    return document.body.innerHTML;
+  }
+
+  return raw
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<(script|style|iframe|object|embed|svg|math|video|audio|canvas|form|input|button|meta|link|base)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+    .replace(/<\s*(?:script|style|iframe|object|embed|svg|math|video|audio|source|canvas|form|input|button|meta|link|base)\b[^>]*\/?\s*>/gi, '')
     .replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-    .replace(/\s+(href|src|action)\s*=\s*(["'])\s*(?:javascript|data):[\s\S]*?\2/gi, ' $1="#"');
-  if (!/<[a-z][\s\S]*>/i.test(html)) {
-    html = `<div>${escapeHtml(html).replace(/\r?\n/g, '<br>')}</div>`;
-  }
-  if (!/zulora(?:\s+ai)?/i.test(html)) {
-    html += '<div style="margin-top:24px;padding-top:12px;border-top:1px solid #e2e8f0;color:#94a3b8;font:11px Arial,sans-serif">Sent with <a href="https://zulora.in" style="color:#0ea5e9;text-decoration:none">Zulora AI</a></div>';
-  }
-  const plainText = html
-    .replace(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_match, href, label) => `${label.replace(/<[^>]*>/g, '')} (${href})`)
+    .replace(/\s+(href|src|action)\s*=\s*(["'])\s*(?:javascript|data|vbscript):[\s\S]*?\2/gi, ' $1="#"')
+    .replace(/<\/?(?:html|head|body)\b[^>]*>/gi, '');
+}
+
+function buildHtmlMimeMessage({ to, subject, body }) {
+  const contentHtml = sanitizeEmailContent(body)
+    .replace(/<a\b([^>]*)>/gi, (_match, attributes) => {
+      const href = attributes.match(/\bhref\s*=\s*(["'])(.*?)\1/i)?.[2] || '#';
+      const safeHref = escapeHtml(href.replace(/&amp;/gi, '&'));
+      const withoutStyle = attributes
+        .replace(/\s+style\s*=\s*(?:"[^"]*"|'[^']*')/i, '')
+        .replace(/\s+href\s*=\s*(?:"[^"]*"|'[^']*')/i, '');
+      return '<a' + withoutStyle + ' href="' + safeHref + '" style="display:inline-block;background-color:#0879c9;color:#ffffff;text-decoration:none;font-family:Arial,sans-serif;font-size:14px;font-weight:700;line-height:20px;padding:12px 20px;border-radius:8px;margin:8px 0">';
+    });
+  const plainText = contentHtml
+    .replace(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_match, href, label) => label.replace(/<[^>]*>/g, '') + ' (' + href + ')')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(?:div|p|li|h[1-6])>/gi, '\n')
     .replace(/<[^>]*>/g, '')
@@ -63,7 +108,17 @@ function buildHtmlMimeMessage({ to, subject, body }) {
     .replace(/&gt;/gi, '>')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'")
-    .trim();
+    .trim() + '\n\nSent via Zulora AI Workspace';
+  const html = '<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="x-apple-disable-message-reformatting"></head>'
+    + '<body style="margin:0;padding:0;background-color:#0b1221;color:#16233a;font-family:Arial,Helvetica,sans-serif;-webkit-text-size-adjust:100%;">'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background-color:#0b1221;border-collapse:collapse;"><tr><td align="center" style="padding:32px 14px;">'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:640px;background-color:#ffffff;border:1px solid #dbe6f1;border-radius:18px;overflow:hidden;border-collapse:separate;border-spacing:0;">'
+    + '<tr><td style="height:5px;background-color:#168bd2;font-size:0;line-height:0;">&nbsp;</td></tr>'
+    + '<tr><td style="padding:25px 30px 10px;background-color:#ffffff;"><div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:#0879c9;">Zulora AI Workspace</div></td></tr>'
+    + '<tr><td style="padding:14px 30px 30px;background-color:#ffffff;color:#25344c;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.75;overflow-wrap:anywhere;">' + contentHtml + '</td></tr>'
+    + '<tr><td style="padding:18px 30px 22px;background-color:#f4f8fc;border-top:1px solid #e3edf5;color:#718096;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.6;">Sent via <a href="https://zulora.in" style="color:#0879c9;text-decoration:none;font-weight:700;">Zulora AI Workspace</a></td></tr>'
+    + '</table><div style="max-width:640px;padding:14px 8px 0;color:#8fa1b8;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:1.5;text-align:center;">A thoughtful note, delivered with care.</div>'
+    + '</td></tr></table></body></html>';
   const boundary = `zulora_${crypto.randomUUID().replaceAll('-', '')}`;
   const encodedSubject = `=?UTF-8?B?${encodeBase64Utf8(String(subject || '').replace(/[\r\n]+/g, ' ').trim())}?=`;
   const mime = [
@@ -74,14 +129,14 @@ function buildHtmlMimeMessage({ to, subject, body }) {
     '',
     `--${boundary}`,
     'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: 8bit',
+    'Content-Transfer-Encoding: base64',
     '',
-    plainText,
+    wrapMimeBase64(encodeBase64Utf8(plainText)),
     `--${boundary}`,
     'Content-Type: text/html; charset=UTF-8',
-    'Content-Transfer-Encoding: 8bit',
+    'Content-Transfer-Encoding: base64',
     '',
-    html,
+    wrapMimeBase64(encodeBase64Utf8(html)),
     `--${boundary}--`,
     ''
   ].join('\r\n');

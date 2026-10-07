@@ -5,11 +5,13 @@ When asked to send an email, compose an email, or send an HTML template to a rec
 
 const COMPLETE_CODE_GUIDANCE = ` For software work, provide complete code without TODOs, ellipses, or omitted sections. Keep interfaces responsive and accessible, make controls work, and respect the existing project architecture.`;
 
+const INTERACTIVE_UI_GUIDANCE = ` For web interface requests, use advanced motion or canvas effects only when they fit the requested design. When asked, implement cursor-reactive Three.js tubes with resize and teardown handling; continuous horizontal sentence tracks with GSAP ScrollTrigger rather than slide decks; portfolio image reveals with an inertial organic cursor mask and inverted foreground text; and fluid canvases with a real ping-pong WebGL solver, pointer/touch forces, resize handling, and reduced-motion fallbacks. Respect the user's existing framework and dependencies, keep content readable above effects, and dispose listeners, animation frames, observers, and GPU resources on unmount.`;
+
 export const FLAGSHIP_SYSTEM_PROMPT = `\n\nUse careful, extended multi-step reasoning and verify that all requested requirements are fully satisfied. Utilize full model context and deep thinking capability. Return complete working implementations.`;
 
 export function buildSystemPrompt(contextMemory = [], now = new Date(), userBrain = {}, userVault = {}) {
   const parts = [
-    `${CORE_SYSTEM_PROMPT}${COMPLETE_CODE_GUIDANCE}`,
+    `${CORE_SYSTEM_PROMPT}${COMPLETE_CODE_GUIDANCE}${INTERACTIVE_UI_GUIDANCE}`,
     `Current date: ${now.toISOString().slice(0, 10)} (UTC).`
   ];
   const memory = Array.isArray(contextMemory)

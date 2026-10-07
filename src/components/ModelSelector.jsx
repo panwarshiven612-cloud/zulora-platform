@@ -27,6 +27,12 @@ const MODEL_OPTIONS = [
     description: 'Fast responses routed through Groq LPU with automatic fallbacks.',
     icon: Gauge,
   },
+  {
+    ...MODEL_TIERS.claude,
+    label: 'Anthropic Claude',
+    description: 'Claude through OpenRouter with standardized connector tools and automatic fallbacks.',
+    icon: Brain,
+  },
 ];
 
 export default function ModelSelector({ modelPreference, onModelChange, isOpen, onToggle, onClose }) {

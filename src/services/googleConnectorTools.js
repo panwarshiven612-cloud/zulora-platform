@@ -6,8 +6,81 @@ const integer = description => ({ type: 'INTEGER', description });
 const rowValues = { type: 'ARRAY', description: 'Rows to append; each row is an array of cell values.', items: { type: 'ARRAY', items: { type: 'STRING' } } };
 const fn = (provider, description, properties, required = []) => ({ provider, description, parameters: { type: 'OBJECT', properties, ...(required.length ? { required } : {}) } });
 
+function normalizeToolSchema(schema, typeCase, { openAi = false } = {}) {
+  const normalized = {};
+  const type = String(schema?.type || '').toUpperCase();
+  if (type) normalized.type = typeCase === 'lower' ? type.toLowerCase() : type;
+  if (typeof schema?.description === 'string') normalized.description = schema.description;
+  if (Array.isArray(schema?.enum)) normalized.enum = schema.enum;
+  if (Array.isArray(schema?.required) && schema.required.length) normalized.required = schema.required;
+  if (schema?.properties && typeof schema.properties === 'object') {
+    normalized.properties = Object.fromEntries(Object.entries(schema.properties)
+      .map(([key, value]) => [key, normalizeToolSchema(value, typeCase, { openAi })]));
+  }
+  if (schema?.items) normalized.items = normalizeToolSchema(schema.items, typeCase, { openAi });
+  if (openAi && type === 'OBJECT') normalized.additionalProperties = false;
+  return normalized;
+}
+
+export function toGeminiFunctionDeclaration({ name, description, parameters }) {
+  return { name, description, parameters: normalizeToolSchema(parameters, 'upper') };
+}
+
+export function toOpenAiFunctionTool({ name, description, parameters }, { closeObjects = true } = {}) {
+  return {
+    type: 'function',
+    function: {
+      name,
+      description,
+      parameters: normalizeToolSchema(parameters, 'lower', { openAi: closeObjects })
+    }
+  };
+}
+
+const snakeCase = key => String(key).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+
+export function normalizeGoogleConnectorArguments(rawArguments, functionName = '') {
+  let parsed = rawArguments;
+  if (typeof parsed === 'string') {
+    const source = parsed.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
+    try { parsed = JSON.parse(source); }
+    catch {
+      const objectStart = source.indexOf('{');
+      const objectEnd = source.lastIndexOf('}');
+      if (objectStart < 0 || objectEnd <= objectStart) throw new Error(`The ${functionName || 'connector'} tool returned malformed JSON arguments.`);
+      try { parsed = JSON.parse(source.slice(objectStart, objectEnd + 1)); }
+      catch { throw new Error(`The ${functionName || 'connector'} tool returned malformed JSON arguments.`); }
+    }
+  }
+  if (parsed == null) parsed = {};
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`The ${functionName || 'connector'} tool arguments must be a JSON object.`);
+  }
+  for (const wrapper of ['arguments', 'args', 'input', 'parameters']) {
+    if (typeof parsed[wrapper] === 'string') return normalizeGoogleConnectorArguments(parsed[wrapper], functionName);
+    if (parsed[wrapper] && typeof parsed[wrapper] === 'object' && !Array.isArray(parsed[wrapper])) {
+      parsed = parsed[wrapper];
+      break;
+    }
+  }
+  const normalizeKeys = value => Array.isArray(value)
+    ? value.map(normalizeKeys)
+    : value && typeof value === 'object'
+      ? Object.fromEntries(Object.entries(value).map(([key, item]) => [snakeCase(key), normalizeKeys(item)]))
+      : value;
+  const args = normalizeKeys(parsed);
+  if (!args.to) args.to = args.recipient || args.email_to || args.recipient_email || args.email;
+  if (!args.subject) args.subject = args.email_subject;
+  if (!args.body) args.body = args.email_body || args.message_body || args.message || args.content || args.text;
+  if (args.max_results !== undefined && args.max_results !== '') {
+    const maxResults = Number(args.max_results);
+    if (Number.isFinite(maxResults)) args.max_results = maxResults;
+  }
+  return args;
+}
+
 const GOOGLE_FUNCTIONS = Object.freeze({
-  gmail_send_email: fn('gmail', 'Send an email only when the user explicitly asks to send it. The function succeeds only after Gmail returns HTTP 200 with a message ID and thread ID. The backend adds a small Zulora AI footer. Never claim delivery unless this function succeeds.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Email body as plain text or HTML; do not return source code unless the user asks for code') }, ['to', 'subject', 'body']),
+  gmail_send_email: fn('gmail', 'Send an email only when the user explicitly asks to send it. The Gmail connector formats the body as a responsive HTML email and confirms success with a message ID and thread ID. Never claim delivery unless this function succeeds.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Email body as plain text or HTML; do not return source code unless the user asks for code') }, ['to', 'subject', 'body']),
   gmail_read_inbox: fn('gmail', 'Read real Gmail inbox messages using the connected account.', { query: text('Gmail search query, defaults to in:inbox'), max_results: integer('Number of messages, from 1 to 20') }),
   calendar_create_event: fn('calendar', 'Create a Google Calendar event and return the event ID from the Calendar API. Use ISO 8601 times with timezone.', { title: text('Event title'), start_time: text('ISO 8601 start time with timezone'), end_time: text('ISO 8601 end time with timezone'), description: text('Optional event description') }, ['title', 'start_time', 'end_time']),
   computer_scan_system: fn('computer', 'Ask the installed Zulora Computer Plugin over its live extension IPC bridge for a browser and active-tab scan. Report only the returned scan fields; never simulate a scan.', { scope: { type: 'STRING', enum: ['active_browser'], description: 'Scan the connected browser agent and the active tab.' } }, ['scope']),

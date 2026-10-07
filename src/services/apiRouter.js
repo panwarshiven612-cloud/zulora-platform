@@ -22,7 +22,7 @@ import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_FLASH_MODEL_ID, GEMI
 import { buildImagePrompt } from './imageGen';
 import connectorManager from './connectorManager';
 import { checkExtensionConnected } from './browserAgentEngine';
-import { executeGoogleConnectorFunction, getGoogleConnectorFunctionDeclarations, getGoogleConnectorFunctionProvider, getGoogleConnectorToolInstructions, isGoogleReconnectError } from './googleConnectorTools';
+import { executeGoogleConnectorFunction, getGoogleConnectorFunctionDeclarations, getGoogleConnectorFunctionProvider, getGoogleConnectorToolInstructions, isGoogleReconnectError, normalizeGoogleConnectorArguments, toGeminiFunctionDeclaration, toOpenAiFunctionTool } from './googleConnectorTools';
 
 // â”€â”€â”€ SAFE ENVIRONMENT EXTRACTOR â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const clientEnv = import.meta.env || {};
@@ -71,6 +71,7 @@ const OPENROUTER_KEYS = [
 const BACKUP_API_KEY = getEnv('VITE_BACKUP_API_KEY');
 const BACKUP_API_URL = getEnv('VITE_BACKUP_API_URL') || 'https://api.openai.com/v1/chat/completions';
 const BACKUP_API_MODEL = getEnv('VITE_BACKUP_API_MODEL') || 'gpt-4o-mini';
+const OPENROUTER_CLAUDE_MODEL = getEnv('VITE_OPENROUTER_CLAUDE_MODEL') || 'anthropic/claude-fable-5.1';
 const MISTRAL_KEY = getEnv('VITE_MISTRAL_KEY');
 const POLLINATIONS_KEY = getEnv('VITE_POLLINATIONS_KEY');
 const FAL_KEY = getEnv('VITE_FAL_KEY');
@@ -193,6 +194,21 @@ export const MODEL_TIERS = {
     groqModel: 'openai/gpt-oss-120b',
     cerebrasModel: 'qwq-32b',
     openrouterModel: 'deepseek/deepseek-r1',
+    mistralModel: 'mistral-large-latest',
+    maxTokens: 8192,
+    tier: 'pro',
+  },
+  claude: {
+    id: 'claude',
+    label: 'Anthropic Claude',
+    shortLabel: 'Claude',
+    description: 'Claude through OpenRouter with automatic provider fallback',
+    badge: '✦',
+    color: 'text-amber-500',
+    geminiModel: GEMINI_FAST_MODEL,
+    groqModel: GROQ_MODELS.primary,
+    cerebrasModel: 'llama-3.3-70b',
+    openrouterModel: OPENROUTER_CLAUDE_MODEL,
     mistralModel: 'mistral-large-latest',
     maxTokens: 8192,
     tier: 'pro',
@@ -364,6 +380,7 @@ const normalizeModelPreference = value => {
   const selected = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
   if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra') || ['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'think';
   if (selected === 'llama' || (selected.includes('llama') && selected.includes('70b'))) return 'llama';
+  if (selected === 'claude' || selected.includes('anthropic')) return 'claude';
   if (selected === 'groq' || selected.includes('groq')) return 'groq';
   if (selected === 'gemini' || selected === 'flash' || selected.includes('gemini flash') || (/^gemini\s+\d/.test(selected) && selected.includes('flash'))) return 'gemini';
   if (selected === 'pro' || selected === 'pro 314' || selected === 'zulora pro 3.14') return 'pro';
@@ -566,13 +583,6 @@ async function tryGeminiKeyWaterfall(prompt, contextMessages, preferredModel, op
   return null;
 }
 
-const toOpenAiSchema = schema => ({
-  ...schema,
-  ...(schema?.type ? { type: String(schema.type).toLowerCase() } : {}),
-  ...(schema?.properties ? { properties: Object.fromEntries(Object.entries(schema.properties).map(([key, value]) => [key, toOpenAiSchema(value)])) } : {}),
-  ...(schema?.items ? { items: toOpenAiSchema(schema.items) } : {})
-});
-
 function requestedConnectorProvider(prompt, declarations = []) {
   const text = String(prompt || '');
   if (/\b(?:should\s+i|should\s+we|how\s+do\s+i|how\s+to|whether\s+i\s+should)\b/i.test(text)) return '';
@@ -627,7 +637,10 @@ function connectorFailureResult({ name, error, model, provider, totalTokens, too
 
 function verifyConnectorToolResult(name, result) {
   if (result?.error || result?.success === false) throw new Error(result.error || 'The connector reported failure.');
-  if (name === 'gmail_send_email' || ['send_email', 'send_gmail', 'send_rich_email'].includes(name)) {
+  const isEmailSend = name === 'gmail_send_email'
+    || ['send_email', 'send_gmail', 'send_rich_email'].includes(name)
+    || (name === 'reply_and_draft' && result?.isDraft !== true);
+  if (isEmailSend) {
     if (result?.verified !== true || !result?.id || !result?.threadId) {
       throw new Error('Gmail did not return a verified HTTP 200 message ID and thread ID.');
     }
@@ -638,6 +651,25 @@ function verifyConnectorToolResult(name, result) {
   if (name === 'computer_scan_system' && (result?.verified !== true || !result?.scannedAt)) {
     throw new Error('The Computer Plugin did not return a verified scan.');
   }
+}
+
+async function postConnectorModelRequest(endpoint, headers, payload, options, timeoutMs, provider, normalizedRetryPayload = payload) {
+  let requestPayload = payload;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await fetchWithTimeout(endpoint, {
+      method: 'POST',
+      signal: options.signal,
+      headers,
+      body: JSON.stringify(requestPayload)
+    }, timeoutMs);
+    const data = await response.json().catch(() => ({}));
+    const schemaError = [400, 422].includes(response.status)
+      && /tool|function|schema|parameter|argument/i.test(String(data.error?.message || data.message || ''));
+    if (response.ok || attempt > 0 || !schemaError) return { response, data };
+    options.onProgress?.({ label: `${provider} is retrying with normalized tool schemas`, status: 'running' });
+    requestPayload = normalizedRetryPayload;
+  }
+  throw new Error(`${provider} tool request failed after schema normalization.`);
 }
 
 async function runGeminiConnectorToolProvider({ key, keyIndex, prompt, contextMessages, model, options, declarations }) {
@@ -667,19 +699,17 @@ async function runGeminiConnectorToolProvider({ key, keyIndex, prompt, contextMe
 
   for (let round = 0; round < 4; round += 1) {
     if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
-    const response = await fetchWithTimeout(endpoint, {
-      method: 'POST',
-      signal: options.signal,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const requestBody = {
         contents,
         system_instruction: { parts: [{ text: `${providerSystemPrompt({ ...options, connectorProviders: [...new Set(declarations.map(item => getGoogleConnectorFunctionProvider(item.name)))] })}\n\nIf a connector action is requested, call its function. Never claim an action succeeded unless the returned function result confirms it.` }] },
-        tools: [{ functionDeclarations: declarations.map(({ name, description, parameters }) => ({ name, description, parameters })) }],
+        tools: [{ functionDeclarations: declarations.map(toGeminiFunctionDeclaration) }],
         toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
         generationConfig: { maxOutputTokens: Math.min(options.coding || options.flagship ? 16_384 : (MODEL_TIERS[options.tier]?.maxTokens || 8192), 2048), temperature: 0.4 }
-      })
-    }, 18_000);
-    const data = await response.json().catch(() => ({}));
+    };
+    const { response, data } = await postConnectorModelRequest(endpoint, { 'Content-Type': 'application/json' }, requestBody, options, 18_000, 'Google Gemini', {
+      ...requestBody,
+      tools: [{ functionDeclarations: declarations.map(declaration => toGeminiFunctionDeclaration(declaration)) }]
+    });
     if (!response.ok) {
       const error = new Error(`Gemini HTTP ${response.status}: ${data.error?.message || response.statusText}`);
       error.status = response.status;
@@ -699,33 +729,29 @@ async function runGeminiConnectorToolProvider({ key, keyIndex, prompt, contextMe
       }
       const requiredProvider = requestedConnectorProvider(prompt, declarations);
       if (requiredProvider && !toolResults.length && !asksForClarification(text)) {
-        return connectorFailureResult({
-          name: declarations.find(item => getGoogleConnectorFunctionProvider(item.name) === requiredProvider)?.name || '',
-          error: new Error('Gemini did not issue the required connector function call.'),
-          model, provider: 'Google Gemini', totalTokens
-        });
+        throw new Error('Gemini did not issue the required connector function call.');
       }
       options.onProvider?.({ provider: 'Google Gemini', model });
       if (options.onToken) options.onToken(text);
       return makeResult(text);
     }
 
+    const normalizedCalls = calls.map(call => {
+      const name = call.name;
+      if (!declaredNames.has(name)) throw new Error(`Gemini requested an undeclared connector function: ${name}.`);
+      return { call, name, args: normalizeGoogleConnectorArguments(call.args, name) };
+    });
     contents.push(modelContent);
     const functionResponses = [];
-    for (const call of calls) {
-      const name = call.name;
-      if (!declaredNames.has(name)) {
-        const error = new Error(`Gemini requested an undeclared connector function: ${name}.`);
-        return connectorFailureResult({ name, error, model, provider: 'Google Gemini', totalTokens, toolResults });
-      }
+    for (const { call, name, args } of normalizedCalls) {
       let result;
-      const signature = `${name}:${JSON.stringify(call.args || {})}`;
+      const signature = `${name}:${JSON.stringify(args)}`;
       if (executedCalls.has(signature)) {
         result = executedCalls.get(signature);
       } else {
         try {
           options.onProgress?.({ label: `Executing ${name.replaceAll('_', ' ')}`, status: 'running' });
-          result = await executeGoogleConnectorFunction(name, call.args || {}, { onProgress: options.onProgress });
+          result = await executeGoogleConnectorFunction(name, args, { onProgress: options.onProgress });
           verifyConnectorToolResult(name, result);
           executedCalls.set(signature, result);
         } catch (error) {
@@ -749,13 +775,15 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
   const isGemini = provider === 'Google Gemini';
   if (isGemini) return runGeminiConnectorToolProvider({ key, keyIndex, prompt, contextMessages, model, options, declarations });
   const isBackup = provider === 'Backup API';
-  const endpoint = isGemini
-    ? 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'
-    : isBackup ? BACKUP_API_URL : 'https://openrouter.ai/api/v1/chat/completions';
-  const tools = declarations.map(declaration => ({
-    type: 'function',
-    function: { name: declaration.name, description: declaration.description, parameters: toOpenAiSchema(declaration.parameters) }
-  }));
+  const endpoints = {
+    'Groq LPU': 'https://api.groq.com/openai/v1/chat/completions',
+    Cerebras: 'https://api.cerebras.ai/v1/chat/completions',
+    'Mistral AI': 'https://api.mistral.ai/v1/chat/completions',
+    OpenRouter: 'https://openrouter.ai/api/v1/chat/completions'
+  };
+  const endpoint = isBackup ? BACKUP_API_URL : endpoints[provider];
+  if (!endpoint) throw new Error(`No connector tool endpoint is configured for ${provider}.`);
+  const tools = declarations.map(declaration => toOpenAiFunctionTool(declaration));
   const messages = [
     { role: 'system', content: providerSystemPrompt(options) },
     ...buildHistory(contextMessages, isComplexPrompt(prompt, options)),
@@ -790,17 +818,17 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
     let response;
     let data;
     try {
-      response = await fetchWithTimeout(endpoint, {
-        method: 'POST',
-        signal: options.signal,
-        headers: {
+      const headers = {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${key}`,
-          ...(!isGemini && !isBackup ? { 'HTTP-Referer': 'https://zulora.in', 'X-Title': 'Zulora AI' } : {})
-        },
-        body: JSON.stringify({ model, messages, tools, tool_choice: 'auto', max_tokens: maxTokens, temperature: 0.4 })
-      }, isGemini ? 15_000 : 18_000);
-      data = await response.json().catch(() => ({}));
+          ...(provider === 'OpenRouter' ? { 'HTTP-Referer': 'https://zulora.in', 'X-Title': 'Zulora AI' } : {})
+      };
+      const requestBody = { model, messages, tools, tool_choice: 'auto', max_tokens: maxTokens, temperature: 0.4 };
+      const normalizedRetry = {
+        ...requestBody,
+        tools: declarations.map(declaration => toOpenAiFunctionTool(declaration, { closeObjects: false }))
+      };
+      ({ response, data } = await postConnectorModelRequest(endpoint, headers, requestBody, options, 18_000, provider, normalizedRetry));
     } catch (error) {
       if (toolResults.length) return completedResult();
       throw error;
@@ -828,11 +856,7 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
       }
       const requiredProvider = requestedConnectorProvider(prompt, declarations);
       if (!toolResults.length && requiredProvider && !asksForClarification(text)) {
-        return connectorFailureResult({
-          name: declarations.find(item => getGoogleConnectorFunctionProvider(item.name) === requiredProvider)?.name || '',
-          error: new Error(`${provider} did not issue the required connector function call.`),
-          model, provider, totalTokens
-        });
+        throw new Error(`${provider} did not issue the required connector function call.`);
       }
       options.onProvider?.({ provider, model });
       if (options.onToken) options.onToken(text);
@@ -846,15 +870,15 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
       };
     }
 
-    messages.push(assistantMessage);
-    for (const call of calls) {
+    const normalizedCalls = calls.map(call => {
       const name = call.function?.name || '';
-      let args = {};
-      try {
-        const rawArguments = call.function?.arguments;
-        args = rawArguments && typeof rawArguments === 'object' ? rawArguments : JSON.parse(rawArguments || '{}');
+      if (!declarations.some(declaration => declaration.name === name)) {
+        throw new Error(`${provider} requested an undeclared connector function: ${name || '(empty name)'}.`);
       }
-      catch { args = {}; }
+      return { call, name, args: normalizeGoogleConnectorArguments(call.function?.arguments, name) };
+    });
+    messages.push(assistantMessage);
+    for (const { call, name, args } of normalizedCalls) {
       const signature = `${name}:${JSON.stringify(args)}`;
       let result = executedCalls.get(signature);
       if (!executedCalls.has(signature)) {
@@ -888,16 +912,40 @@ async function tryGoogleConnectorToolWaterfall(prompt, contextMessages, model, o
   }
   const declarations = getGoogleConnectorFunctionDeclarations(activeProviders, prompt);
   if (!declarations.length) return null;
+  const providers = new Set(declarations.map(declaration => getGoogleConnectorFunctionProvider(declaration.name)));
+  const connectorOptions = {
+    ...options,
+    connectorProviders: [...providers]
+  };
   const keys = getGeminiKeyPool();
-  const openrouterKeys = OPENROUTER_KEYS;
-  const candidates = [
-    ...keys.map((key, index) => ({ provider: 'Google Gemini', key, keyIndex: index, model })),
-    ...openrouterKeys.map((key, index) => ({ provider: 'OpenRouter', key, keyIndex: index, model: (MODEL_TIERS[options.tier] || MODEL_TIERS.auto).openrouterModel })),
-    ...(BACKUP_API_KEY ? [{ provider: 'Backup API', key: BACKUP_API_KEY, keyIndex: 0, model: BACKUP_API_MODEL }] : [])
-  ];
+  const tierConfig = MODEL_TIERS[options.tier] || MODEL_TIERS.auto;
+  const requestedModel = String(options.model || '').toLowerCase();
+  const preferenceOrder = options.tier === 'claude' || requestedModel.includes('claude') || requestedModel.includes('anthropic')
+    ? ['openrouter', 'gemini', 'groq', 'backup', 'cerebras', 'mistral']
+    : requestedModel.includes('groq') || options.tier === 'groq' || options.tier === 'llama'
+    ? ['groq', 'openrouter', 'gemini', 'backup', 'cerebras', 'mistral']
+    : ['gemini', 'openrouter', 'groq', 'backup', 'cerebras', 'mistral'];
+  const candidates = [];
+  for (const provider of preferenceOrder) {
+    if (provider === 'gemini') {
+      candidates.push(...keys.map((key, index) => ({ provider: 'Google Gemini', key, keyIndex: index, model })));
+    } else if (provider === 'openrouter') {
+      candidates.push(...OPENROUTER_KEYS.map((key, index) => ({ provider: 'OpenRouter', key, keyIndex: index, model: tierConfig.openrouterModel })));
+    } else if (provider === 'groq' && GROQ_KEY) {
+      candidates.push({ provider: 'Groq LPU', key: GROQ_KEY, keyIndex: 0, model: tierConfig.groqModel });
+    } else if (provider === 'backup' && BACKUP_API_KEY) {
+      candidates.push({ provider: 'Backup API', key: BACKUP_API_KEY, keyIndex: 0, model: BACKUP_API_MODEL });
+    } else if (provider === 'cerebras' && CEREBRAS_KEY) {
+      candidates.push({ provider: 'Cerebras', key: CEREBRAS_KEY, keyIndex: 0, model: tierConfig.cerebrasModel });
+    } else if (provider === 'mistral' && MISTRAL_KEY) {
+      candidates.push({ provider: 'Mistral AI', key: MISTRAL_KEY, keyIndex: 0, model: tierConfig.mistralModel });
+    }
+  }
   for (const candidate of candidates) {
     try {
-      return await runConnectorToolProvider({ ...candidate, prompt, contextMessages, options, declarations });
+      const result = await runConnectorToolProvider({ ...candidate, prompt, contextMessages, options: connectorOptions, declarations });
+      if (result?.connectorExecutionFailed) return result;
+      return result;
     } catch (error) {
       if (options.signal?.aborted) throw error;
       errors.push(`${candidate.provider} connector tools (key ${candidate.keyIndex + 1}): ${error.message}`);
@@ -1369,6 +1417,8 @@ export const apiRouter = {
       ? ['gemini']
       : options.computerAgent
         ? options.computerVision ? ['gemini', 'openrouter', 'backup', 'mistral'] : ['cerebras', 'groq', 'openrouter', 'backup', 'mistral']
+      : requestedTier === 'claude'
+      ? ['openrouter', 'gemini', 'backup', 'groq', 'cerebras', 'mistral']
       : requestedTier === 'groq' || requestedTier === 'llama'
       ? ['groq', 'gemini', 'openrouter', 'backup', 'cerebras', 'mistral']
       : ['gemini', 'openrouter', 'backup', 'cerebras', 'groq', 'mistral'];
@@ -1391,7 +1441,7 @@ export const apiRouter = {
               : await (async () => {
                 let lastError;
                 for (let keyIndex = 0; keyIndex < OPENROUTER_KEYS.length; keyIndex += 1) {
-                  try { return await withProviderRetry(() => tryOpenRouter(prompt, contextMessages, 'auto', keyIndex, options), 2, options.signal); }
+                  try { return await withProviderRetry(() => tryOpenRouter(prompt, contextMessages, requestedTier === 'claude' ? 'claude' : 'auto', keyIndex, options), 2, options.signal); }
                   catch (error) {
                     if (options.signal?.aborted) throw error;
                     lastError = error;
