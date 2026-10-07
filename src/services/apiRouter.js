@@ -5,8 +5,8 @@
  * 
  * - Reads browser-safe VITE_* variables from import.meta.env
  * - Tries the configured providers sequentially and ignores empty responses
- * - Silent automatic failover across all 7 Gemini keys (429/401/403/500 caught and retried)
- * - Cascades through seven rotating Gemini keys -> Cerebras -> Groq -> Mistral -> OpenRouter -> Pollinations
+ * - Silent automatic failover across all configured Gemini keys
+ * - Cascades through Gemini Flash -> Gemini Pro -> Groq LPU
  * - Bulletproof Image Studio (Pollinations FLUX -> Fal AI -> HuggingFace -> Cloudflare -> High-Res fallback)
  * - Video Studio delegates to the Pollinations-first server video router, with Fal AI / Replicate fallbacks
  * - Returns both `url` and `imageUrl`/`videoUrl` so all studio consumers work seamlessly
@@ -18,7 +18,7 @@ import { generateVideo as generateVideoWithProviders } from './videoService';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from './systemPrompt';
 import { webSearch, formatCitations } from './webSearch';
 import { AI_STUDIO_SYSTEM_PROMPT } from './aiStudioPrompt';
-import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_FLASH_MODEL_ID, GEMINI_MODELS, GEMINI_MODEL_FALLBACKS, GEMINI_PRO_MODEL_FALLBACKS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from './aiModels';
+import { GEMINI_FLASH_MODEL_ID, GEMINI_MODELS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from './aiModels';
 import { buildImagePrompt } from './imageGen';
 import connectorManager from './connectorManager';
 import { checkExtensionConnected } from './browserAgentEngine';
@@ -29,13 +29,8 @@ const clientEnv = import.meta.env || {};
 const getEnv = (key) => String(clientEnv[key] || '').trim();
 export const GROQ_MODELS = Object.freeze({
   primary: 'llama-3.3-70b-versatile',
-  fastStream: 'llama-3.1-8b-instant',
-  fallback: 'gemini-2.5-flash',
 });
-const GEMINI_FAST_MODEL = getEnv('VITE_GEMINI_FAST_MODEL') || GEMINI_FAST_MODEL_ID;
 const GEMINI_FLASH_MODEL = getEnv('VITE_GEMINI_FLASH_MODEL') || GEMINI_FLASH_MODEL_ID;
-const GEMINI_HIGH_CAPACITY_MODEL = getEnv('VITE_GEMINI_HIGH_CAPACITY_MODEL') || GEMINI_BEST_MODEL_ID;
-const GEMINI_FLASH_VARIANTS = [...new Set([GEMINI_HIGH_CAPACITY_MODEL, ...GEMINI_MODEL_FALLBACKS])];
 export { GEMINI_MODELS };
 
 // â”€â”€â”€ DYNAMIC GEMINI KEY POOL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -62,18 +57,6 @@ export const getGeminiKeyPool = () => {
 const GROQ_KEY = getEnv('VITE_GROQ_KEY') || getEnv('VITE_GROQ_API_KEY');
 const HF_IMAGE_KEY = getEnv('VITE_HF_API_KEY') || getEnv('VITE_HUGGINGFACE_API_KEY');
 const REPLICATE_IMAGE_KEY = getEnv('VITE_REPLICATE_API_TOKEN') || getEnv('VITE_REPLICATE_KEY');
-const CEREBRAS_KEY = getEnv('VITE_CEREBRAS_KEY');
-const OPENROUTER_KEYS = [
-  getEnv('VITE_OPENROUTER_KEY_1') || getEnv('VITE_OPENROUTER_API_KEY_1'),
-  getEnv('VITE_OPENROUTER_KEY_2') || getEnv('VITE_OPENROUTER_API_KEY_2'),
-  getEnv('VITE_OPENROUTER_API_KEY')
-].filter(Boolean);
-const BACKUP_API_KEY = getEnv('VITE_BACKUP_API_KEY');
-const BACKUP_API_URL = getEnv('VITE_BACKUP_API_URL') || 'https://api.openai.com/v1/chat/completions';
-const BACKUP_API_MODEL = getEnv('VITE_BACKUP_API_MODEL') || 'gpt-4o-mini';
-const OPENROUTER_CLAUDE_MODEL = getEnv('VITE_OPENROUTER_CLAUDE_MODEL') || 'anthropic/claude-fable-5.1';
-const MISTRAL_KEY = getEnv('VITE_MISTRAL_KEY');
-const POLLINATIONS_KEY = getEnv('VITE_POLLINATIONS_KEY');
 const FAL_KEY = getEnv('VITE_FAL_KEY');
 const CLOUDFLARE_ACCT = getEnv('VITE_CLOUDFLARE_ACCOUNT_ID');
 const CLOUDFLARE_TOKEN = getEnv('VITE_CLOUDFLARE_API_TOKEN');
@@ -100,11 +83,8 @@ export const MODEL_TIERS = {
     description: 'Automatically selects a fast model or coding model',
     badge: 'âœ¦',
     color: 'text-sky-500',
-    geminiModel: GEMINI_FAST_MODEL,
+    geminiModel: GEMINI_FLASH_MODEL,
     groqModel: GROQ_MODELS.primary,
-    cerebrasModel: 'llama3.1-70b',
-    openrouterModel: 'openrouter/free',
-    mistralModel: 'mistral-large-latest',
     maxTokens: 8192,
     tier: 'free',
   },
@@ -112,75 +92,24 @@ export const MODEL_TIERS = {
     id: 'flash',
     label: 'Zulora Flash 3.5',
     shortLabel: 'Flash 3.5',
-    description: 'Gemini 3.5 Flash and Flash-Lite with automatic fallbacks',
+    description: 'Gemini 3.5 Flash with Gemini Pro and Groq backup routes',
     badge: 'âš¡',
     color: 'text-sky-500',
     geminiModel: GEMINI_FLASH_MODEL,
-    groqModel: GROQ_MODELS.fastStream,
-    cerebrasModel: 'llama3.1-8b',
-    openrouterModel: 'meta-llama/llama-3.1-8b-instruct:free',
-    mistralModel: 'mistral-7b-instruct',
+    groqModel: GROQ_MODELS.primary,
     maxTokens: 4096,
-    tier: 'free',
-  },
-  gemini: {
-    id: 'gemini',
-    label: 'Gemini',
-    shortLabel: 'Gemini',
-    description: 'Selects a Gemini Flash model for the request type',
-    badge: 'âš¡',
-    color: 'text-sky-500',
-    geminiModel: GEMINI_FLASH_MODEL,
-    groqModel: GROQ_MODELS.fastStream,
-    cerebrasModel: 'llama3.1-8b',
-    openrouterModel: 'meta-llama/llama-3.1-8b-instruct:free',
-    mistralModel: 'mistral-7b-instruct',
-    maxTokens: 8192,
-    tier: 'free',
-  },
-  llama: {
-    id: 'llama',
-    label: 'Llama 3.3 70B',
-    shortLabel: 'Llama 70B',
-    description: 'Long-form coding and text generation',
-    badge: 'âŒ˜',
-    color: 'text-emerald-500',
-    geminiModel: GEMINI_FAST_MODEL,
-    groqModel: 'llama-3.3-70b-versatile',
-    cerebrasModel: 'llama-3.3-70b',
-    openrouterModel: 'meta-llama/llama-3.3-70b-instruct',
-    mistralModel: 'mistral-medium',
-    maxTokens: 8192,
     tier: 'free',
   },
   groq: {
     id: 'groq',
     label: 'Zulora Turbo Speed',
     shortLabel: 'Turbo Speed',
-    description: 'Fast responses routed directly through the selected Groq model',
+    description: 'Fast Groq LPU responses with Gemini backup routes',
     badge: 'âš¡',
     color: 'text-orange-500',
-    geminiModel: GROQ_MODELS.fallback,
+    geminiModel: GEMINI_FLASH_MODEL,
     groqModel: GROQ_MODELS.primary,
-    cerebrasModel: 'llama3.1-8b',
-    openrouterModel: 'meta-llama/llama-3.3-70b-instruct',
-    mistralModel: 'mistral-small-latest',
     maxTokens: 8192,
-    tier: 'free',
-  },
-  pro: {
-    id: 'pro',
-    label: 'Zulora Pro 3.14',
-    shortLabel: 'Pro',
-    description: 'Complex analysis and high-reasoning tasks',
-    badge: 'ðŸš€',
-    color: 'text-violet-500',
-    geminiModel: GEMINI_PRO_MODEL_ID,
-    groqModel: GROQ_MODELS.primary,
-    cerebrasModel: 'llama-3.3-70b',
-    openrouterModel: 'meta-llama/llama-3.3-70b-instruct',
-    mistralModel: 'mistral-medium',
-    maxTokens: 4096,
     tier: 'free',
   },
   think: {
@@ -191,25 +120,7 @@ export const MODEL_TIERS = {
     badge: 'ðŸ§ ',
     color: 'text-amber-500',
     geminiModel: GEMINI_PRO_MODEL_ID,
-    groqModel: 'openai/gpt-oss-120b',
-    cerebrasModel: 'qwq-32b',
-    openrouterModel: 'deepseek/deepseek-r1',
-    mistralModel: 'mistral-large-latest',
-    maxTokens: 8192,
-    tier: 'pro',
-  },
-  claude: {
-    id: 'claude',
-    label: 'Anthropic Claude',
-    shortLabel: 'Claude',
-    description: 'Claude through the selected OpenRouter model',
-    badge: '✦',
-    color: 'text-amber-500',
-    geminiModel: GEMINI_FAST_MODEL,
     groqModel: GROQ_MODELS.primary,
-    cerebrasModel: 'llama-3.3-70b',
-    openrouterModel: OPENROUTER_CLAUDE_MODEL,
-    mistralModel: 'mistral-large-latest',
     maxTokens: 8192,
     tier: 'pro',
   },
@@ -379,11 +290,11 @@ const normalizeModelPreference = value => {
   if (modelId) return modelId;
   const selected = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
   if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra') || /zulora 3\.1 pro(?: ultra)?/.test(selected) || ['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'think';
-  if (selected === 'llama' || (selected.includes('llama') && /(?:70b|3\.3)/.test(selected))) return 'llama';
-  if (selected === 'claude' || selected.includes('anthropic')) return 'claude';
+  if (selected === 'llama' || (selected.includes('llama') && /(?:70b|3\.3)/.test(selected))) return 'groq';
   if (selected === 'groq' || selected.includes('groq') || selected.includes('turbo')) return 'groq';
-  if (selected === 'gemini' || selected === 'flash' || selected.includes('gemini flash') || (/^gemini\s+\d/.test(selected) && selected.includes('flash'))) return 'gemini';
-  if (selected === 'pro' || selected === 'pro 314' || selected === 'zulora pro 3.14') return 'pro';
+  if (selected === 'flash' || selected.includes('gemini flash') || selected.includes('zulora flash')) return 'flash';
+  if (selected === 'gemini' || (/^gemini\s+\d/.test(selected) && selected.includes('flash'))) return 'gemini';
+  if (selected === 'pro' || selected === 'pro 314' || selected === 'zulora pro 3.14') return 'think';
   return 'auto';
 };
 
@@ -433,7 +344,7 @@ const ensureGenerationAllowance = async (type, currentUser, requestContext = {})
  */
 const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options = {}) => {
   if (!key) throw new Error('Empty Gemini key');
-  const tierConfig = MODEL_TIERS[tier] || MODEL_TIERS.pro;
+  const tierConfig = MODEL_TIERS[tier] || MODEL_TIERS.think;
   const model = String(tier).startsWith('gemini-') ? tier : tierConfig.geminiModel;
 
   const messages = [
@@ -538,10 +449,10 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
 async function tryGeminiKeyWaterfall(prompt, contextMessages, preferredModel, options, errors) {
   const keys = getGeminiKeyPool();
   if (!keys.length) return null;
-    const models = [preferredModel];
+  const models = [preferredModel];
+  if (![GEMINI_PRO_MODEL_ID, 'gemini-2.5-pro'].includes(preferredModel)) models.push(GEMINI_PRO_MODEL_ID);
   for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
     const model = models[modelIndex];
-    let modelUnavailable = false;
     const candidates = keys.map((key, index) => ({ key, index }));
     if (options.preferBestKey) candidates.sort((left, right) => {
       const score = item => {
@@ -564,20 +475,12 @@ async function tryGeminiKeyWaterfall(prompt, contextMessages, preferredModel, op
         const previous = geminiKeyPerformance.get(keyIndex) || { successes: 0, failures: 0, averageMs: 100_000 };
         geminiKeyPerformance.set(keyIndex, { ...previous, failures: previous.failures + 1 });
         errors.push(`${model} (Gemini key ${keyIndex + 1}/${keys.length}): ${error.message}`);
-        if (/Gemini HTTP (403|404|408|425|429|500|502|503|504)|model.{0,30}(not found|unavailable|rate limit|quota|permission)|model.{0,30}404/i.test(error.message || '')) modelUnavailable = true;
         if (options.streamState?.sent) {
           options.onReset?.();
           options.streamState.sent = false;
         }
         activeGeminiIdx = (keyIndex + 1) % keys.length;
       }
-    }
-    if (!modelUnavailable) break;
-    if (modelIndex === 0) {
-      const fallbacks = preferredModel === GEMINI_PRO_MODEL_ID
-        ? [...GEMINI_PRO_MODEL_FALLBACKS, ...GEMINI_FLASH_VARIANTS]
-        : GEMINI_FLASH_VARIANTS;
-      models.push(...fallbacks.filter(candidate => candidate !== preferredModel && !models.includes(candidate)));
     }
   }
   return null;
@@ -791,14 +694,10 @@ async function runGeminiConnectorToolProvider({ key, keyIndex, prompt, contextMe
 async function runConnectorToolProvider({ provider, key, keyIndex, prompt, contextMessages, model, options, declarations }) {
   const isGemini = provider === 'Google Gemini';
   if (isGemini) return runGeminiConnectorToolProvider({ key, keyIndex, prompt, contextMessages, model, options, declarations });
-  const isBackup = provider === 'Backup API';
   const endpoints = {
-    'Groq LPU': 'https://api.groq.com/openai/v1/chat/completions',
-    Cerebras: 'https://api.cerebras.ai/v1/chat/completions',
-    'Mistral AI': 'https://api.mistral.ai/v1/chat/completions',
-    OpenRouter: 'https://openrouter.ai/api/v1/chat/completions'
+    'Groq LPU': 'https://api.groq.com/openai/v1/chat/completions'
   };
-  const endpoint = isBackup ? BACKUP_API_URL : endpoints[provider];
+  const endpoint = endpoints[provider];
   if (!endpoint) throw new Error(`No connector tool endpoint is configured for ${provider}.`);
   const tools = declarations.map(declaration => toOpenAiFunctionTool(declaration));
   const messages = [
@@ -838,7 +737,6 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
       const headers = {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${key}`,
-          ...(provider === 'OpenRouter' ? { 'HTTP-Referer': 'https://zulora.in', 'X-Title': 'Zulora AI' } : {})
       };
       const requestBody = { model, messages, tools, tool_choice: 'auto', max_tokens: maxTokens, temperature: 0.4 };
       const normalizedRetry = {
@@ -936,39 +834,29 @@ async function tryGoogleConnectorToolWaterfall(prompt, contextMessages, model, o
   };
   const keys = getGeminiKeyPool();
   const tierConfig = MODEL_TIERS[options.tier] || MODEL_TIERS.auto;
-  const requestedModel = String(options.model || '').toLowerCase();
   const selectedTier = normalizeModelPreference(options.model);
   const isExplicitModel = selectedTier !== 'auto';
-  const preferenceOrder = isExplicitModel
-    ? selectedTier === 'claude' ? ['openrouter']
-      : selectedTier === 'groq' || selectedTier === 'llama' ? ['groq']
-        : ['gemini']
-    : requestedModel.includes('claude') || options.tier === 'claude' ? ['openrouter', 'gemini', 'groq', 'backup', 'cerebras', 'mistral']
-      : options.tier === 'groq' || options.tier === 'llama' ? ['groq', 'openrouter', 'gemini', 'backup', 'cerebras', 'mistral']
-        : ['gemini', 'openrouter', 'groq', 'backup', 'cerebras', 'mistral'];
+  const hasGeminiAttachments = (options.attachments || []).some(item => toGeminiInlineData(item));
+  const preferenceOrder = hasGeminiAttachments
+    ? ['gemini']
+    : selectedTier === 'groq'
+    ? ['groq', 'gemini']
+    : ['gemini', 'groq'];
   const candidates = [];
   for (const provider of preferenceOrder) {
     if (provider === 'gemini') {
-      candidates.push(...keys.map((key, index) => ({ provider: 'Google Gemini', key, keyIndex: index, model })));
-    } else if (provider === 'openrouter') {
-      candidates.push(...OPENROUTER_KEYS.map((key, index) => ({ provider: 'OpenRouter', key, keyIndex: index, model: tierConfig.openrouterModel })));
+      const preferredModel = selectedTier === 'think' ? GEMINI_PRO_MODEL_ID : model;
+      candidates.push(...keys.map((key, index) => ({ provider: 'Google Gemini', key, keyIndex: index, model: preferredModel })));
+      if (preferredModel !== GEMINI_PRO_MODEL_ID) {
+        candidates.push(...keys.map((key, index) => ({ provider: 'Google Gemini', key, keyIndex: index, model: GEMINI_PRO_MODEL_ID })));
+      }
     } else if (provider === 'groq' && GROQ_KEY) {
       candidates.push({ provider: 'Groq LPU', key: GROQ_KEY, keyIndex: 0, model: tierConfig.groqModel });
-    } else if (provider === 'backup' && BACKUP_API_KEY) {
-      candidates.push({ provider: 'Backup API', key: BACKUP_API_KEY, keyIndex: 0, model: BACKUP_API_MODEL });
-    } else if (provider === 'cerebras' && CEREBRAS_KEY) {
-      candidates.push({ provider: 'Cerebras', key: CEREBRAS_KEY, keyIndex: 0, model: tierConfig.cerebrasModel });
-    } else if (provider === 'mistral' && MISTRAL_KEY) {
-      candidates.push({ provider: 'Mistral AI', key: MISTRAL_KEY, keyIndex: 0, model: tierConfig.mistralModel });
     }
   }
   if (isExplicitModel && !candidates.length) {
-    const providerName = preferenceOrder[0] === 'openrouter' ? 'OpenRouter Claude'
-      : preferenceOrder[0] === 'groq' ? 'Groq LPU'
-        : 'Google Gemini';
-    const selectedModel = preferenceOrder[0] === 'openrouter' ? tierConfig.openrouterModel
-      : preferenceOrder[0] === 'groq' ? tierConfig.groqModel
-        : model;
+    const providerName = preferenceOrder[0] === 'groq' ? 'Groq LPU' : 'Google Gemini';
+    const selectedModel = preferenceOrder[0] === 'groq' ? tierConfig.groqModel : model;
     return connectorFailureResult({
       name: declarations[0].name,
       error: new Error(`${providerName} is selected, but no API key is configured for that model route.`),
@@ -986,16 +874,7 @@ async function tryGoogleConnectorToolWaterfall(prompt, contextMessages, model, o
     } catch (error) {
       if (options.signal?.aborted) throw error;
       errors.push(`${candidate.provider} connector tools (key ${candidate.keyIndex + 1}): ${error.message}`);
-      if (isExplicitModel) {
-        if (candidates[candidateIndex + 1]?.provider === candidate.provider) continue;
-        return connectorFailureResult({
-          name: declarations[0].name,
-          error,
-          model: candidate.model,
-          provider: candidate.provider,
-          totalTokens: 0
-        });
-      }
+      if (candidates[candidateIndex + 1]?.provider === candidate.provider) continue;
     }
   }
   return null;
@@ -1006,7 +885,7 @@ async function tryGoogleConnectorToolWaterfall(prompt, contextMessages, model, o
  */
 const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
   if (!GROQ_KEY) throw new Error('No Groq key available');
-  const tierConfig = MODEL_TIERS[tier] || MODEL_TIERS.pro;
+  const tierConfig = MODEL_TIERS[tier] || MODEL_TIERS.think;
   const model = tierConfig.groqModel;
 
   const messages = [
@@ -1049,202 +928,6 @@ const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
     text,
     model,
     provider: 'Groq LPU'
-  };
-};
-
-/**
- * Cerebras Adapter
- */
-const tryCerebras = async (prompt, contextMessages, tier = 'pro', options = {}) => {
-  if (!CEREBRAS_KEY) throw new Error('No Cerebras key');
-  const tierConfig = MODEL_TIERS[tier] || MODEL_TIERS.pro;
-  const model = tierConfig.cerebrasModel;
-
-  const messages = [
-    { role: 'system', content: providerSystemPrompt(options) },
-    ...buildHistory(contextMessages, isComplexPrompt(prompt, options)),
-    { role: 'user', content: prompt }
-  ];
-
-  const res = await fetchWithTimeout(
-    'https://api.cerebras.ai/v1/chat/completions',
-    {
-      method: 'POST',
-      signal: options.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${CEREBRAS_KEY}`
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        max_tokens: options.coding || options.flagship ? 16_384 : tierConfig.maxTokens,
-        temperature: 0.7,
-        ...(options.onToken ? { stream: true } : {})
-      })
-    },
-    12000
-  );
-
-  if (!res.ok) throw new Error(`Cerebras HTTP ${res.status}`);
-  options.onProvider?.({ provider: 'Cerebras', model });
-  const text = await readOpenAiText(res, options);
-  if (!text) throw new Error('Cerebras empty response');
-
-  return {
-    text,
-    model: `Cerebras (${model})`,
-    provider: 'Cerebras'
-  };
-};
-
-/**
- * OpenRouter Adapter
- */
-const tryOpenRouter = async (prompt, contextMessages, tier = 'pro', keyIdx = 0, options = {}) => {
-  const key = OPENROUTER_KEYS[keyIdx];
-  if (!key) throw new Error('No OpenRouter key');
-  const tierConfig = MODEL_TIERS[tier] || MODEL_TIERS.pro;
-  const model = tierConfig.openrouterModel;
-
-  const messages = [
-    { role: 'system', content: providerSystemPrompt(options) },
-    ...buildHistory(contextMessages, isComplexPrompt(prompt, options)),
-    { role: 'user', content: prompt }
-  ];
-
-  const res = await fetchWithTimeout(
-    'https://openrouter.ai/api/v1/chat/completions',
-    {
-      method: 'POST',
-      signal: options.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${key}`,
-        'HTTP-Referer': 'https://zulora.in',
-        'X-Title': 'Zulora AI'
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        max_tokens: options.coding || options.flagship ? 16_384 : tierConfig.maxTokens,
-        ...(options.onToken ? { stream: true } : {})
-      })
-    },
-    14000
-  );
-
-  if (!res.ok) throw new Error(`OpenRouter HTTP ${res.status}`);
-  options.onProvider?.({ provider: 'OpenRouter', model });
-  const text = await readOpenAiText(res, options);
-  if (!text) throw new Error('OpenRouter empty response');
-
-  return {
-    text,
-    model: `OpenRouter (${model.split('/').pop().split(':')[0]})`,
-    provider: 'OpenRouter'
-  };
-};
-
-const tryBackupApi = async (prompt, contextMessages, options = {}) => {
-  if (!BACKUP_API_KEY) throw new Error('No backup API key available');
-  const tierConfig = MODEL_TIERS[options.tier] || MODEL_TIERS.auto;
-  const messages = [
-    { role: 'system', content: providerSystemPrompt(options) },
-    ...buildHistory(contextMessages),
-    { role: 'user', content: prompt }
-  ];
-  const response = await fetchWithTimeout(BACKUP_API_URL, {
-    method: 'POST',
-    signal: options.signal,
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${BACKUP_API_KEY}` },
-    body: JSON.stringify({ model: BACKUP_API_MODEL, messages, max_tokens: options.coding || options.flagship ? 16_384 : tierConfig.maxTokens, ...(options.onToken ? { stream: true } : {}) })
-  }, 16_000);
-  if (!response.ok) throw new Error(`Backup API HTTP ${response.status}`);
-  options.onProvider?.({ provider: 'Backup API', model: BACKUP_API_MODEL });
-  const text = await readOpenAiText(response, options);
-  if (!text) throw new Error('Backup API returned empty text');
-  return { text, model: BACKUP_API_MODEL, provider: 'Backup API' };
-};
-
-/**
- * Mistral Adapter
- */
-const tryMistral = async (prompt, contextMessages, tier = 'pro', options = {}) => {
-  if (!MISTRAL_KEY) throw new Error('No Mistral key');
-  const tierConfig = MODEL_TIERS[tier] || MODEL_TIERS.pro;
-  const model = tierConfig.mistralModel;
-
-  const messages = [
-    { role: 'system', content: providerSystemPrompt(options) },
-    ...buildHistory(contextMessages),
-    { role: 'user', content: prompt }
-  ];
-
-  const res = await fetchWithTimeout(
-    'https://api.mistral.ai/v1/chat/completions',
-    {
-      method: 'POST',
-      signal: options.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${MISTRAL_KEY}`
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        max_tokens: options.coding || options.flagship ? 16_384 : tierConfig.maxTokens,
-        ...(options.onToken ? { stream: true } : {})
-      })
-    },
-    12000
-  );
-
-  if (!res.ok) throw new Error(`Mistral HTTP ${res.status}`);
-  options.onProvider?.({ provider: 'Mistral AI', model });
-  const text = await readOpenAiText(res, options);
-  if (!text) throw new Error('Mistral empty response');
-
-  return {
-    text,
-    model: `Mistral (${model})`,
-    provider: 'Mistral AI'
-  };
-};
-
-/**
- * Pollinations Text Adapter (Free zero-config fallback)
- */
-const tryPollinationsText = async (prompt, options = {}, contextMessages = []) => {
-  const messages = [
-    { role: 'system', content: providerSystemPrompt(options) },
-    ...buildHistory(contextMessages),
-    { role: 'user', content: prompt }
-  ];
-  const res = POLLINATIONS_KEY
-    ? await fetchWithTimeout('https://gen.pollinations.ai/v1/chat/completions', {
-      method: 'POST',
-      signal: options.signal,
-      headers: { Authorization: `Bearer ${POLLINATIONS_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'mistralai/mistral-small-3.2', messages, max_tokens: options.coding || options.flagship ? 16_384 : 4096 })
-    }, 20_000)
-    : await fetchWithTimeout(
-      `https://text.pollinations.ai/${encodeURIComponent(messages.map(message => `${message.role}: ${message.content}`).join('\n\n'))}?model=mistral&seed=${Date.now() % 10000}`,
-      { signal: options.signal },
-      20_000
-    );
-  if (!res.ok) throw new Error(`Pollinations HTTP ${res.status}`);
-  const contentType = res.headers.get('content-type') || '';
-  const data = contentType.includes('json') ? await res.json() : null;
-  const text = data
-    ? data.choices?.[0]?.message?.content || data.output_text || data.output?.[0]?.content?.[0]?.text || ''
-    : await res.text();
-  if (!text || text.trim().length < 5) throw new Error('Pollinations returned empty text');
-
-  return {
-    text,
-    model: 'Zulora Edge (Pollinations)',
-    provider: 'Edge Fallback'
   };
 };
 
@@ -1483,15 +1166,11 @@ export const apiRouter = {
     }
 
     const hasGeminiAttachments = (options.attachments || []).some(item => toGeminiInlineData(item));
-    const explicitProviderOrder = requestedTier === 'auto' ? null
-      : requestedTier === 'claude' ? ['openrouter']
-        : requestedTier === 'groq' || requestedTier === 'llama' ? ['groq']
-          : ['gemini'];
-    const providerOrder = explicitProviderOrder || (hasGeminiAttachments
+    const providerOrder = hasGeminiAttachments || options.webSearch
       ? ['gemini']
-      : options.computerAgent
-        ? options.computerVision ? ['gemini', 'openrouter', 'backup', 'mistral'] : ['cerebras', 'groq', 'openrouter', 'backup', 'mistral']
-      : ['gemini', 'openrouter', 'backup', 'groq', 'cerebras', 'mistral']);
+      : requestedTier === 'groq'
+        ? ['groq', 'gemini']
+        : ['gemini', 'groq'];
     for (const provider of providerOrder) {
       if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
       if (provider === 'gemini') {
@@ -1500,47 +1179,12 @@ export const apiRouter = {
         continue;
       }
       try {
-        const result = provider === 'groq'
-          ? await withProviderRetry(() => tryGroq(prompt, contextMessages, 'auto', options), 2, options.signal)
-          : provider === 'cerebras'
-            ? await withProviderRetry(() => tryCerebras(prompt, contextMessages, options.computerAgent ? 'flash' : 'auto', options), 2, options.signal)
-            : provider === 'mistral'
-              ? await withProviderRetry(() => tryMistral(prompt, contextMessages, 'auto', options), 2, options.signal)
-              : provider === 'backup'
-                ? await withProviderRetry(() => tryBackupApi(prompt, contextMessages, options), 2, options.signal)
-              : await (async () => {
-                let lastError;
-                for (let keyIndex = 0; keyIndex < OPENROUTER_KEYS.length; keyIndex += 1) {
-                  try { return await withProviderRetry(() => tryOpenRouter(prompt, contextMessages, requestedTier === 'claude' ? 'claude' : 'auto', keyIndex, options), 2, options.signal); }
-                  catch (error) {
-                    if (options.signal?.aborted) throw error;
-                    lastError = error;
-                    errors.push(`OpenRouter key ${keyIndex + 1}/${OPENROUTER_KEYS.length}: ${error.message}`);
-                    if (options.streamState.sent) { options.onReset?.(); options.streamState.sent = false; }
-                  }
-                }
-                throw lastError || new Error('No OpenRouter keys are configured.');
-              })();
+        const result = await withProviderRetry(() => tryGroq(prompt, contextMessages, 'auto', options), 2, options.signal);
         return await syncUsage(result, 'chat', options.currentUser);
       } catch (error) {
         if (options.signal?.aborted) throw error;
         errors.push(`${provider}: ${error.message}`);
         if (options.streamState.sent) { options.onReset?.(); options.streamState.sent = false; }
-      }
-    }
-
-    // Auto may use the public edge fallback; an explicit model selection never silently changes endpoints.
-    if (requestedTier === 'auto') {
-      try {
-        const result = await tryPollinationsText(prompt, options, contextMessages);
-        if (options.onToken) {
-          options.onProvider?.({ provider: result.provider, model: result.model });
-          options.onToken(result.text);
-          options.streamState.sent = true;
-        }
-        return await syncUsage(result, 'chat', options.currentUser);
-      } catch (error) {
-        errors.push(`Pollinations: ${error.message}`);
       }
     }
 

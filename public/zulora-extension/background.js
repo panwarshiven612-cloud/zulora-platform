@@ -32,8 +32,7 @@ let cachedApiKeys = {
   geminiKeys: [],
   groqKey: '',
   cerebrasKey: '',
-  mistralKey: '',
-  openRouterKey: ''
+  mistralKey: ''
 };
 
 chrome.storage.local.get(['zuloraApiKeys'], (res) => {
@@ -111,7 +110,7 @@ const APP_ROUTING_MATRIX = {
   'gemini': 'https://gemini.google.com/app', 'google gemini': 'https://gemini.google.com/app',
   'gmail': 'https://mail.google.com', 'youtube': 'https://www.youtube.com',
   'chatgpt': 'https://chatgpt.com', 'chat gpt': 'https://chatgpt.com',
-  'claude': 'https://claude.ai', 'perplexity': 'https://www.perplexity.ai',
+  'perplexity': 'https://www.perplexity.ai',
   'whatsapp': 'https://web.whatsapp.com', 'whats app': 'https://web.whatsapp.com',
   'telegram': 'https://web.telegram.org', 'discord': 'https://discord.com/app',
   'slack': 'https://app.slack.com', 'github': 'https://github.com',
@@ -228,24 +227,7 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
     }
   }
 
-  // ── Priority 4: OpenRouter fallback ──
-  if (cachedApiKeys.openRouterKey) {
-    const result = await tryProvider('OpenRouter', async () => {
-      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cachedApiKeys.openRouterKey}`, 'HTTP-Referer': 'https://zulora.in' },
-        body: JSON.stringify({ model: 'mistralai/mistral-7b-instruct', max_tokens: 512, messages })
-      });
-      if (res.status === 429 || res.status === 403) return { _rateLimit: true };
-      if (!res.ok) return null;
-      const data = await res.json();
-      const text = data?.choices?.[0]?.message?.content;
-      return text ? { success: true, text, provider: 'openrouter' } : null;
-    });
-    if (result) return result;
-  }
-
-  // ── Priority 5: Graceful fallback — NEVER crash the agent UI ──
+  // ── Priority 4: Graceful fallback — NEVER crash the agent UI ──
   console.warn('[Zulora SW Waterfall] All providers exhausted, using local deterministic fallback');
   return { success: false, text: '', error: null, provider: 'local_deterministic' };
 }

@@ -212,7 +212,7 @@ export const LandingPage = ({ onTryDemo, onSignIn }) => {
       title: 'API Waterfall',
       badge: 'Smart Failover',
       desc: 'If one AI provider goes down, Zulora instantly switches to the next. Seven Gemini keys, plus Groq, Mistral, Cerebras & more.',
-      items: ['7 Gemini API keys', 'Groq ultra-fast inference', 'OpenRouter fallback', 'Edge model backup'],
+      items: ['7 Gemini API keys', 'Gemini Pro fallback', 'Groq ultra-fast inference'],
     },
     {
       icon: Globe,

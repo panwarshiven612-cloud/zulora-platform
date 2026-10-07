@@ -2,7 +2,7 @@ import { createHash, createPublicKey, createSign, verify as verifySignature } fr
 import { GEMINI_KEYS, apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from '../src/services/systemPrompt.js';
 import { AI_STUDIO_SYSTEM_PROMPT } from '../src/services/aiStudioPrompt.js';
-import { GEMINI_BEST_MODEL_ID, GEMINI_FAST_MODEL_ID, GEMINI_FLASH_MODEL_ID, GEMINI_MODEL_FALLBACKS, GEMINI_PRO_MODEL_FALLBACKS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from '../src/services/aiModels.js';
+import { GEMINI_FLASH_MODEL_ID, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from '../src/services/aiModels.js';
 import { buildImagePrompt } from '../src/services/imageGen.js';
 
 export const maxDuration = 60;
@@ -20,12 +20,8 @@ export const publishStreamFrame = (res, stepData) => {
   }
 };
 
-const CHAT_ORDER = ['gemini', 'openrouter', 'backup', 'cerebras', 'groq', 'mistral'];
-const GEMINI_FAST_MODEL = process.env.GEMINI_FAST_MODEL || GEMINI_FAST_MODEL_ID;
+const CHAT_ORDER = ['gemini', 'groq'];
 const GEMINI_FLASH_MODEL = process.env.GEMINI_FLASH_MODEL || GEMINI_FLASH_MODEL_ID;
-const GEMINI_HIGH_CAPACITY_MODEL = process.env.GEMINI_HIGH_CAPACITY_MODEL || GEMINI_BEST_MODEL_ID;
-const GEMINI_FLASH_VARIANTS = [...new Set([GEMINI_HIGH_CAPACITY_MODEL, ...GEMINI_MODEL_FALLBACKS])];
-const OPENROUTER_CLAUDE_MODEL = process.env.OPENROUTER_CLAUDE_MODEL || 'anthropic/claude-fable-5.1';
 const CHAT_WINDOW_MS = 4 * 60 * 60 * 1000;
 const CHAT_REQUEST_LIMIT = 60;
 const TOKEN_LIMITS = { free: 60_000, pro: 200_000, ultra: 8_000_000 };
@@ -221,7 +217,7 @@ export async function verifyUser(req) {
   return valid ? claims.sub : null;
 }
 
-const firestoreRoot = () => {
+export const firestoreRoot = () => {
   const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || 'zulora-al';
   return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents`;
 };
@@ -232,7 +228,7 @@ function base64Url(value) {
   return Buffer.from(value).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
 
-async function firestoreAccessToken() {
+export async function firestoreAccessToken() {
   if (cachedFirestoreToken?.expiresAt > Date.now() + 60_000) return cachedFirestoreToken.token;
   const credentials = firestoreAdminCredentials();
   if (!credentials) throw new Error('Firestore Admin credentials are not configured on the server.');
@@ -641,28 +637,14 @@ async function readProviderEventStream(response, readToken, onToken, streamState
 
 async function tryOpenAiProvider(provider, messages, options = {}) {
   const configs = {
-    groq: { url: 'https://api.groq.com/openai/v1/chat/completions', model: options.model || 'llama-3.3-70b-versatile', label: 'Groq LPU' },
-    openrouter: { url: 'https://openrouter.ai/api/v1/chat/completions', model: options.model || 'openrouter/free', label: 'OpenRouter' },
-    cerebras: { url: 'https://api.cerebras.ai/v1/chat/completions', model: options.model || 'llama3.1-70b', label: 'Cerebras' },
-    mistral: { url: 'https://api.mistral.ai/v1/chat/completions', model: options.model || 'mistral-large-latest', label: 'Mistral AI' },
-    backup: { url: providerKeys.backupUrl, model: options.model || providerKeys.backupModel, label: 'Backup API' }
+    groq: { url: 'https://api.groq.com/openai/v1/chat/completions', model: options.model || 'llama-3.3-70b-versatile', label: 'Groq LPU' }
   };
   const config = configs[provider];
-  const parts = attachmentParts(options.attachments);
   const keys = apiKeyPool.candidates(provider);
   for (const { key, index } of keys) {
     try {
-      const contentMessages = messages.map((message, messageIndex) => {
-        if (provider === 'openrouter' && parts.length && messageIndex === messages.length - 1) {
-          return { role: message.role, content: [
-            { type: 'text', text: message.content },
-            ...parts.map(part => ({ type: 'image_url', image_url: { url: `data:${part.mimeType};base64,${part.data}` } }))
-          ] };
-        }
-        return message;
-      });
+      const contentMessages = messages;
       const headers = { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
-      if (provider === 'openrouter') Object.assign(headers, { 'HTTP-Referer': 'https://zulora.in', 'X-Title': 'Zulora AI' });
       const requestBody = {
         model: config.model,
         messages: contentMessages,
@@ -696,7 +678,7 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
         }
         if (typeof text === 'string' && (text.trim() || (options.stream && options.streamState?.sent))) {
           apiKeyPool.succeeded(provider, index);
-          return { text: text.trim(), tokenUsage, provider: `${config.label}${provider === 'openrouter' ? ` (Key #${index + 1})` : ''}`, model: config.model };
+          return { text: text.trim(), tokenUsage, provider: config.label, model: config.model };
         }
       }
       console.warn(`${config.label} text request failed with HTTP ${response.status}.`);
@@ -780,41 +762,13 @@ async function tryGemini(messages, options = {}) {
 
 async function tryGeminiWithModelFallback(messages, options = {}) {
   const preferredModel = options.model || 'gemini-2.5-flash';
-  let modelUnavailable = false;
   const result = await tryGemini(messages, {
     ...options,
-    model: preferredModel,
-    onModelUnavailable: () => { modelUnavailable = true; }
+    model: preferredModel
   });
   if (result) return result;
-
-  const proAlternatives = options.model === GEMINI_PRO_MODEL_ID ? GEMINI_PRO_MODEL_FALLBACKS : [];
-  const alternatives = [...new Set([...proAlternatives, ...GEMINI_FLASH_VARIANTS, 'gemini-2.5-flash-lite'])]
-    .filter(model => model !== preferredModel);
-  for (const model of alternatives) {
-    const fallback = await tryGemini(messages, { ...options, model, recheckCoolingKeys: true });
-    if (fallback) return fallback;
-  }
-  return null;
-}
-
-async function tryPollinationsText(messages, options = {}) {
-  const prompt = messages.map(message => `${message.role}: ${message.content}`).join('\n\n');
-  const response = providerKeys.pollinations
-    ? await fetchWithTimeout('https://gen.pollinations.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${providerKeys.pollinations}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'mistralai/mistral-small-3.2', messages, max_tokens: options.coding ? 16_384 : 4096 })
-    }, 18_000)
-    : await fetchWithTimeout(`https://text.pollinations.ai/${encodeURIComponent(prompt)}?model=mistral&seed=${Date.now() % 10000}`, {}, 18_000);
-  if (!response.ok) throw new Error(`Pollinations text request failed (HTTP ${response.status}).`);
-  const contentType = response.headers.get('content-type') || '';
-  const data = contentType.includes('json') ? await response.json() : null;
-  const text = data
-    ? data.choices?.[0]?.message?.content || data.output_text || data.output?.[0]?.content?.[0]?.text || ''
-    : await response.text();
-  if (!text || text.trim().length < 5) throw new Error('Pollinations returned an empty response.');
-  return { text, provider: 'Pollinations', model: 'mistralai/mistral-small-3.2' };
+  if (preferredModel === GEMINI_PRO_MODEL_ID || preferredModel === 'gemini-2.5-pro') return null;
+  return tryGemini(messages, { ...options, model: GEMINI_PRO_MODEL_ID, recheckCoolingKeys: true });
 }
 
 function normalizeModelPreference(value) {
@@ -823,23 +777,19 @@ function normalizeModelPreference(value) {
   if (geminiModel) return geminiModel;
   const selected = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
   if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra') || /zulora 3\.1 pro(?: ultra)?/.test(selected)) return 'think';
-  if (selected === 'llama' || (selected.includes('llama') && /(?:70b|3\.3)/.test(selected))) return 'llama';
-  if (selected === 'claude' || selected.includes('anthropic')) return 'claude';
+  if (selected === 'llama' || (selected.includes('llama') && /(?:70b|3\.3)/.test(selected))) return 'groq';
   if (selected === 'groq' || selected.includes('groq') || selected.includes('turbo')) return 'groq';
-  if (selected === 'gemini' || selected === 'flash' || selected.includes('gemini flash') || (/^gemini\s+\d/.test(selected) && selected.includes('flash'))) return 'gemini';
-  if (selected === 'pro 3.14' || selected === 'zulora pro 3.14' || selected === 'pro' || selected === 'pro 314') return 'pro';
+  if (selected === 'flash' || selected.includes('gemini flash') || selected.includes('zulora flash')) return 'flash';
+  if (selected === 'gemini' || (/^gemini\s+\d/.test(selected) && selected.includes('flash'))) return 'gemini';
+  if (selected === 'pro 3.14' || selected === 'zulora pro 3.14' || selected === 'pro' || selected === 'pro 314') return 'think';
   if (selected === 'auto' || !selected) return 'auto';
   if (['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'think';
   return 'auto';
 }
 
-function chooseChatOrder(preference, autoSelected = false) {
-  if (autoSelected) return CHAT_ORDER;
-  if (preference === 'claude') return ['openrouter'];
-  if (preference === 'groq' || preference === 'llama') return ['groq'];
-  if (preference === 'auto') return CHAT_ORDER;
-  // Gemini, Zulora Flash, Pro, and direct Gemini model IDs all map to Gemini.
-  return ['gemini'];
+function chooseChatOrder(preference) {
+  if (preference === 'groq' || preference === 'llama') return ['groq', 'gemini'];
+  return CHAT_ORDER;
 }
 
 async function generateChat(body, streamOptions = {}) {
@@ -863,11 +813,9 @@ async function generateChat(body, streamOptions = {}) {
   const geminiModel = String(preference).startsWith('gemini-')
     ? preference
     : requestedPreference === 'gemini' ? (coding || complex ? GEMINI_PRO_MODEL_ID : GEMINI_FLASH_MODEL)
-      : flagship || useProModel ? GEMINI_PRO_MODEL_ID : GEMINI_FAST_MODEL;
+      : flagship || useProModel ? GEMINI_PRO_MODEL_ID : GEMINI_FLASH_MODEL;
   const groqModel = 'llama-3.3-70b-versatile';
-  const order = requestedPreference === 'auto'
-    ? body.enableWebSearch || attachments.length ? ['gemini'] : chooseChatOrder(preference, true)
-    : chooseChatOrder(preference);
+  const order = body.enableWebSearch || vision ? ['gemini'] : chooseChatOrder(preference);
   for (const provider of order) {
     try {
       const result = provider === 'gemini'
@@ -876,7 +824,7 @@ async function generateChat(body, streamOptions = {}) {
           attachments: body.attachments,
           vision,
           coding,
-          model: provider === 'groq' ? groqModel : provider === 'openrouter' && preference === 'claude' ? OPENROUTER_CLAUDE_MODEL : undefined,
+          model: provider === 'groq' ? groqModel : undefined,
           reasoning: preference === 'think' && provider === 'groq',
           maxTokens: body.guestDemo ? 2_048 : coding || useProModel || flagship ? 16_384 : 4096,
           ...streamOptions
@@ -893,20 +841,7 @@ async function generateChat(body, streamOptions = {}) {
     }
   }
   if (requestedPreference === 'auto' && body.enableWebSearch) throw new Error('Live web search is temporarily unavailable because Google Search grounding could not complete. Please retry.');
-  if (requestedPreference === 'auto' && !vision) {
-    try {
-      const output = await tryPollinationsText(messages, { coding, flagship });
-      if (streamOptions.stream) {
-        streamOptions.onProvider?.(output.provider, output.model);
-        if (streamOptions.streamState) streamOptions.streamState.sent = true;
-        streamOptions.onToken?.(output.text);
-      }
-      return output;
-    } catch (error) {
-      console.warn('Pollinations text fallback failed:', error.message);
-    }
-  }
-  if (!availableProviders().length) throw new Error('No text-generation providers are configured. Add server-side provider credentials in the deployment environment; do not use VITE_* names.');
+  if (!GEMINI_KEYS.length && !apiKeyPool.candidates('groq').length) throw new Error('No text-generation providers are configured. Add server-side Gemini or Groq credentials.');
   throw new Error(vision ? 'Image and PDF analysis require an available Gemini provider. Please retry shortly.' : 'All configured AI providers are unavailable. Check the server provider keys and retry.');
 }
 

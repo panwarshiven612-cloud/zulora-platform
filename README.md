@@ -29,14 +29,11 @@ It unites 10 premier foundation models under an automated failover waterfall arc
 - Welcome notification email triggered via **EmailJS** (`@emailjs/browser`) upon initial user registration, with one-time delivery tracked in Cloud Firestore (`welcomeEmailSent: true`).
 
 ### 2. ⚡ Multi-Model Automated Fallback Engine (`src/services/apiRouter.js`)
-Zero-downtime waterfall routing across:
-1. **Google Gemini 2.0 Flash**: Dynamic rotation across all 7 provided Gemini API keys.
-2. **Groq Cloud**: Llama 3.3 70B and GPT-OSS reasoning inference.
-3. **Cerebras AI**: Ultra-low latency `llama3.1-8b`.
-4. **OpenRouter**: Intelligent routing between DeepSeek and Llama 3.3.
-5. **Mistral AI**: `mistral-small-latest`.
-6. **Pollinations AI**: Text generation & high-definition FLUX.1 image rendering.
-7. **Pollinations**: Primary video generation, with Fal AI and Replicate server-side fallbacks.
+Chat requests use a provider waterfall:
+1. **Google Gemini**: Gemini 3.5 Flash routes to Gemini 3.1 Pro when unavailable.
+2. **Groq LPU**: Llama 3.3 70B is the final backup, with OpenAI-compatible tool definitions.
+
+Image and video generation use their own provider routing, including Pollinations, Fal AI, Hugging Face, Cloudflare, and Replicate where configured.
 8. **Hugging Face**: FLUX.1-schnell image inference.
 9. **Cloudflare Workers AI**: Llama 3 and SDXL.
 10. **Replicate**: Image generation and video fallback.

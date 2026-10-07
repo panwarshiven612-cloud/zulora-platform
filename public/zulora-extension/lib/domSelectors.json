@@ -60,21 +60,6 @@
       "div.model-response-text"
     ]
   },
-  "claude": {
-    "promptInput": [
-      "div[contenteditable=\"true\"][data-placeholder]",
-      "fieldset div[contenteditable=\"true\"]",
-      "div[contenteditable=\"true\"]"
-    ],
-    "sendButton": [
-      "button[aria-label*=\"Send Message\" i]",
-      "button[aria-label*=\"Send\" i]"
-    ],
-    "responseContainer": [
-      ".font-claude-message:last-of-type",
-      "[data-test-render-count]:last-child"
-    ]
-  },
   "gmail": {
     "composeButton": [
       "div[role=\"button\"][gh=\"cm\"]",

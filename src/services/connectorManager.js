@@ -217,6 +217,7 @@ function validTokenRecord(value, providerId) {
 function writeStoredTokens(removeProviders = []) {
   if (typeof window === 'undefined') return;
   const tokens = { ...readStoredTokens() };
+  delete tokens.accessToken;
   for (const provider of removeProviders) delete tokens[provider];
   for (const [provider, token] of sessionTokens.entries()) tokens[provider] = { ...token, provider };
   for (const [provider, value] of Object.entries(tokens)) {
@@ -346,21 +347,86 @@ const tokenRequest = (oauth, scopes, prompt) => new Promise((resolve, reject) =>
   client.requestAccessToken({ prompt });
 });
 
+async function oauthApiRequest(action, payload = {}) {
+  const user = auth.currentUser;
+  if (!user?.getIdToken) throw new Error('Sign in again to use Google connectors.');
+  const response = await fetch('/api/google-oauth', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${await user.getIdToken()}`,
+      ...(action === 'exchange' ? { 'X-Requested-With': 'XmlHttpRequest' } : {})
+    },
+    body: JSON.stringify({ action, ...payload })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data?.error?.message || `Google OAuth request failed (HTTP ${response.status}).`);
+  return data;
+}
+
+function authorizationCodeRequest(oauth, scopes) {
+  return new Promise((resolve, reject) => {
+    const client = oauth.initCodeClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: scopes.join(' '),
+      include_granted_scopes: true,
+      ux_mode: 'popup',
+      callback: async response => {
+        if (response?.error) {
+          reject(new Error(response.error_description || response.error));
+          return;
+        }
+        if (!response?.code) {
+          reject(new Error('Google did not return an authorization code.'));
+          return;
+        }
+        try {
+          const session = await oauthApiRequest('exchange', {
+            code: response.code,
+            redirectUri: window.location.origin
+          });
+          resolve(session);
+        } catch (error) { reject(error); }
+      },
+      error_callback: error => reject(new Error(error?.message || 'Google authorization was cancelled.'))
+    });
+    client.requestCode();
+  });
+}
+
+async function providerAccessToken(providerId, token) {
+  const provider = CONNECTOR_CONFIG[providerId];
+  if (!provider || !token) return null;
+  const accessToken = String(token.accessToken || token.access_token || '');
+  const expiresAt = Number(token.expiresAt) || Date.now() + (Number(token.expires_in) || 3600) * 1000;
+  const scopes = Array.isArray(token.scopes) ? token.scopes : String(token.scope || '').split(/\s+/).filter(Boolean);
+  const enabledProviders = Array.isArray(token.enabledProviders) ? token.enabledProviders : [providerId];
+  return {
+    accessToken,
+    expiresAt,
+    email: String(token.email || ''),
+    uid: auth.currentUser?.uid || '',
+    provider: providerId,
+    scopes,
+    enabledProviders,
+    connected: token.connected !== false
+  };
+}
+
 async function silentlyRefresh(providerId, uid = auth.currentUser?.uid || '') {
   if (silentRefreshes.has(providerId)) return silentRefreshes.get(providerId);
   const refreshPromise = (async () => {
     const provider = CONNECTOR_CONFIG[providerId];
     if (!provider || !uid || (auth.currentUser?.uid && auth.currentUser.uid !== uid)) return null;
-    const oauth = await loadIdentityServices();
     try {
-      const token = await tokenRequest(oauth, provider.scopes, '');
-      const email = await readGoogleAccount(token.access_token).catch(() => '');
-      sessionTokens.set(providerId, {
-        accessToken: token.access_token,
-        expiresAt: Date.now() + (Number(token.expires_in) || 3600) * 1000,
-        email,
-        uid
-      });
+      const token = import.meta.env?.DEV
+        ? await tokenRequest(await loadIdentityServices(), provider.scopes, '')
+        : await oauthApiRequest('refresh');
+      const record = await providerAccessToken(providerId, token);
+      const targets = record.enabledProviders?.length ? record.enabledProviders : [providerId];
+      for (const target of targets) {
+        if (CONNECTOR_CONFIG[target]) sessionTokens.set(target, { ...record, provider: target });
+      }
       writeStoredTokens();
       emitConnectorChange();
       return sessionTokens.get(providerId);
@@ -429,44 +495,73 @@ export const connectorManager = {
   },
 
   async restoreSession() {
-    const stored = readStoredTokens();
-    for (const providerId of Object.keys(CONNECTOR_CONFIG)) {
-      const localToken = validTokenRecord(stored[providerId], providerId);
-      if (localToken) sessionTokens.set(providerId, localToken);
-    }
-    const db = await openTokenDb();
-    if (db) {
-      const idbTokens = await new Promise(resolve => {
-        const store = db.transaction('sessions', 'readonly').objectStore('sessions');
-        const valuesRequest = store.getAll();
-        const keysRequest = store.getAllKeys();
-        let values;
-        let keys;
-        const finish = () => {
-          if (values && keys) resolve(values.map((value, index) => ({ ...value, provider: value.provider || keys[index] })));
-        };
-        valuesRequest.onsuccess = () => { values = valuesRequest.result || []; finish(); };
-        keysRequest.onsuccess = () => { keys = keysRequest.result || []; finish(); };
-        valuesRequest.onerror = keysRequest.onerror = () => resolve([]);
-      });
-      for (const value of idbTokens) {
-        const record = validTokenRecord(value, value?.provider);
-        if (!record || !CONNECTOR_CONFIG[record.provider]) continue;
-        const current = sessionTokens.get(record.provider);
-        if (!current || record.expiresAt > current.expiresAt) sessionTokens.set(record.provider, record);
-      }
-      writeStoredTokens();
-    }
-    emitConnectorChange();
     const uid = auth.currentUser?.uid;
-    if (uid) {
+    if (!import.meta.env?.DEV && !uid) {
+      sessionTokens.clear();
+      writeStoredTokens(Object.keys(CONNECTOR_CONFIG));
+      emitConnectorChange();
+      return [];
+    }
+    if (!import.meta.env?.DEV && uid) {
+      sessionTokens.clear();
+      writeStoredTokens(Object.keys(CONNECTOR_CONFIG));
+      try {
+        const status = await oauthApiRequest('status');
+        for (const providerId of status.enabledProviders || []) {
+          if (!CONNECTOR_CONFIG[providerId]) continue;
+          sessionTokens.set(providerId, {
+            accessToken: '',
+            expiresAt: Number(status.expiresAt) || 0,
+            email: status.email || '',
+            uid,
+            provider: providerId,
+            scopes: status.scopes || [],
+            enabledProviders: status.enabledProviders,
+            connected: Boolean(status.connected)
+          });
+        }
+      } catch (error) {
+        console.info('Google Workspace session restore is unavailable:', error.message);
+      }
+    } else {
+      const stored = readStoredTokens();
       for (const providerId of Object.keys(CONNECTOR_CONFIG)) {
-        const token = sessionTokens.get(providerId);
-        if (token?.uid === uid && token.expiresAt <= Date.now() + TOKEN_REFRESH_MARGIN_MS) {
-          silentlyRefresh(providerId, uid).catch(() => {});
+        const localToken = validTokenRecord(stored[providerId], providerId);
+        if (localToken) sessionTokens.set(providerId, localToken);
+      }
+      const db = await openTokenDb();
+      if (db) {
+        const idbTokens = await new Promise(resolve => {
+          const store = db.transaction('sessions', 'readonly').objectStore('sessions');
+          const valuesRequest = store.getAll();
+          const keysRequest = store.getAllKeys();
+          let values;
+          let keys;
+          const finish = () => {
+            if (values && keys) resolve(values.map((value, index) => ({ ...value, provider: value.provider || keys[index] })));
+          };
+          valuesRequest.onsuccess = () => { values = valuesRequest.result || []; finish(); };
+          keysRequest.onsuccess = () => { keys = keysRequest.result || []; finish(); };
+          valuesRequest.onerror = keysRequest.onerror = () => resolve([]);
+        });
+        for (const value of idbTokens) {
+          const record = validTokenRecord(value, value?.provider);
+          if (!record || !CONNECTOR_CONFIG[record.provider]) continue;
+          const current = sessionTokens.get(record.provider);
+          if (!current || record.expiresAt > current.expiresAt) sessionTokens.set(record.provider, record);
+        }
+        writeStoredTokens();
+      }
+      if (uid) {
+        for (const providerId of Object.keys(CONNECTOR_CONFIG)) {
+          const token = sessionTokens.get(providerId);
+          if (token?.uid === uid && token.expiresAt <= Date.now() + TOKEN_REFRESH_MARGIN_MS) {
+            silentlyRefresh(providerId, uid).catch(() => {});
+          }
         }
       }
     }
+    emitConnectorChange();
     return this.getActiveGoogleProviders();
   },
 
@@ -475,39 +570,42 @@ export const connectorManager = {
     if (!provider) throw new Error(`Unknown connector: ${providerId}`);
     if (!uid) throw new Error('Sign in to Zulora before connecting Google services.');
     const oauth = await loadIdentityServices();
-    const token = await tokenRequest(oauth, provider.scopes, 'consent');
-    const email = await readGoogleAccount(token.access_token).catch(() => '');
-    const connection = {
-      provider: providerId,
-      email,
-      scopes: provider.scopes,
-      connectedAt: Date.now(),
-      updatedAt: Date.now()
-    };
-    writeStoredConnectorState(providerId, connection);
-    sessionTokens.set(providerId, {
-      accessToken: token.access_token,
-      expiresAt: Date.now() + (Number(token.expires_in) || 3600) * 1000,
-      email,
-      uid,
-      provider: providerId
+    const scopes = [...new Set(Object.values(CONNECTOR_CONFIG).flatMap(item => item.scopes))];
+    const token = import.meta.env?.DEV
+      ? await tokenRequest(oauth, scopes, 'consent')
+      : await authorizationCodeRequest(oauth, scopes);
+    const grantedScopes = Array.isArray(token.scopes)
+      ? token.scopes
+      : String(token.scope || scopes.join(' ')).split(/\s+/).filter(Boolean);
+    const accessToken = token.accessToken || token.access_token || '';
+    const email = token.email || (accessToken ? await readGoogleAccount(accessToken).catch(() => '') : '');
+    const enabledProviders = Array.isArray(token.enabledProviders)
+      ? token.enabledProviders
+      : Object.keys(CONNECTOR_CONFIG).filter(id => CONNECTOR_CONFIG[id].scopes.some(scope => grantedScopes.includes(scope)));
+    const expiresAt = Number(token.expiresAt) || Date.now() + (Number(token.expires_in) || 3600) * 1000;
+    const connections = enabledProviders.filter(id => CONNECTOR_CONFIG[id]).map(id => {
+      const connection = { provider: id, email, scopes: grantedScopes, connectedAt: Date.now(), updatedAt: Date.now() };
+      writeStoredConnectorState(id, connection);
+      sessionTokens.set(id, { accessToken, expiresAt, email, uid, provider: id, scopes: grantedScopes, enabledProviders, connected: true });
+      return connection;
     });
     writeStoredTokens();
-    // Persist the short-lived access token for reload recovery. GIS browser
-    // token clients do not issue refresh tokens; silent token requests renew it.
     emitConnectorChange();
     let metadataSaved = true;
-    try { await setDoc(connectorDoc(uid, providerId), connection, { merge: true }); }
+    try { await Promise.all(connections.map(connection => setDoc(connectorDoc(uid, connection.provider), connection, { merge: true }))); }
     catch (error) {
       metadataSaved = false;
       console.warn('Google connector is available for this session, but its status could not be saved:', error.message);
     }
+    const connection = connections.find(item => item.provider === providerId) || connections[0];
+    if (!connection) throw new Error(`Google did not grant the required ${provider.name} access scope.`);
     return { ...connection, connected: true, metadataSaved };
   },
 
   async disconnect(providerId, uid) {
-    // Forget this connector locally without revoking the whole Google OAuth
-    // grant, which may also contain another connected Workspace service.
+    if (!import.meta.env?.DEV && uid) {
+      await oauthApiRequest('disconnect', { provider: providerId });
+    }
     sessionTokens.delete(providerId);
     writeStoredTokens([providerId]);
     writeStoredConnectorState(providerId, null);
@@ -532,15 +630,15 @@ export const connectorManager = {
   },
 
   async apiFetch(providerId, url, options = {}) {
-    const { expectedStatus, ...requestOptions } = options;
+    const { expectedStatus, responseType = 'json', ...requestOptions } = options;
     const method = String(requestOptions.method || 'GET').toUpperCase();
     const retryableMethod = ['GET', 'HEAD', 'DELETE'].includes(method);
     let refreshedAfter401 = false;
     let transientRetries = 0;
     while (true) {
-      const accessToken = await this.getAccessToken(providerId);
       let response;
       if (import.meta.env?.DEV) {
+        const accessToken = await this.getAccessToken(providerId);
         response = await fetch(url, {
           ...requestOptions,
           headers: {
@@ -552,6 +650,9 @@ export const connectorManager = {
       } else {
         const user = auth.currentUser;
         if (!user?.getIdToken) throw new Error('Sign in again to use Google connectors.');
+        if (!this.getActiveGoogleProviders().includes(providerId)) {
+          throw new Error(`${OAUTH_PERMISSION_REQUIRED}. Open Connectors to authorize ${CONNECTOR_CONFIG[providerId]?.name || providerId}.`);
+        }
         const firebaseToken = await user.getIdToken();
         response = await fetch('/api/google-connector', {
           method: 'POST',
@@ -560,12 +661,23 @@ export const connectorManager = {
           body: JSON.stringify({
             provider: providerId,
             url,
-            accessToken,
-            request: { method, body: requestOptions.body || null }
+            request: { method, body: requestOptions.body || null, responseType }
           })
         });
       }
-      const data = response.status === 204 ? null : await response.json().catch(() => null);
+      let data = null;
+      if (response.status !== 204) {
+        if (responseType === 'base64' && import.meta.env?.DEV && response.ok) {
+          const blob = await response.blob();
+          if (blob.size > 2 * 1024 * 1024) throw new Error('Files larger than 2 MB must be opened from Google Drive instead of attached to chat.');
+          const bytes = new Uint8Array(await blob.arrayBuffer());
+          let binary = '';
+          for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+          data = { base64: btoa(binary), mimeType: blob.type || 'application/octet-stream', size: blob.size };
+        } else {
+          data = await response.json().catch(() => null);
+        }
+      }
       if (data?.code === 'AUTH_REQUIRED') {
         throw new Error(data.error?.message || 'Sign in again to use Google connectors.');
       }
@@ -575,7 +687,8 @@ export const connectorManager = {
         const renewed = await silentlyRefresh(providerId, current?.uid || auth.currentUser?.uid || '');
         if (renewed) continue;
       }
-      if (response.status === 401 || response.status === 403) {
+      const scopeRequired = response.status === 403 && data?.code === 'GOOGLE_SCOPE_REQUIRED';
+      if ((response.status === 401 || response.status === 403) && !scopeRequired) {
         sessionTokens.delete(providerId);
         writeStoredTokens([providerId]);
         emitConnectorChange();
@@ -595,6 +708,7 @@ export const connectorManager = {
         // MODULE 1: Throw explicit OAuth error for 401/403 so caller can prompt reconnect
         if (response.status === 401 || response.status === 403) {
           const oauthErr = new Error(`${OAUTH_PERMISSION_REQUIRED}. Your ${CONNECTOR_CONFIG[providerId]?.name || providerId} session has expired or lacks permission.`);
+          oauthErr.message = scopeRequired ? reason : `${OAUTH_PERMISSION_REQUIRED}. Your ${CONNECTOR_CONFIG[providerId]?.name || providerId} session has expired or lacks permission.`;
           oauthErr.code = 'OAUTH_REQUIRED';
           oauthErr.status = response.status;
           throw oauthErr;
@@ -612,7 +726,9 @@ export const connectorManager = {
     const states = readStoredConnectorStates();
     return Object.fromEntries(Object.keys(CONNECTOR_CONFIG).map(provider => {
       const session = sessionTokens.get(provider) || restoreStoredToken(provider);
-      const connected = Boolean(session && session.expiresAt > Date.now() + TOKEN_REFRESH_MARGIN_MS
+      const connected = Boolean(session && session.connected !== false
+        && (session.enabledProviders ? session.enabledProviders.includes(provider) : true)
+        && (import.meta.env?.DEV ? session.expiresAt > Date.now() + TOKEN_REFRESH_MARGIN_MS : true)
         && (!uid || !session.uid || session.uid === uid));
       return [provider, {
         ...CONNECTOR_CONFIG[provider],
@@ -637,9 +753,11 @@ export const connectorManager = {
           }
         } catch { /* Metadata is optional; live OAuth state is authoritative. */ }
       }
-      const connected = Boolean(session && session.expiresAt > Date.now() + TOKEN_REFRESH_MARGIN_MS
+      const connected = Boolean(session && session.connected !== false
+        && (session.enabledProviders ? session.enabledProviders.includes(provider) : true)
+        && (import.meta.env?.DEV ? session.expiresAt > Date.now() + TOKEN_REFRESH_MARGIN_MS : true)
         && (!uid || !session.uid || session.uid === uid));
-      if (session && !connected && uid && session.uid === uid) silentlyRefresh(provider, uid).catch(() => {});
+      if (import.meta.env?.DEV && session && !connected && uid && session.uid === uid) silentlyRefresh(provider, uid).catch(() => {});
       return [provider, {
         ...CONNECTOR_CONFIG[provider],
         ...metadata,
@@ -663,7 +781,12 @@ export const connectorManager = {
   getActiveGoogleProviders() {
     return Object.keys(CONNECTOR_CONFIG).filter(provider => {
       const token = sessionTokens.get(provider) || restoreStoredToken(provider);
-      return Boolean(token && token.expiresAt > Date.now() + TOKEN_REFRESH_MARGIN_MS
+      const hasProviderScope = token?.scopes?.some(scope => CONNECTOR_CONFIG[provider].scopes.includes(scope));
+      const enabled = token?.enabledProviders ? token.enabledProviders.includes(provider) : true;
+      const liveToken = import.meta.env?.DEV
+        ? Boolean(token?.accessToken && token.expiresAt > Date.now() + TOKEN_REFRESH_MARGIN_MS)
+        : Boolean(token?.connected !== false);
+      return Boolean(token && liveToken && enabled && (hasProviderScope || !token.scopes?.length)
         && (!auth.currentUser?.uid || !token.uid || token.uid === auth.currentUser.uid));
     });
   },
@@ -940,23 +1063,8 @@ export const connectorManager = {
 
   async downloadGoogleDriveFile({ file_id }) {
     if (!file_id) throw new Error('A Google Drive file ID is required.');
-    let token = await this.getAccessToken('drive');
-    let response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file_id)}?alt=media`, { headers: { Authorization: `Bearer ${token}` } });
-    if (response.status === 401) {
-      const current = sessionTokens.get('drive');
-      const renewed = await silentlyRefresh('drive', current?.uid || auth.currentUser?.uid || '');
-      if (renewed) {
-        token = renewed.accessToken;
-        response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file_id)}?alt=media`, { headers: { Authorization: `Bearer ${token}` } });
-      }
-    }
-    if (!response.ok) throw new Error(`Google Drive download failed (HTTP ${response.status}).`);
-    const blob = await response.blob();
-    if (blob.size > 2 * 1024 * 1024) throw new Error('Files larger than 2 MB must be opened from Google Drive instead of attached to chat.');
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    let binary = '';
-    for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-    return { mimeType: blob.type || 'application/octet-stream', size: blob.size, base64: btoa(binary) };
+    const result = await this.apiFetch('drive', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file_id)}?alt=media`, { responseType: 'base64' });
+    return { mimeType: result.mimeType || 'application/octet-stream', size: Number(result.size) || 0, base64: result.base64 || '' };
   },
 
   async getGoogleForm({ form_id }) {

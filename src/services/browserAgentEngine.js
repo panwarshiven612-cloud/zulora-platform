@@ -9,7 +9,7 @@
  * FAST WATERFALL BRAIN (500ms failover):
  *  - Groq Llama-3.3-70b / Cerebras (ultra-fast planning <400ms)
  *  - Direct Gemini 2.0 Flash / Pro REST endpoints
- *  - OpenRouter & deterministic local fallback (NEVER crashes)
+ *  - Deterministic local fallback (NEVER crashes)
  *
  * PERSISTENT UNIFIED TOKEN ENGINE:
  *  - Merges plugin & chat tokens into Firestore `users/{userId}/tokenUsage`
@@ -78,7 +78,6 @@ export const APP_ROUTING_MATRIX = {
   // AI Tools
   'chatgpt':         'https://chatgpt.com',
   'chat gpt':        'https://chatgpt.com',
-  'claude':          'https://claude.ai',
   'perplexity':      'https://www.perplexity.ai',
   'midjourney':      'https://www.midjourney.com',
   'copilot':         'https://copilot.microsoft.com',
@@ -413,8 +412,7 @@ export async function sendBridgeMessageWithRetry(detail, maxAttempts = 3, delayM
  *  1. Groq (llama-3.3-70b) — <400ms planning
  *  2. Cerebras (llama3.1-70b) — <300ms ultra-fast routing
  *  3. Gemini 2.0 Flash / 1.5 Flash (rotating key pool)
- *  4. OpenRouter fallback
- *  5. Graceful local deterministic fallback (NEVER crashes UI)
+ *  4. Graceful local deterministic fallback (NEVER crashes UI)
  *
  * Each provider gets 2 exponential-backoff retries.
  * HTTP 429 (rate-limit) silently skips to next provider in <200ms.
@@ -550,27 +548,7 @@ export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
     }
   }
 
-  // ── Priority 4: OpenRouter Fallback ──
-  const openRouterKey = get('VITE_OPENROUTER_KEY') || get('VITE_OPENROUTER_API_KEY');
-  if (openRouterKey) {
-    const result = await tryProvider('OpenRouter', async () => {
-      const res = await postJSON(
-        'https://openrouter.ai/api/v1/chat/completions',
-        { Authorization: `Bearer ${openRouterKey}`, 'HTTP-Referer': 'https://zulora.in' },
-        { model: 'mistralai/mistral-7b-instruct', max_tokens: 512, messages },
-        2000
-      );
-      if (res.status === 429 || res.status === 403) return { _rateLimit: true };
-      if (!res.ok) return null;
-      const data = await res.json();
-      const text = data?.choices?.[0]?.message?.content;
-      const tokensUsed = data?.usage?.total_tokens || Math.ceil((prompt.length + (text?.length || 0)) / 4);
-      return text ? { success: true, text, provider: 'openrouter', tokensUsed } : null;
-    });
-    if (result) return result;
-  }
-
-  // ── Priority 5: Graceful Local Fallback — NEVER crash UI ──
+  // ── Priority 4: Graceful Local Fallback — NEVER crash UI ──
   console.warn('[Zulora Waterfall] All providers exhausted — using local fallback');
   return {
     success: false,

@@ -1,4 +1,5 @@
 import { verifyUser } from './ai.js';
+import { getValidGoogleSession, googleScopeAllowed } from './googleOAuthStore.js';
 
 export const config = { maxDuration: 30 };
 
@@ -30,7 +31,7 @@ export default async function googleConnector(req, res) {
     });
   }
 
-  const { provider, url: rawUrl, accessToken, request: googleRequest = {} } = req.body || {};
+  const { provider, url: rawUrl, request: googleRequest = {} } = req.body || {};
   const target = CONNECTOR_HOSTS[provider];
   let url;
   try { url = new URL(String(rawUrl || '')); }
@@ -42,13 +43,22 @@ export default async function googleConnector(req, res) {
     return respond(res, 400, { error: { message: 'The requested Google API endpoint is not permitted.' } });
   }
 
-  const token = String(accessToken || '');
   const method = String(googleRequest.method || 'GET').toUpperCase();
-  if (token.length < 10 || token.length > 8192) {
-    return respond(res, 401, { code: 'GOOGLE_OAUTH_REQUIRED', error: { message: 'OAuth Permission Required: Please re-connect your Gmail/Calendar account.' } });
-  }
   if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'].includes(method)) {
     return respond(res, 405, { error: { message: 'This Google API method is not permitted.' } });
+  }
+
+  let session;
+  try { session = await getValidGoogleSession(uid, provider); }
+  catch (error) {
+    const message = error?.message || 'Google OAuth session is unavailable.';
+    return respond(res, /OAuth Permission Required/.test(message) ? 401 : 503, {
+      code: /OAuth Permission Required/.test(message) ? 'GOOGLE_OAUTH_REQUIRED' : 'GOOGLE_OAUTH_UNAVAILABLE',
+      error: { message }
+    });
+  }
+  if (!googleScopeAllowed(session, provider, url, method)) {
+    return respond(res, 403, { code: 'GOOGLE_SCOPE_REQUIRED', error: { message: `OAuth Permission Required: The connected Google account has not granted the scope required for this ${provider} action. Reconnect the service to grant it.` } });
   }
 
   const controller = new AbortController();
@@ -59,11 +69,18 @@ export default async function googleConnector(req, res) {
       signal: controller.signal,
       redirect: 'error',
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${session.accessToken}`,
         ...(googleRequest.body ? { 'Content-Type': 'application/json' } : {})
       },
       ...(googleRequest.body && method !== 'GET' && method !== 'HEAD' ? { body: googleRequest.body } : {})
     });
+    const responseType = String(googleRequest.responseType || 'json');
+    if (responseType === 'base64' && upstream.ok) {
+      const bytes = Buffer.from(await upstream.arrayBuffer());
+      if (bytes.length > 2 * 1024 * 1024) return respond(res, 413, { error: { message: 'Files larger than 2 MB must be opened from Google Drive instead of attached to chat.' } });
+      res.setHeader('Cache-Control', 'no-store');
+      return respond(res, 200, { base64: bytes.toString('base64'), mimeType: upstream.headers.get('content-type') || 'application/octet-stream', size: bytes.length });
+    }
     const raw = upstream.status === 204 || method === 'HEAD' ? '' : await upstream.text();
     res.status(upstream.status);
     res.setHeader('Cache-Control', 'no-store');

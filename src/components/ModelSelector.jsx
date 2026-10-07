@@ -12,7 +12,7 @@ const MODEL_OPTIONS = [
   {
     ...MODEL_TIERS.flash,
     label: 'Zulora Flash 3.5',
-    description: 'Everyday chat and search · Gemini 3.5 Flash with 3.5 Flash-Lite fallback.',
+    description: 'Everyday chat and search · Gemini 3.5 Flash with Pro and Groq backup routes.',
     icon: Zap,
   },
   {
@@ -26,12 +26,6 @@ const MODEL_OPTIONS = [
     label: 'Zulora Turbo Speed',
     description: 'Fast responses routed directly through Groq LPU.',
     icon: Gauge,
-  },
-  {
-    ...MODEL_TIERS.claude,
-    label: 'Anthropic Claude',
-    description: 'Claude through OpenRouter with standardized connector tools.',
-    icon: Brain,
   },
 ];
 

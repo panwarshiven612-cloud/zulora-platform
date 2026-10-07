@@ -37,14 +37,6 @@ export function toOpenAiFunctionTool({ name, description, parameters }, { closeO
   };
 }
 
-export function toAnthropicTool({ name, description, parameters }) {
-  return {
-    name,
-    description,
-    input_schema: normalizeToolSchema(parameters, 'lower')
-  };
-}
-
 const snakeCase = key => String(key).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
 
 export function normalizeGoogleConnectorArguments(rawArguments, functionName = '') {
