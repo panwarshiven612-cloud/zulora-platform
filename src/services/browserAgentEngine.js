@@ -6,9 +6,8 @@
  *  - AGENT 2: DOM & Native Executor Engine (Direct JS execution, <300ms latency)
  *  - AGENT 3: Vision & Screen Verifier (DOM & state verification, auto-retry)
  *
- * FAST WATERFALL BRAIN (500ms failover):
- *  - Groq Llama-3.3-70b / Cerebras (ultra-fast planning <400ms)
- *  - Direct Gemini 2.0 Flash / Pro REST endpoints
+ * FAST WATERFALL BRAIN (server-side failover):
+ *  - Authenticated server routing across Gemini, Groq, Cerebras, OpenRouter and Mistral
  *  - Deterministic local fallback (NEVER crashes)
  *
  * PERSISTENT UNIFIED TOKEN ENGINE:
@@ -16,8 +15,9 @@
  *  - Retains counts in localStorage `zulora_total_tokens`
  */
 
-import { db } from './firebase';
+import { auth, db } from './firebase';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { requestGeneration } from './generationApi';
 
 export const EXTENSION_ID = 'emimeingkoocmgljpjkpdnlnbkpkfbff';
 
@@ -408,157 +408,34 @@ export async function sendBridgeMessageWithRetry(detail, maxAttempts = 3, delayM
 
 // ─── BUGFIX 4: Waterfall API Resilience — Exponential Backoff Retry Engine ────
 /**
- * Fast LLM Caller with cascading failover and per-provider retry:
- *  1. Groq (llama-3.3-70b) — <400ms planning
- *  2. Cerebras (llama3.1-70b) — <300ms ultra-fast routing
- *  3. Gemini 2.0 Flash / 1.5 Flash (rotating key pool)
- *  4. Graceful local deterministic fallback (NEVER crashes UI)
- *
- * Each provider gets 2 exponential-backoff retries.
- * HTTP 429 (rate-limit) silently skips to next provider in <200ms.
+ * Fast LLM caller. Provider keys and failover stay on the server so secrets
+ * are not included in the browser bundle.
  */
 export async function callWaterfallLLM(prompt, systemPrompt = '', opts = {}) {
-  const env = import.meta.env || {};
-  const get = (k) => String(env[k] || '').trim();
-  const perProviderTimeoutMs = opts.timeoutMs || 2500;
-
-  const withTimeout = (promise, ms) =>
-    Promise.race([
-      promise,
-      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))
-    ]);
-
-  // Exponential backoff helper: 2 retries per provider, skips on 429/403 immediately
-  const tryProvider = async (name, callFn, retries = 2) => {
-    for (let attempt = 1; attempt <= retries; attempt++) {
-      try {
-        const result = await callFn(attempt);
-        if (result && result.success && result.text) return result;
-        // If we got a rate-limit status, skip immediately (no retry)
-        if (result && result._rateLimit) {
-          console.warn(`[Zulora Waterfall] ${name} rate-limited, skipping.`);
-          return null;
-        }
-      } catch (e) {
-        const isTimeout = e.message === 'timeout';
-        if (attempt < retries && !isTimeout) {
-          const backoffMs = Math.min(100 * Math.pow(2, attempt - 1), 400);
-          await new Promise(r => setTimeout(r, backoffMs));
-        }
-      }
-    }
-    return null;
-  };
-
-  const postJSON = (url, headers, body, timeoutMs = perProviderTimeoutMs) =>
-    withTimeout(
-      fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify(body)
-      }),
-      timeoutMs
-    );
-
   const messages = [
     ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
-    { role: 'user', content: prompt }
+    { role: 'user', content: String(prompt || '') }
   ];
-
-  // ── Priority 1: Groq Llama-3.3-70b (Fastest Router <400ms) ──
-  const groqKey = get('VITE_GROQ_KEY') || get('VITE_GROQ_API_KEY');
-  if (groqKey) {
-    const result = await tryProvider('Groq', async () => {
-      const res = await postJSON(
-        'https://api.groq.com/openai/v1/chat/completions',
-        { Authorization: `Bearer ${groqKey}` },
-        {
-          model: opts.groqModel || 'llama-3.3-70b-versatile',
-          max_tokens: opts.maxTokens || 1024,
-          temperature: opts.temperature ?? 0.2,
-          messages
-        },
-        1800
-      );
-      if (res.status === 429 || res.status === 403) return { _rateLimit: true };
-      if (!res.ok) return null;
-      const data = await res.json();
-      const text = data?.choices?.[0]?.message?.content;
-      const tokensUsed = data?.usage?.total_tokens || Math.ceil((prompt.length + (text?.length || 0)) / 4);
-      return text ? { success: true, text, provider: 'groq', tokensUsed } : null;
-    });
-    if (result) return result;
-  }
-
-  // ── Priority 2: Cerebras Llama-3.1-70b (Ultra-fast <300ms) ──
-  const cerebrasKey = get('VITE_CEREBRAS_KEY');
-  if (cerebrasKey) {
-    const result = await tryProvider('Cerebras', async () => {
-      const res = await postJSON(
-        'https://api.cerebras.ai/v1/chat/completions',
-        { Authorization: `Bearer ${cerebrasKey}` },
-        {
-          model: 'llama3.1-70b',
-          max_tokens: opts.maxTokens || 1024,
-          temperature: 0.1,
-          messages
-        },
-        1500
-      );
-      if (res.status === 429 || res.status === 403) return { _rateLimit: true };
-      if (!res.ok) return null;
-      const data = await res.json();
-      const text = data?.choices?.[0]?.message?.content;
-      const tokensUsed = data?.usage?.total_tokens || Math.ceil((prompt.length + (text?.length || 0)) / 4);
-      return text ? { success: true, text, provider: 'cerebras', tokensUsed } : null;
-    });
-    if (result) return result;
-  }
-
-  // ── Priority 3: Gemini REST API Key Pool (2.0 Flash / 1.5 Flash) ──
-  const geminiKeys = Array.from({ length: 7 }, (_, i) =>
-    get(`VITE_GEMINI_KEY_${i + 1}`) || get(`VITE_GEMINI_API_KEY_${i + 1}`)
-  ).concat([get('VITE_GEMINI_API_KEY')]).filter(k => k && k.length > 20);
-
-  for (const apiKey of geminiKeys) {
-    let keyRateLimited = false;
-    for (const model of ['gemini-2.0-flash', 'gemini-1.5-flash']) {
-      if (keyRateLimited) break;
-      const result = await tryProvider(`Gemini/${model}`, async () => {
-        const res = await postJSON(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-          {},
-          {
-            contents: [{ parts: [{ text: systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt }] }],
-            generationConfig: { temperature: opts.temperature ?? 0.2, maxOutputTokens: opts.maxTokens || 1024 }
-          },
-          2500
-        );
-        if (res.status === 429 || res.status === 403) {
-          keyRateLimited = true;
-          return { _rateLimit: true };
-        }
-        if (!res.ok) return null;
-        const data = await res.json();
-        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        const tokensUsed = data?.usageMetadata?.totalTokenCount || Math.ceil((prompt.length + (text?.length || 0)) / 4);
-        return text ? { success: true, text, provider: `gemini/${model}`, tokensUsed } : null;
-      }, 1); // 1 attempt per model — rotate key on any failure
-      if (result && result.success) return result;
+  try {
+    const response = await requestGeneration('chat', {
+      messages,
+      modelPreference: opts.modelPreference || 'auto'
+    }, opts.currentUser || auth.currentUser || null);
+    const text = String(response?.text || '').trim();
+    if (text) {
+      return {
+        success: true,
+        text,
+        provider: response.provider || 'Zulora server router',
+        tokensUsed: Number(response.tokenUsage?.totalTokens) || Math.ceil((String(prompt || '').length + text.length) / 4)
+      };
     }
+  } catch (error) {
+    console.warn('[Zulora Waterfall] Server generation failed; using local fallback:', error?.status || error?.name || 'request failed');
   }
-
-  // ── Priority 4: Graceful Local Fallback — NEVER crash UI ──
-  console.warn('[Zulora Waterfall] All providers exhausted — using local fallback');
-  return {
-    success: false,
-    text: '',
-    provider: 'local_deterministic',
-    error: null
-  };
+  return { success: false, text: '', provider: 'local_deterministic', error: null };
 }
 
-// ─── Persistent Screen State Memory Buffer ───────────────────────────────────
 export const screenMemoryBuffer = [];
 
 export function recordScreenMemory(entry) {

@@ -127,12 +127,14 @@ export async function requestVoiceAudio(text, voiceId, currentUser) {
     } catch { finish(null); return; }
     timeout = window.setTimeout(() => finish(null), 25_000);
     socket.onopen = () => {
-      socket.send(JSON.stringify({
-        text: ' ',
-        voice_settings: { stability: 0.48, similarity_boost: 0.78, style: 0.28, use_speaker_boost: true }
-      }));
-      socket.send(JSON.stringify({ text: `${text} `, try_trigger_generation: true }));
-      socket.send(JSON.stringify({ text: '' }));
+      try {
+        socket.send(JSON.stringify({
+          text: ' ',
+          voice_settings: { stability: 0.48, similarity_boost: 0.78, style: 0.28, use_speaker_boost: true }
+        }));
+        socket.send(JSON.stringify({ text: `${text} `, try_trigger_generation: true }));
+        socket.send(JSON.stringify({ text: '' }));
+      } catch { finish(null); }
     };
     socket.onmessage = event => {
       let data;
@@ -150,12 +152,10 @@ export async function requestVoiceAudio(text, voiceId, currentUser) {
       if (data.is_final) finish(chunks.length ? new Blob(chunks, { type: 'audio/mpeg' }) : null);
     };
     socket.onerror = () => finish(null);
-    socket.onclose = () => {
-      if (!finished) finish(chunks.length ? new Blob(chunks, { type: 'audio/mpeg' }) : null);
-    };
+    socket.onclose = () => { if (!finished) finish(null); };
   });
 
-  let tokenRouteMissing = false;
+  let useRestFallback = false;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let tokenResponse;
     try {
@@ -166,26 +166,29 @@ export async function requestVoiceAudio(text, voiceId, currentUser) {
       });
     } catch {
       if (attempt === 0) { await new Promise(resolve => window.setTimeout(resolve, 180)); continue; }
-      return null;
+      useRestFallback = true;
+      break;
     }
-    if (tokenResponse.status === 404) { tokenRouteMissing = true; break; }
+    if (tokenResponse.status === 404) { useRestFallback = true; break; }
     if (!tokenResponse.ok) {
       const data = await tokenResponse.json().catch(() => ({}));
       if ([408, 425, 429, 503].includes(tokenResponse.status) && attempt === 0) {
         await new Promise(resolve => window.setTimeout(resolve, 180));
         continue;
       }
+      if ([408, 425, 503].includes(tokenResponse.status)) { useRestFallback = true; break; }
       throw new GenerationApiError(data.error || 'Voice synthesis failed.', tokenResponse.status, data);
     }
     const tokenPayload = await tokenResponse.json().catch(() => ({}));
-    if (!tokenPayload.token) return null;
+    if (!tokenPayload.token) { useRestFallback = true; break; }
     const blob = await openWebSocket(tokenPayload.token);
     if (blob?.size) return blob;
+    useRestFallback = true;
     if (attempt === 0) await new Promise(resolve => window.setTimeout(resolve, 180));
   }
 
-  // Keep compatibility with deployments that have not yet published the websocket token route.
-  if (!tokenRouteMissing) return null;
+  // Recover a failed or disconnected WebSocket through ElevenLabs REST streaming.
+  if (!useRestFallback) return null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let response;
     try {

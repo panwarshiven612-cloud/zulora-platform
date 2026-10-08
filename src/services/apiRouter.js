@@ -3,10 +3,9 @@
  * =============================================
  * Complete Multi-Engine Resilience & Dynamic Fallback Pool
  * 
- * - Reads browser-safe VITE_* variables from import.meta.env
- * - Tries the configured providers sequentially and ignores empty responses
- * - Silent automatic failover across all configured Gemini keys
- * - Cascades through Gemini Flash -> Gemini Pro -> Groq LPU
+ * - Sends text generation through the authenticated server-side provider waterfall
+ * - Keeps text-provider keys out of browser code and bundles
+ * - Uses only explicitly listed browser media settings for client-side fallbacks
  * - Bulletproof Image Studio (Pollinations FLUX -> Fal AI -> HuggingFace -> Cloudflare -> High-Res fallback)
  * - Video Studio delegates to the Pollinations-first server video router, with Fal AI / Replicate fallbacks
  * - Returns both `url` and `imageUrl`/`videoUrl` so all studio consumers work seamlessly
@@ -25,8 +24,19 @@ import { checkExtensionConnected } from './browserAgentEngine';
 import { classifyGoogleConnectorIntents, executeGoogleConnectorFunction, getGoogleConnectorFunctionDeclarations, getGoogleConnectorFunctionProvider, getGoogleConnectorToolInstructions, isGoogleReconnectError, isWorkspaceMetricsWorkflowRequest, normalizeGoogleConnectorArguments, toGeminiFunctionDeclaration, toOpenAiFunctionTool } from './googleConnectorTools';
 
 // â”€â”€â”€ SAFE ENVIRONMENT EXTRACTOR â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const clientEnv = import.meta.env || {};
-const getEnv = (key) => String(clientEnv[key] || '').trim();
+// Only browser-safe media variables are read here. Text-model credentials stay
+// in the server router and are never serialized into this Vite bundle.
+const clientEnv = {
+  VITE_GEMINI_FLASH_MODEL: import.meta.env.VITE_GEMINI_FLASH_MODEL,
+  VITE_HF_API_KEY: import.meta.env.VITE_HF_API_KEY,
+  VITE_HUGGINGFACE_API_KEY: import.meta.env.VITE_HUGGINGFACE_API_KEY,
+  VITE_REPLICATE_API_TOKEN: import.meta.env.VITE_REPLICATE_API_TOKEN,
+  VITE_REPLICATE_KEY: import.meta.env.VITE_REPLICATE_KEY,
+  VITE_FAL_KEY: import.meta.env.VITE_FAL_KEY,
+  VITE_CLOUDFLARE_ACCOUNT_ID: import.meta.env.VITE_CLOUDFLARE_ACCOUNT_ID,
+  VITE_CLOUDFLARE_API_TOKEN: import.meta.env.VITE_CLOUDFLARE_API_TOKEN
+};
+const getEnv = key => String(clientEnv[key] || '').trim();
 export const GROQ_MODELS = Object.freeze({
   primary: 'llama-3.3-70b-versatile',
 });

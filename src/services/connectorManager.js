@@ -2,9 +2,17 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { deleteDoc, doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
 
+const processEnv = typeof process !== 'undefined' && process.env ? process.env : {};
 const GOOGLE_CLIENT_ID = String(
-  import.meta.env?.VITE_GOOGLE_CLIENT_ID
+  processEnv.GOOGLE_CLIENT_ID
+  || processEnv.VITE_GOOGLE_CLIENT_ID
+  || import.meta.env?.VITE_GOOGLE_CLIENT_ID
   || '791256936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com'
+).trim();
+const GOOGLE_REDIRECT_URI = String(
+  processEnv.VITE_GOOGLE_REDIRECT_URI
+  || import.meta.env?.VITE_GOOGLE_REDIRECT_URI
+  || 'https://zulora.in/dashboard'
 ).trim();
 const GOOGLE_IDENTITY_SCRIPT = 'https://accounts.google.com/gsi/client';
 const TOKEN_REFRESH_MARGIN_MS = 60_000;
@@ -385,7 +393,7 @@ function authorizationCodeRequest(oauth, scopes) {
         try {
           const session = await oauthApiRequest('exchange', {
             code: response.code,
-            redirectUri: new URL(import.meta.env?.VITE_GOOGLE_REDIRECT_URI || window.location.origin).origin
+              redirectUri: new URL(GOOGLE_REDIRECT_URI || window.location.origin).origin
           });
           resolve(session);
         } catch (error) { reject(error); }

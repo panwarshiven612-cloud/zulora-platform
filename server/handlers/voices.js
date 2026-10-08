@@ -1,5 +1,6 @@
 import { verifyRequestUser } from './ai.js';
 import { VOICE_OPTIONS } from '../../src/services/voicePreferences.js';
+import { readServerEnv } from './keyResolver.js';
 
 export const maxDuration = 15;
 export const config = { maxDuration };
@@ -12,7 +13,7 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed.' });
   if (!await verifyRequestUser(req).catch(() => null)) return res.status(401).json({ error: 'Sign in to load voice options.' });
 
-  const apiKey = process.env.ELEVENLABS_API_KEY;
+  const apiKey = readServerEnv('ELEVENLABS_API_KEY');
   if (!apiKey) return res.status(200).json({ voices: voiceFallback(), source: 'defaults' });
   if (cachedVoices && cachedUntil > Date.now()) return res.status(200).json({ voices: cachedVoices, source: 'elevenlabs' });
 

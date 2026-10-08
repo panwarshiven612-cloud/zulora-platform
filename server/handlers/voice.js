@@ -1,4 +1,5 @@
 import { reserveVoiceUsage, verifyRequestUser } from './ai.js';
+import { readServerEnv } from './keyResolver.js';
 
 export const maxDuration = 30;
 export const config = { maxDuration };
@@ -9,7 +10,7 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return reply(res, 405, 'Method not allowed.');
   const uid = await verifyRequestUser(req).catch(() => null);
   if (!uid) return reply(res, 401, 'Sign in to use voice responses.');
-  const apiKey = process.env.ELEVENLABS_API_KEY;
+  const apiKey = readServerEnv('ELEVENLABS_API_KEY');
   if (!apiKey) return reply(res, 503, 'ElevenLabs voice is not configured.');
 
   let body = req.body;
@@ -31,7 +32,7 @@ export default async function handler(req, res) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 20_000);
       try {
-        response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`, {
+        response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream?output_format=mp3_44100_128`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Accept: 'audio/mpeg', 'xi-api-key': apiKey },
           body: JSON.stringify({

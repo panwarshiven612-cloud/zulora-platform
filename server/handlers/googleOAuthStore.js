@@ -1,5 +1,6 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { firestoreAccessToken, firestoreRoot } from './ai.js';
+import { readServerEnv } from './keyResolver.js';
 
 export const GOOGLE_SERVICE_SCOPES = Object.freeze({
   gmail: Object.freeze([
@@ -31,20 +32,37 @@ const serviceAccountDocumentPath = uid => `${firestoreRoot()}/users/${encodeURIC
 const serviceAccountCollectionPath = uid => `${firestoreRoot()}/users/${encodeURIComponent(uid)}/private`;
 
 function googleClientId() {
-  return String(process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '791256936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com').trim();
+  return readServerEnv('GOOGLE_CLIENT_ID') || '791256936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com';
 }
 
 function googleClientSecret() {
-  return String(process.env.GOOGLE_CLIENT_SECRET || '').trim();
+  return readServerEnv('GOOGLE_CLIENT_SECRET');
 }
 
 function encryptionKey() {
-  const raw = String(process.env.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY || '').trim();
-  if (!raw) throw new Error('GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY is not configured on the server.');
-  const decoded = Buffer.from(raw, 'base64');
-  const key = decoded.length === 32 ? decoded : Buffer.from(raw, 'utf8');
-  if (key.length !== 32) throw new Error('GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY must be a base64-encoded 32-byte key.');
-  return key;
+  const raw = readServerEnv('GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY', { allowViteAlias: false });
+  if (raw) {
+    const decoded = Buffer.from(raw, 'base64');
+    const configuredKey = decoded.length === 32 ? decoded : Buffer.from(raw, 'utf8');
+    if (configuredKey.length === 32) return configuredKey;
+  }
+
+  // Derive a stable AES key from an existing server-only secret when the
+  // dedicated encryption key is absent or malformed. Do not use a VITE key:
+  // those values can be included in the public browser bundle.
+  const serverSecret = readServerEnv('FIREBASE_ADMIN_PRIVATE_KEY', { allowViteAlias: false })
+    || readServerEnv('FIREBASE_PRIVATE_KEY', { allowViteAlias: false })
+    || googleClientSecret();
+  if (serverSecret) {
+    return createHash('sha256')
+      .update('zulora-google-oauth-token-encryption:v1\0', 'utf8')
+      .update(serverSecret, 'utf8')
+      .digest();
+  }
+
+  const error = new Error('Google Workspace is temporarily unavailable. Please try again later.');
+  error.code = 'GOOGLE_OAUTH_ENCRYPTION_UNAVAILABLE';
+  throw error;
 }
 
 function encryptSession(session) {
