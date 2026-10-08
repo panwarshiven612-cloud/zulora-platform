@@ -102,28 +102,113 @@ export async function requestVoiceAudio(text, voiceId, currentUser) {
   let token;
   try { token = await currentUser.getIdToken(); }
   catch { return null; }
-  let response = null;
+  const voicePayload = { text, voiceId };
+  const openWebSocket = tokenValue => new Promise(resolve => {
+    const chunks = [];
+    let finished = false;
+    let timeout;
+    let socket;
+    const finish = result => {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(timeout);
+      try { socket?.close(); } catch { /* The connection may already be closed. */ }
+      resolve(result);
+    };
+    const query = new URLSearchParams({
+      model_id: 'eleven_flash_v2_5',
+      output_format: 'mp3_44100_128',
+      single_use_token: tokenValue,
+      inactivity_timeout: '30',
+      auto_mode: 'true'
+    });
+    try {
+      socket = new WebSocket(`wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream-input?${query}`);
+    } catch { finish(null); return; }
+    timeout = window.setTimeout(() => finish(null), 25_000);
+    socket.onopen = () => {
+      socket.send(JSON.stringify({
+        text: ' ',
+        voice_settings: { stability: 0.48, similarity_boost: 0.78, style: 0.28, use_speaker_boost: true }
+      }));
+      socket.send(JSON.stringify({ text: `${text} `, try_trigger_generation: true }));
+      socket.send(JSON.stringify({ text: '' }));
+    };
+    socket.onmessage = event => {
+      let data;
+      try { data = JSON.parse(String(event.data || '')); }
+      catch { finish(null); return; }
+      if (data.error) { finish(null); return; }
+      if (data.audio) {
+        try {
+          const binary = atob(data.audio);
+          const bytes = new Uint8Array(binary.length);
+          for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+          chunks.push(bytes);
+        } catch { finish(null); return; }
+      }
+      if (data.is_final) finish(chunks.length ? new Blob(chunks, { type: 'audio/mpeg' }) : null);
+    };
+    socket.onerror = () => finish(null);
+    socket.onclose = () => {
+      if (!finished) finish(chunks.length ? new Blob(chunks, { type: 'audio/mpeg' }) : null);
+    };
+  });
+
+  let tokenRouteMissing = false;
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    let tokenResponse;
+    try {
+      tokenResponse = await fetch('/api/voice-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(voicePayload)
+      });
+    } catch {
+      if (attempt === 0) { await new Promise(resolve => window.setTimeout(resolve, 180)); continue; }
+      return null;
+    }
+    if (tokenResponse.status === 404) { tokenRouteMissing = true; break; }
+    if (!tokenResponse.ok) {
+      const data = await tokenResponse.json().catch(() => ({}));
+      if ([408, 425, 429, 503].includes(tokenResponse.status) && attempt === 0) {
+        await new Promise(resolve => window.setTimeout(resolve, 180));
+        continue;
+      }
+      throw new GenerationApiError(data.error || 'Voice synthesis failed.', tokenResponse.status, data);
+    }
+    const tokenPayload = await tokenResponse.json().catch(() => ({}));
+    if (!tokenPayload.token) return null;
+    const blob = await openWebSocket(tokenPayload.token);
+    if (blob?.size) return blob;
+    if (attempt === 0) await new Promise(resolve => window.setTimeout(resolve, 180));
+  }
+
+  // Keep compatibility with deployments that have not yet published the websocket token route.
+  if (!tokenRouteMissing) return null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let response;
     try {
       response = await fetch('/api/voice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ text, voiceId })
+        body: JSON.stringify(voicePayload)
       });
     } catch {
       if (attempt === 1) return null;
       await new Promise(resolve => window.setTimeout(resolve, 180));
       continue;
     }
-    if (response.ok || response.status === 404 || (![408, 425, 429].includes(response.status) && response.status < 500)) break;
-    if (attempt === 0) await new Promise(resolve => window.setTimeout(resolve, 180));
-  }
-  if (!response || response.status === 404) return null;
-  if (!response.ok) {
+    if (response.ok) return response.blob();
+    if (response.status === 404) return null;
+    if ([408, 425, 429, 503].includes(response.status) && attempt === 0) {
+      await new Promise(resolve => window.setTimeout(resolve, 180));
+      continue;
+    }
     const data = await response.json().catch(() => ({}));
     throw new GenerationApiError(data.error || 'Voice synthesis failed.', response.status, data);
   }
-  return response.blob();
+  return null;
 }
 
 export async function requestVoiceOptions(currentUser) {
