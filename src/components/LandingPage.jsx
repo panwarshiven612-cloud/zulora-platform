@@ -580,6 +580,14 @@ export const LandingPage = ({ onTryDemo, onSignIn }) => {
           <div className="mt-4 pt-4 border-t border-slate-200/40 dark:border-slate-800/40 text-center text-[10px] text-slate-400 dark:text-slate-600">
             © {new Date().getFullYear()} Zulora. All rights reserved. Powered by Google Gemini, Groq, Mistral & more.
           </div>
+          <article className="mx-auto mt-5 max-w-4xl border-t border-slate-200/40 pt-4 text-center dark:border-slate-800/40">
+            <section aria-labelledby="why-zulora-ai" className="space-y-1.5">
+              <h2 id="why-zulora-ai" className="text-xs font-semibold text-slate-500 dark:text-slate-400">Why Zulora AI?</h2>
+              <p className="mx-auto max-w-3xl text-[11px] leading-5 text-slate-400 dark:text-slate-500">
+                Zulora AI is a free-to-start, high-performance alternative to ChatGPT and Google Gemini, bringing zero-latency multi-model switching, AI web research, image and video generation, code assistance, and Google Workspace automation together in one studio.
+              </p>
+            </section>
+          </article>
         </div>
       </footer>
     </div>

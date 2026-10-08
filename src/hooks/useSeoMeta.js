@@ -4,8 +4,8 @@ const BASE_URL = 'https://zulora.in';
 
 const ROUTE_META = {
   '/': {
-    title: 'Zulora AI — Multi-Model AI Studio | Chat, Image & Video Generation',
-    description: 'Zulora AI is a production-ready multi-model AI studio. Chat with Gemini, Groq & Mistral, generate images, create videos — all free to start.',
+    title: "Zulora AI — India's Next-Gen Free AI Studio | Multi-Model Chat, Image & Video Generation",
+    description: 'Zulora AI is a unified enterprise AI ecosystem founded by Shiven Panwar. Access multi-model chat (Gemini, Llama 3.3, Groq), free AI image generation, cinematic video creation, code generation, and Google Workspace integrations.',
     canonical: `${BASE_URL}/`
   },
   '/signin': {

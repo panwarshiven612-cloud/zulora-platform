@@ -1,10 +1,10 @@
 import { createHash, createPublicKey, createSign, verify as verifySignature } from 'node:crypto';
 import { GEMINI_KEYS, apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
-import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from '../src/services/systemPrompt.js';
-import { AI_STUDIO_SYSTEM_PROMPT } from '../src/services/aiStudioPrompt.js';
-import { GEMINI_FLASH_MODEL_ID, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from '../src/services/aiModels.js';
-import { buildImagePrompt } from '../src/services/imageGen.js';
-import { webSearch } from '../src/services/webSearch.js';
+import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from '../../src/services/systemPrompt.js';
+import { AI_STUDIO_SYSTEM_PROMPT } from '../../src/services/aiStudioPrompt.js';
+import { GEMINI_FLASH_MODEL_ID, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from '../../src/services/aiModels.js';
+import { buildImagePrompt } from '../../src/services/imageGen.js';
+import { webSearch } from '../../src/services/webSearch.js';
 
 export const maxDuration = 60;
 export const config = { maxDuration };

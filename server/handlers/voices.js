@@ -1,5 +1,5 @@
 import { verifyRequestUser } from './ai.js';
-import { VOICE_OPTIONS } from '../src/services/voicePreferences.js';
+import { VOICE_OPTIONS } from '../../src/services/voicePreferences.js';
 
 export const maxDuration = 15;
 export const config = { maxDuration };

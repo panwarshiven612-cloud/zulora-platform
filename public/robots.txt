@@ -1,22 +1,4 @@
 User-agent: *
 Allow: /
 
-# Block private API, auth, and Firebase internal paths
-Disallow: /api/
-Disallow: /__/
-Disallow: /private/
-Disallow: /admin/
-Disallow: /settings
-Disallow: /vault
-Disallow: /brain
-
-# Allow public pages
-Allow: /
-Allow: /search
-Allow: /signin
-
-# Sitemap
 Sitemap: https://zulora.in/sitemap.xml
-
-# Crawl-delay for respectful crawling
-Crawl-delay: 5

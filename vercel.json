@@ -13,6 +13,14 @@
       "destination": "/terms.html"
     },
     {
+      "source": "/api",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "/api/index?route=:path*"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
