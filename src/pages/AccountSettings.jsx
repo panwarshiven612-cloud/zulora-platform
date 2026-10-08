@@ -9,7 +9,7 @@ import { deleteUser } from 'firebase/auth';
 import { deleteObject, ref } from 'firebase/storage';
 import { db, storage } from '../services/firebase';
 import { getPreferredVoiceId, setPreferredVoiceId, VOICE_OPTIONS } from '../services/voicePreferences';
-import { requestLimits } from '../services/generationApi';
+import { requestLimits, requestVoiceOptions } from '../services/generationApi';
 
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 const DELETE_BATCH_SIZE = 15;
@@ -108,11 +108,31 @@ export const AccountSettings = ({ onClose }) => {
   const creditsRemaining = Math.max(0, creditLimit - creditsUsed);
   const creditPercent = Math.min(100, Math.floor(creditsUsed / creditLimit * 100));
   const [preferredVoice, setPreferredVoice] = useState(getPreferredVoiceId);
+  const [voiceOptions, setVoiceOptions] = useState(VOICE_OPTIONS);
   useEffect(() => {
-    const voice = VOICE_OPTIONS.find(option => option.id === preferredVoice);
-    if (voice && (voice.tier === 'free' || tier !== 'free')) return;
-    setPreferredVoice(setPreferredVoiceId('adam'));
-  }, [preferredVoice, tier]);
+    let active = true;
+    requestVoiceOptions(currentUser).then(voices => {
+      if (!active || !voices) return;
+      setVoiceOptions(voices);
+      const saved = getPreferredVoiceId();
+      const legacy = VOICE_OPTIONS.find(option => option.id === saved || option.voiceId === saved);
+      const match = voices.find(option => option.id === saved || option.voiceId === saved)
+        || (legacy && voices.find(option => option.voiceId === legacy.voiceId));
+      if (match) setPreferredVoice(match.id || match.voiceId);
+    });
+    return () => { active = false; };
+  }, [currentUser?.uid]);
+  useEffect(() => {
+    const legacy = VOICE_OPTIONS.find(option => option.id === preferredVoice || option.voiceId === preferredVoice);
+    const voice = voiceOptions.find(option => option.id === preferredVoice || option.voiceId === preferredVoice)
+      || (legacy && voiceOptions.find(option => option.voiceId === legacy.voiceId));
+    if (voice && (voice.tier === 'free' || tier !== 'free')) {
+      if (voice.id && voice.id !== preferredVoice) setPreferredVoice(voice.id);
+      return;
+    }
+    const fallback = voiceOptions.find(option => option.tier === 'free') || VOICE_OPTIONS[0];
+    setPreferredVoice(setPreferredVoiceId(fallback.id));
+  }, [preferredVoice, tier, voiceOptions]);
   useEffect(() => {
     if (!currentUser?.uid) return undefined;
     let active = true;
@@ -252,10 +272,10 @@ export const AccountSettings = ({ onClose }) => {
               <select
                 id="account-voice-choice"
                 value={preferredVoice}
-                onChange={event => setPreferredVoice(setPreferredVoiceId(event.target.value))}
+                onChange={event => { setPreferredVoiceId(event.target.value); setPreferredVoice(event.target.value); }}
                 className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-sky-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
               >
-                {VOICE_OPTIONS.filter(voice => voice.tier === 'free' || tier !== 'free').map(voice => (
+                {voiceOptions.filter(voice => voice.tier === 'free' || tier !== 'free').map(voice => (
                   <option key={voice.id} value={voice.id}>{voice.name} · {voice.gender}{voice.tier === 'pro' ? ' · Pro' : ''}</option>
                 ))}
               </select>

@@ -74,25 +74,69 @@ export async function requestLimits(currentUser) {
   } catch { return null; }
 }
 
-export async function requestVoiceAudio(text, voiceId, currentUser) {
+export async function requestConnectorModel(payload, currentUser, signal) {
   if (!currentUser?.getIdToken) return null;
   let token;
   try { token = await currentUser.getIdToken(); }
   catch { return null; }
   let response;
   try {
-    response = await fetch('/api/voice', {
+    response = await fetch('/api/connector-model', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ text, voiceId })
+      body: JSON.stringify(payload),
+      signal
     });
-  } catch { return null; }
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
   if (response.status === 404) return null;
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new GenerationApiError(data.error || 'The connector model request failed.', response.status, data);
+  return data;
+}
+
+export async function requestVoiceAudio(text, voiceId, currentUser) {
+  if (!currentUser?.getIdToken) return null;
+  let token;
+  try { token = await currentUser.getIdToken(); }
+  catch { return null; }
+  let response = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      response = await fetch('/api/voice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ text, voiceId })
+      });
+    } catch {
+      if (attempt === 1) return null;
+      await new Promise(resolve => window.setTimeout(resolve, 180));
+      continue;
+    }
+    if (response.ok || response.status === 404 || (![408, 425, 429].includes(response.status) && response.status < 500)) break;
+    if (attempt === 0) await new Promise(resolve => window.setTimeout(resolve, 180));
+  }
+  if (!response || response.status === 404) return null;
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     throw new GenerationApiError(data.error || 'Voice synthesis failed.', response.status, data);
   }
   return response.blob();
+}
+
+export async function requestVoiceOptions(currentUser) {
+  if (!currentUser?.getIdToken) return null;
+  let token;
+  try { token = await currentUser.getIdToken(); }
+  catch { return null; }
+  try {
+    const response = await fetch('/api/voices', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+    if (!response.ok) return null;
+    const payload = await response.json().catch(() => ({}));
+    return Array.isArray(payload.voices) && payload.voices.length ? payload.voices : null;
+  } catch { return null; }
 }
 
 /** Requests chat output as authenticated server-sent events and forwards each token to the UI. */

@@ -16,13 +16,15 @@ export function getPreferredVoiceId() {
 }
 
 export function setPreferredVoiceId(id) {
-  const valid = VOICE_OPTIONS.some(voice => voice.id === id) ? id : 'adam';
+  const valid = VOICE_OPTIONS.some(voice => voice.id === id || voice.voiceId === id)
+    ? (VOICE_OPTIONS.find(voice => voice.id === id || voice.voiceId === id)?.id || id)
+    : /^[A-Za-z0-9_-]{8,80}$/.test(String(id || '')) ? String(id) : 'adam';
   try { localStorage.setItem(VOICE_PREFERENCE_KEY, valid); }
   catch { /* Keep the setting for this session if storage is unavailable. */ }
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('zulora:voice-preference', { detail: valid }));
   return valid;
 }
 
-export function getVoiceByPreference(id) {
-  return VOICE_OPTIONS.find(voice => voice.id === id) || VOICE_OPTIONS[0];
+export function getVoiceByPreference(id, voices = VOICE_OPTIONS) {
+  return voices.find(voice => voice.id === id || voice.voiceId === id) || VOICE_OPTIONS.find(voice => voice.id === 'adam') || VOICE_OPTIONS[0];
 }

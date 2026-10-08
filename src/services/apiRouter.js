@@ -13,7 +13,7 @@
  *
  * Founded & Created by Shiven Panwar â€” Zulora AI
  */
-import { requestGeneration, requestGenerationStream, trackSuccessfulUsage, checkGenerationAllowance, GenerationApiError } from './generationApi';
+import { requestConnectorModel, requestGeneration, requestGenerationStream, trackSuccessfulUsage, checkGenerationAllowance, GenerationApiError } from './generationApi';
 import { generateVideo as generateVideoWithProviders } from './videoService';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from './systemPrompt';
 import { webSearch, formatCitations } from './webSearch';
@@ -34,27 +34,11 @@ const GEMINI_FLASH_MODEL = getEnv('VITE_GEMINI_FLASH_MODEL') || GEMINI_FLASH_MOD
 export { GEMINI_MODELS };
 
 // â”€â”€â”€ DYNAMIC GEMINI KEY POOL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const GEMINI_KEYS = Array.from({ length: 7 }, (_, index) => getEnv(`VITE_GEMINI_KEY_${index + 1}`) || getEnv(`VITE_GEMINI_API_KEY_${index + 1}`));
-const LEGACY_GEMINI_KEYS = [getEnv('VITE_GEMINI_API_KEY')];
-
-export const getGeminiKeyPool = () => {
-  const pool = [];
-  const add = (k) => {
-    if (k && typeof k === 'string') {
-      const trimmed = k.trim();
-      if (trimmed.length > 20 && !pool.includes(trimmed)) {
-        pool.push(trimmed);
-      }
-    }
-  };
-
-  [...GEMINI_KEYS, ...LEGACY_GEMINI_KEYS].forEach(add);
-
-  return pool;
-};
+// Text-provider credentials are kept on the server and never read from VITE_* browser variables.
+export const getGeminiKeyPool = () => [];
 
 // â”€â”€â”€ SECONDARY ENGINE KEYS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const GROQ_KEY = getEnv('VITE_GROQ_KEY') || getEnv('VITE_GROQ_API_KEY');
+const GROQ_KEY = '';
 const HF_IMAGE_KEY = getEnv('VITE_HF_API_KEY') || getEnv('VITE_HUGGINGFACE_API_KEY');
 const REPLICATE_IMAGE_KEY = getEnv('VITE_REPLICATE_API_TOKEN') || getEnv('VITE_REPLICATE_KEY');
 const FAL_KEY = getEnv('VITE_FAL_KEY');
@@ -692,36 +676,22 @@ async function runGeminiConnectorToolProvider({ key, keyIndex, prompt, contextMe
 }
 
 async function runConnectorToolProvider({ provider, key, keyIndex, prompt, contextMessages, model, options, declarations }) {
-  const isGemini = provider === 'Google Gemini';
-  if (isGemini) return runGeminiConnectorToolProvider({ key, keyIndex, prompt, contextMessages, model, options, declarations });
-  const endpoints = {
-    'Groq LPU': 'https://api.groq.com/openai/v1/chat/completions'
-  };
-  const endpoint = endpoints[provider];
-  if (!endpoint) throw new Error(`No connector tool endpoint is configured for ${provider}.`);
   const tools = declarations.map(declaration => toOpenAiFunctionTool(declaration));
   const messages = [
     { role: 'system', content: providerSystemPrompt(options) },
     ...buildHistory(contextMessages, isComplexPrompt(prompt, options)),
     { role: 'user', content: prompt }
   ];
-  const attachments = (options.attachments || []).map(toGeminiInlineData).filter(Boolean);
-  if (attachments.length) {
-    const latest = messages[messages.length - 1];
-    latest.content = [
-      { type: 'text', text: prompt },
-      ...attachments.map(({ mimeType, data }) => ({ type: 'image_url', image_url: { url: `data:${mimeType};base64,${data}` } }))
-    ];
-  }
-  const maxTokens = options.coding || options.flagship ? 16_384 : (MODEL_TIERS[options.tier]?.maxTokens || 8192);
   let totalTokens = 0;
   let reconnectProvider = '';
+  let resolvedProvider = provider;
+  let resolvedModel = model;
   const toolResults = [];
   const executedCalls = new Map();
   const completedResult = () => ({
     text: `Connector results:\n${toolResults.map(({ name, result }) => `${name}: ${result?.error || JSON.stringify(result)}`).join('\n')}`,
-    model,
-    provider,
+    model: resolvedModel,
+    provider: resolvedProvider,
     tokenUsage: { totalTokens },
     connectorData: toolResults,
     connectorBadge: connectorBadgeForResults(toolResults),
@@ -731,34 +701,21 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
 
   for (let round = 0; round < 4; round += 1) {
     if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
-    let response;
-    let data;
+    let completion;
     try {
-      const headers = {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${key}`,
-      };
-      const requestBody = { model, messages, tools, tool_choice: 'auto', max_tokens: maxTokens, temperature: 0.4 };
-      const normalizedRetry = {
-        ...requestBody,
-        tools: declarations.map(declaration => toOpenAiFunctionTool(declaration, { closeObjects: false }))
-      };
-      ({ response, data } = await postConnectorModelRequest(endpoint, headers, requestBody, options, 18_000, provider, normalizedRetry));
+      completion = await requestConnectorModel({ messages, tools, modelPreference: options.model, model }, options.currentUser, options.signal);
+      if (!completion) throw new Error('The server connector model route is unavailable.');
     } catch (error) {
       if (toolResults.length) return completedResult();
       throw error;
     }
-    if (!response.ok) {
-      const error = new Error(`${provider} HTTP ${response.status}: ${data.error?.message || response.statusText}`);
-      error.status = response.status;
-      if (toolResults.length) return completedResult();
-      throw error;
-    }
-    totalTokens += Number(data.usage?.total_tokens || data.usage?.totalTokens || 0);
-    const assistantMessage = data.choices?.[0]?.message;
+    resolvedProvider = completion.provider || resolvedProvider;
+    resolvedModel = completion.model || resolvedModel;
+    totalTokens += Number(completion.tokenUsage?.totalTokens || 0);
+    const assistantMessage = completion.assistantMessage;
     if (!assistantMessage) {
       if (toolResults.length) return completedResult();
-      throw new Error(`${provider} returned an empty connector response.`);
+      throw new Error('The connector model returned an empty response.');
     }
     const calls = Array.isArray(assistantMessage.tool_calls) ? assistantMessage.tool_calls : [];
     if (!calls.length) {
@@ -767,18 +724,18 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
         : Array.isArray(assistantMessage.content) ? assistantMessage.content.map(part => part.text || '').join('').trim() : '';
       if (!text) {
         if (toolResults.length) return completedResult();
-        throw new Error(`${provider} returned no text after connector execution.`);
+        throw new Error('The connector model returned no text after connector execution.');
       }
       const requiredProvider = requestedConnectorProvider(prompt, declarations);
       if (!toolResults.length && requiredProvider && !asksForClarification(text)) {
         throw new Error(`${provider} did not issue the required connector function call.`);
       }
-      options.onProvider?.({ provider, model });
+      options.onProvider?.({ provider: resolvedProvider, model: resolvedModel });
       if (options.onToken) options.onToken(text);
       return {
         text,
-        model,
-        provider,
+        model: resolvedModel,
+        provider: resolvedProvider,
         tokenUsage: { totalTokens },
         connectorData: toolResults,
         ...(reconnectProvider ? { needsReconnect: true, connectorProvider: reconnectProvider } : {})
@@ -788,7 +745,7 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
     const normalizedCalls = calls.map(call => {
       const name = call.function?.name || '';
       if (!declarations.some(declaration => declaration.name === name)) {
-        throw new Error(`${provider} requested an undeclared connector function: ${name || '(empty name)'}.`);
+        throw new Error(`The connector model requested an undeclared function: ${name || '(empty name)'}.`);
       }
       return { call, name, args: normalizeGoogleConnectorArguments(call.function?.arguments, name) };
     });
@@ -809,7 +766,7 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
           const message = error.message || 'The Google connector request failed.';
           const failedResult = { name, result: { status: 'error', message, error: message } };
           toolResults.push(failedResult);
-          return connectorFailureResult({ name, error, model, provider, totalTokens, toolResults });
+          return connectorFailureResult({ name, error, model: resolvedModel, provider: resolvedProvider, totalTokens, toolResults });
         }
         executedCalls.set(signature, result);
       }
@@ -832,39 +789,7 @@ async function tryGoogleConnectorToolWaterfall(prompt, contextMessages, model, o
     ...options,
     connectorProviders: activeProviders
   };
-  const keys = getGeminiKeyPool();
-  const tierConfig = MODEL_TIERS[options.tier] || MODEL_TIERS.auto;
-  const selectedTier = normalizeModelPreference(options.model);
-  const isExplicitModel = selectedTier !== 'auto';
-  const hasGeminiAttachments = (options.attachments || []).some(item => toGeminiInlineData(item));
-  const preferenceOrder = hasGeminiAttachments
-    ? ['gemini']
-    : selectedTier === 'groq'
-    ? ['groq', 'gemini']
-    : ['gemini', 'groq'];
-  const candidates = [];
-  for (const provider of preferenceOrder) {
-    if (provider === 'gemini') {
-      const preferredModel = selectedTier === 'think' ? GEMINI_PRO_MODEL_ID : model;
-      candidates.push(...keys.map((key, index) => ({ provider: 'Google Gemini', key, keyIndex: index, model: preferredModel })));
-      if (preferredModel !== GEMINI_PRO_MODEL_ID) {
-        candidates.push(...keys.map((key, index) => ({ provider: 'Google Gemini', key, keyIndex: index, model: GEMINI_PRO_MODEL_ID })));
-      }
-    } else if (provider === 'groq' && GROQ_KEY) {
-      candidates.push({ provider: 'Groq LPU', key: GROQ_KEY, keyIndex: 0, model: tierConfig.groqModel });
-    }
-  }
-  if (isExplicitModel && !candidates.length) {
-    const providerName = preferenceOrder[0] === 'groq' ? 'Groq LPU' : 'Google Gemini';
-    const selectedModel = preferenceOrder[0] === 'groq' ? tierConfig.groqModel : model;
-    return connectorFailureResult({
-      name: declarations[0].name,
-      error: new Error(`${providerName} is selected, but no API key is configured for that model route.`),
-      model: selectedModel,
-      provider: providerName,
-      totalTokens: 0
-    });
-  }
+  const candidates = [{ provider: 'Universal Tool Adapter', key: '', keyIndex: 0, model }];
   for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
     const candidate = candidates[candidateIndex];
     try {
@@ -1136,6 +1061,7 @@ export const apiRouter = {
           studioMode: Boolean(options.studioMode),
           modelPreference: requestedTier,
           enableWebSearch: Boolean(options.webSearch),
+          searchResults: webCitations,
           attachments: options.attachments || [],
           coding,
           flagship
@@ -1161,35 +1087,12 @@ export const apiRouter = {
           emittedStreamTokens = false;
         }
         if (options.onToken && error instanceof GenerationApiError && (error.status === 401 || error.status === 403)) throw error;
-        console.warn('[Chat] Server generation route unavailable; trying browser providers:', error.message);
+        console.warn('[Chat] Server generation route unavailable:', error.message);
       }
     }
-
-    const hasGeminiAttachments = (options.attachments || []).some(item => toGeminiInlineData(item));
-    const providerOrder = hasGeminiAttachments || options.webSearch
-      ? ['gemini']
-      : requestedTier === 'groq'
-        ? ['groq', 'gemini']
-        : ['gemini', 'groq'];
-    for (const provider of providerOrder) {
-      if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
-      if (provider === 'gemini') {
-        const result = await tryGeminiKeyWaterfall(prompt, contextMessages, geminiModel, options, errors);
-        if (result) return await syncUsage(result, 'chat', options.currentUser);
-        continue;
-      }
-      try {
-        const result = await withProviderRetry(() => tryGroq(prompt, contextMessages, 'auto', options), 2, options.signal);
-        return await syncUsage(result, 'chat', options.currentUser);
-      } catch (error) {
-        if (options.signal?.aborted) throw error;
-        errors.push(`${provider}: ${error.message}`);
-        if (options.streamState.sent) { options.onReset?.(); options.streamState.sent = false; }
-      }
-    }
-
-    console.error('[Zulora Waterfall Exhausted]', errors);
-    throw new Error('All AI providers are temporarily unavailable. Please retry in a few moments.');
+    if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+    console.error('[Zulora Server Router Unavailable]', errors);
+    throw new GenerationApiError('The response could not be completed. Please try again.', 503);
   },
 
   // â”€â”€â”€ IMAGE STUDIO GENERATION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

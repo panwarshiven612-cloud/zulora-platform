@@ -110,6 +110,12 @@ const VIDEO_GEN_REGEX = /\b(?:generate|create|make|produce|render|animate|show m
 
 const isImageEditIntent = (prompt, hasImageAttachment) => hasImageAttachment && IMAGE_EDIT_REGEX.test(String(prompt || ''));
 const isVideoGenIntent = prompt => VIDEO_GEN_REGEX.test(String(prompt || ''));
+const safeChatError = error => {
+  const message = String(error?.message || 'The response could not be completed. Please try again.');
+  return /(?:Gemini|Groq|Cerebras|OpenRouter|Mistral|ElevenLabs|provider|HTTP\s*\d{3}|\b(?:401|403|408|425|429|500|503)\b|API key|rate.?limit|timeout|timed out|network|fetch failed|overloaded)/i.test(message)
+    ? 'The response could not be completed. Please try again.'
+    : message;
+};
 const attachWebCitations = (content, sources = []) => {
   const text = String(content || '');
   const validSources = sources.filter(source => {
@@ -201,24 +207,27 @@ const CodeBlock = memo(({ language, value }) => {
           )}
         </button>
       </div>
-      <SyntaxHighlighter
-        style={oneDark}
-        language={language || 'text'}
-        PreTag="div"
-        customStyle={{
-          margin: 0,
-          borderRadius: 0,
-          padding: '1rem',
-          fontSize: '0.835rem',
-          lineHeight: '1.6',
-          background: '#0d1117',
-        }}
-        codeTagProps={{
-          style: { fontFamily: "'JetBrains Mono', monospace" },
-        }}
-      >
-        {value}
-      </SyntaxHighlighter>
+      <div className="max-w-full overflow-x-auto scroll-smooth">
+        <SyntaxHighlighter
+          style={oneDark}
+          language={language || 'text'}
+          PreTag="div"
+          customStyle={{
+            margin: 0,
+            minWidth: 'max-content',
+            borderRadius: 0,
+            padding: '1rem',
+            fontSize: '0.835rem',
+            lineHeight: '1.6',
+            background: '#0d1117',
+          }}
+          codeTagProps={{
+            style: { fontFamily: "'JetBrains Mono', monospace" },
+          }}
+        >
+          {value}
+        </SyntaxHighlighter>
+      </div>
     </div>
   );
 });
@@ -270,8 +279,8 @@ const MarkdownContent = memo(({ content }) => {
           },
           table({ children }) {
             return (
-              <div className="overflow-x-auto my-3">
-                <table className="w-full text-sm border-collapse">
+              <div className="my-3 max-w-full overflow-x-auto scroll-smooth">
+                <table className="min-w-max w-full border-collapse text-sm">
                   {children}
                 </table>
               </div>
@@ -455,7 +464,7 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                 </summary>
                 <div className="step-log space-y-1.5 border-t border-violet-200/60 px-3 py-2 dark:border-violet-900/50">
                   {message.thinkingSteps.map((step, stepIndex) => <div key={`${step.label}-${stepIndex}`} className="flex items-start gap-2 text-[11px] leading-relaxed">
-                    <span aria-hidden="true" className={`mt-1 h-2 w-2 shrink-0 rounded-full ${step.status === 'done' ? 'bg-emerald-500' : step.status === 'error' ? 'bg-rose-500' : 'bg-violet-500 animate-pulse'}`} />
+                    <span aria-hidden="true" className="mt-0.5 shrink-0">{step.status === 'done' ? '✅' : step.status === 'error' ? '⚠️' : '🔄'}</span>
                     <span className="min-w-0"><span className="font-semibold">Step {stepIndex + 1}: {step.label}</span>{step.status === 'done' ? <span className="ml-1 text-emerald-600 dark:text-emerald-400 font-bold">[DONE]</span> : step.status === 'error' ? <span className="ml-1 text-rose-600 dark:text-rose-400 font-bold">[FAILED]</span> : <span className="ml-1 text-violet-600 dark:text-violet-400 font-medium">[IN PROGRESS]</span>}{step.detail && <span className="ml-1.5 text-slate-500 dark:text-slate-400">({step.detail})</span>}</span>
                   </div>)}
                 </div>
@@ -650,8 +659,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 
   useEffect(() => {
     skipModelPreferenceWriteRef.current = true;
-    setModelPreference(activeSession?.model || readStoredModelPreference(modelPreferenceKey));
-  }, [activeSession?.id, activeSession?.model, modelPreferenceKey]);
+    setModelPreference(activeSession?.modelPreference || activeSession?.model || readStoredModelPreference(modelPreferenceKey));
+  }, [activeSession?.id, activeSession?.model, activeSession?.modelPreference, modelPreferenceKey]);
 
   useEffect(() => {
     if (skipModelPreferenceWriteRef.current) {
@@ -667,7 +676,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     try { localStorage.setItem(modelPreferenceKey, nextModel); }
     catch { /* The selected model remains active for this chat session. */ }
     if (activeSession?.id) {
-      onUpdateSession?.({ ...activeSession, model: nextModel, updatedAt: Date.now() });
+      onUpdateSession?.({ ...activeSession, model: nextModel, modelPreference: nextModel, updatedAt: Date.now() });
     }
   }, [activeSession, modelPreferenceKey, onUpdateSession]);
 
@@ -1081,6 +1090,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       messages: newMessages,
       updatedAt: Date.now(),
       model: modelPreference,
+      modelPreference,
       pending: true
     };
     const assistantId = `${Date.now() + 1}_${Math.random().toString(36).slice(2, 8)}`;
@@ -1304,9 +1314,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           if (isRequestCurrent()) setMessages(previous => [...previous.filter(message => message.id !== assistantId), aiMsg]);
           await recordUsage('image', false, 0);
           if (currentUser?.uid) {
-            await firestoreService.saveChatSession(currentUser.uid, sessionId, { id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: aiMsg.model, pending: false }).catch(console.warn);
+            await firestoreService.saveChatSession(currentUser.uid, sessionId, { id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: modelPreference, modelPreference, pending: false }).catch(console.warn);
           }
-          if (isRequestCurrent()) onUpdateSession?.({ id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: aiMsg.model, pending: false });
+          if (isRequestCurrent()) onUpdateSession?.({ id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: modelPreference, modelPreference, pending: false });
           return;
         } catch (imgErr) {
           pushThinkingStep('Image generation failed', 'error', imgErr.message);
@@ -1356,9 +1366,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           if (isRequestCurrent()) setMessages(previous => [...previous.filter(message => message.id !== assistantId), aiMsg]);
           await recordUsage('video', false, 0);
           if (currentUser?.uid) {
-            await firestoreService.saveChatSession(currentUser.uid, sessionId, { id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: aiMsg.model, pending: false }).catch(console.warn);
+            await firestoreService.saveChatSession(currentUser.uid, sessionId, { id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: modelPreference, modelPreference, pending: false }).catch(console.warn);
           }
-          if (isRequestCurrent()) onUpdateSession?.({ id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: aiMsg.model, pending: false });
+          if (isRequestCurrent()) onUpdateSession?.({ id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: modelPreference, modelPreference, pending: false });
           return;
         } catch (vidErr) {
           pushThinkingStep('Video generation failed', 'error', vidErr.message);
@@ -1496,7 +1506,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           title: sessionTitle,
           messages: [...newMessages.filter(message => message.id !== assistantId), aiMsg],
           updatedAt: Date.now(),
-          model: result.model,
+          model: modelPreference,
+          modelPreference,
           pending: false
         };
         firestoreService.saveChatSession(currentUser.uid, sessionId, backgroundSession).catch(console.warn);
@@ -1510,7 +1521,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           title: sessionTitle,
           messages: finalMessages,
           updatedAt: Date.now(),
-          model: result.model,
+          model: modelPreference,
+          modelPreference,
           pending: false,
         };
         if (currentUser?.uid) {
@@ -1559,16 +1571,17 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         if (error.payload?.upgradeRequired) setIsPricingModalOpen(true);
         else setIsUsageModalOpen(true);
       }
+      const userError = safeChatError(error);
       const errorMsg = {
         id: assistantId,
         role: 'assistant',
-        content: `⚠️ **Generation failed**: ${error.message || 'All AI providers unavailable. Please check your connection and try again.'}`,
+        content: `⚠️ **Generation failed**: ${userError}`,
         timestamp: Date.now(),
         model: 'Error',
-        thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps.map(step => step.status === 'running' ? { ...step, status: 'done' } : step), { label: 'Request completed with warnings', status: 'done', detail: error.message || '' }] : undefined,
+        thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps.map(step => step.status === 'running' ? { ...step, status: 'done' } : step), { label: 'Request completed with warnings', status: 'done', detail: userError }] : undefined,
       };
       if (streamedText) {
-        errorMsg.content = `${streamedText}\n\n_Response interrupted: ${error.message || 'the connection ended before completion.'}_`;
+        errorMsg.content = `${streamedText}\n\n_Response interrupted: ${userError}_`;
       }
       if (isRequestCurrent()) setMessages(prev => {
         const failedMessages = [...prev.filter(m => m.id !== assistantId), errorMsg];
@@ -1729,6 +1742,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
               {/* Web Search Toggle */}
               <button
                 onClick={() => setEnableWebSearch(v => !v)}
+                aria-pressed={enableWebSearch}
+                title="Search & Research with source links"
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-all ${
                   enableWebSearch
                     ? 'bg-sky-50 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 border-sky-200/60 dark:border-sky-800/50'
@@ -1736,7 +1751,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
                 }`}
               >
                 <Globe className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Search</span>
+                <span className="hidden sm:inline">Search &amp; Research</span>
               </button>
 
               <button

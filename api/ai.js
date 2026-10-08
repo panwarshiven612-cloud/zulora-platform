@@ -4,6 +4,7 @@ import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from '../src/services/syste
 import { AI_STUDIO_SYSTEM_PROMPT } from '../src/services/aiStudioPrompt.js';
 import { GEMINI_FLASH_MODEL_ID, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from '../src/services/aiModels.js';
 import { buildImagePrompt } from '../src/services/imageGen.js';
+import { webSearch } from '../src/services/webSearch.js';
 
 export const maxDuration = 60;
 export const config = { maxDuration };
@@ -20,7 +21,7 @@ export const publishStreamFrame = (res, stepData) => {
   }
 };
 
-const CHAT_ORDER = ['gemini', 'groq'];
+const CHAT_ORDER = ['gemini', 'groq', 'cerebras', 'openrouter', 'mistral'];
 const GEMINI_FLASH_MODEL = process.env.GEMINI_FLASH_MODEL || GEMINI_FLASH_MODEL_ID;
 const CHAT_WINDOW_MS = 4 * 60 * 60 * 1000;
 const CHAT_REQUEST_LIMIT = 60;
@@ -128,6 +129,9 @@ async function reserveGuestRequest(req) {
 const json = (res, status, payload) => res.status(status).json(payload);
 const bearer = req => String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i)?.[1] || '';
 const safeError = (res, status, message, extra = {}) => json(res, status, { error: message, ...extra });
+const safeProviderFailure = message => /(?:Gemini|Groq|Cerebras|OpenRouter|Mistral|ElevenLabs|provider|HTTP\s*\d{3}|API key|rate.?limit|timeout|timed out|network|fetch failed|overloaded)/i.test(String(message || ''))
+  ? 'The response could not be completed. Please try again.'
+  : String(message || 'Generation failed. Please retry.');
 
 function firestoreAdminCredentials() {
   const serviceAccountValue = process.env.FIREBASE_SERVICE_ACCOUNT || process.env.FIREBASE_ADMIN_KEY || '';
@@ -637,7 +641,10 @@ async function readProviderEventStream(response, readToken, onToken, streamState
 
 async function tryOpenAiProvider(provider, messages, options = {}) {
   const configs = {
-    groq: { url: 'https://api.groq.com/openai/v1/chat/completions', model: options.model || 'llama-3.3-70b-versatile', label: 'Groq LPU' }
+    groq: { url: 'https://api.groq.com/openai/v1/chat/completions', model: options.model || process.env.GROQ_CHAT_MODEL || 'llama-3.3-70b-versatile', label: 'Groq LPU' },
+    cerebras: { url: 'https://api.cerebras.ai/v1/chat/completions', model: process.env.CEREBRAS_CHAT_MODEL || 'llama-3.3-70b', label: 'Cerebras' },
+    openrouter: { url: 'https://openrouter.ai/api/v1/chat/completions', model: process.env.OPENROUTER_CHAT_MODEL || 'meta-llama/llama-3.3-70b-instruct', label: 'OpenRouter' },
+    mistral: { url: 'https://api.mistral.ai/v1/chat/completions', model: process.env.MISTRAL_CHAT_MODEL || 'mistral-large-latest', label: 'Mistral' }
   };
   const config = configs[provider];
   const keys = apiKeyPool.candidates(provider);
@@ -746,8 +753,9 @@ async function tryGemini(messages, options = {}) {
       }
       console.warn(`Google Gemini text request failed with HTTP ${response.status}.`);
       if ([403, 404, 408, 425, 429].includes(response.status) || response.status >= 500) options.onModelUnavailable?.(model, response.status);
-      if ([401, 403, 429].includes(response.status)) apiKeyPool.failed('gemini', index, parseRetryAfter(response));
-      else apiKeyPool.advance('gemini', index);
+      if ([401, 403, 408, 425, 429].includes(response.status) || response.status >= 500) {
+        apiKeyPool.failed('gemini', index, parseRetryAfter(response));
+      } else apiKeyPool.advance('gemini', index);
     } catch (error) {
       console.warn('Google Gemini text request failed:', error.message);
       apiKeyPool.failed('gemini', index);
@@ -779,6 +787,9 @@ function normalizeModelPreference(value) {
   if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra') || /zulora 3\.1 pro(?: ultra)?/.test(selected)) return 'think';
   if (selected === 'llama' || (selected.includes('llama') && /(?:70b|3\.3)/.test(selected))) return 'groq';
   if (selected === 'groq' || selected.includes('groq') || selected.includes('turbo')) return 'groq';
+  if (selected.includes('cerebras')) return 'cerebras';
+  if (selected.includes('openrouter')) return 'openrouter';
+  if (selected.includes('mistral')) return 'mistral';
   if (selected === 'flash' || selected.includes('gemini flash') || selected.includes('zulora flash')) return 'flash';
   if (selected === 'gemini' || (/^gemini\s+\d/.test(selected) && selected.includes('flash'))) return 'gemini';
   if (selected === 'pro 3.14' || selected === 'zulora pro 3.14' || selected === 'pro' || selected === 'pro 314') return 'think';
@@ -788,23 +799,40 @@ function normalizeModelPreference(value) {
 }
 
 function chooseChatOrder(preference) {
-  if (preference === 'groq' || preference === 'llama') return ['groq', 'gemini'];
-  return CHAT_ORDER;
+  const selectedProvider = ['groq', 'cerebras', 'openrouter', 'mistral'].includes(preference) ? preference : 'gemini';
+  return [selectedProvider, ...CHAT_ORDER.filter(provider => provider !== selectedProvider)];
 }
 
 async function generateChat(body, streamOptions = {}) {
   const requestedPreference = normalizeModelPreference(body.modelPreference || body.model);
   const flagship = requestedPreference === 'think';
+  const latestUserPrompt = [...(Array.isArray(body.messages) ? body.messages : [])].reverse().find(message => message?.role === 'user')?.content || '';
+  let searchResults = Array.isArray(body.searchResults) ? body.searchResults : [];
+  if (body.enableWebSearch && !searchResults.length && latestUserPrompt) {
+    try { searchResults = (await webSearch(latestUserPrompt)).results || []; }
+    catch (error) { console.warn('[Chat] Research search failed:', error?.message || 'search unavailable'); }
+  }
+  searchResults = searchResults.filter(source => {
+    try { return ['https:', 'http:'].includes(new URL(source?.url).protocol); }
+    catch { return false; }
+  }).slice(0, 8).map(source => ({
+    title: String(source.title || source.url).slice(0, 180),
+    snippet: String(source.snippet || '').slice(0, 1_200),
+    url: String(source.url)
+  }));
+  const researchContext = searchResults.length
+    ? `SEARCH & RESEARCH SOURCES. Use these results as evidence, cite relevant claims inline as [1], [2], and do not invent source details:\n${searchResults.map((source, index) => `[${index + 1}] ${source.title}\n${source.snippet}\nURL: ${source.url}`).join('\n\n')}`
+    : '';
   const systemPrompt = [
     buildSystemPrompt(body.contextMemory, new Date(), body.aiBrain, body.userVault),
     flagship ? FLAGSHIP_SYSTEM_PROMPT : '',
-    body.studioMode ? AI_STUDIO_SYSTEM_PROMPT : ''
+    body.studioMode ? AI_STUDIO_SYSTEM_PROMPT : '',
+    researchContext
   ].filter(Boolean).join('\n\n');
   const messages = plainMessages(body.messages, systemPrompt);
   const attachments = attachmentParts(body.attachments);
   if (body.attachments?.length && !attachments.length) throw new Error('The attached image or PDF format is unsupported. Use PNG, JPEG, WebP, GIF, or PDF.');
   const vision = attachments.length > 0;
-  const latestUserPrompt = [...messages].reverse().find(message => message.role === 'user')?.content || '';
   const coding = isCodeGenerationRequest({ messages: [{ role: 'user', content: latestUserPrompt }] });
   const complex = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(requestedPreference) ||
     /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(latestUserPrompt);
@@ -815,11 +843,11 @@ async function generateChat(body, streamOptions = {}) {
     : requestedPreference === 'gemini' ? (coding || complex ? GEMINI_PRO_MODEL_ID : GEMINI_FLASH_MODEL)
       : flagship || useProModel ? GEMINI_PRO_MODEL_ID : GEMINI_FLASH_MODEL;
   const groqModel = 'llama-3.3-70b-versatile';
-  const order = body.enableWebSearch || vision ? ['gemini'] : chooseChatOrder(preference);
+  const order = vision ? ['gemini'] : chooseChatOrder(preference);
   for (const provider of order) {
     try {
       const result = provider === 'gemini'
-        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: Boolean(body.enableWebSearch), model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: body.guestDemo ? 2_048 : 16_384, ...streamOptions })
+        ? await tryGemini(messages, { attachments: body.attachments, enableWebSearch: false, model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: body.guestDemo ? 2_048 : 16_384, ...streamOptions })
         : await tryOpenAiProvider(provider, messages, {
           attachments: body.attachments,
           vision,
@@ -829,7 +857,7 @@ async function generateChat(body, streamOptions = {}) {
           maxTokens: body.guestDemo ? 2_048 : coding || useProModel || flagship ? 16_384 : 4096,
           ...streamOptions
         });
-      if (result) return result;
+      if (result) return { ...result, ...(body.enableWebSearch ? { sources: searchResults } : {}) };
     } catch (error) {
       if (streamOptions.stream && streamOptions.streamState?.sent) {
         console.warn(`${provider} stream failed after output began; restarting with the next fallback:`, error.message);
@@ -840,9 +868,8 @@ async function generateChat(body, streamOptions = {}) {
       throw error;
     }
   }
-  if (requestedPreference === 'auto' && body.enableWebSearch) throw new Error('Live web search is temporarily unavailable because Google Search grounding could not complete. Please retry.');
-  if (!GEMINI_KEYS.length && !apiKeyPool.candidates('groq').length) throw new Error('No text-generation providers are configured. Add server-side Gemini or Groq credentials.');
-  throw new Error(vision ? 'Image and PDF analysis require an available Gemini provider. Please retry shortly.' : 'All configured AI providers are unavailable. Check the server provider keys and retry.');
+  if (!availableProviders().length) throw new Error('No text-generation providers are configured. Add server-side provider credentials.');
+  throw new Error(vision ? 'Image and PDF analysis require a configured vision model. Please try again.' : 'The response could not be completed. Please try again.');
 }
 
 function parseDataImage(dataUrl) {
@@ -1486,7 +1513,7 @@ export default async function handler(req, res) {
         }
         sendEvent('done', { ...output, usage });
       } catch (error) {
-        const message = error?.message || 'Generation failed. Please retry.';
+        const message = safeProviderFailure(error?.message);
         sendEvent('error', { error: message, status: error?.status || 502, upgradeRequired: Boolean(error?.payload?.upgradeRequired) });
       }
       return res.end();
@@ -1541,9 +1568,9 @@ export default async function handler(req, res) {
     }
     return json(res, 200, { ...output, usage });
   } catch (error) {
-    const message = error?.message || 'Generation failed. Please retry.';
-    console.error('Zulora generation request failed:', type, message);
-    const isSetup = /FIREBASE_|Firebase|Firestore|usage service|User profile was not found|No (?:text|video)-generation providers are configured|No image-(?:generation|editing) providers are configured/.test(message);
-    return safeError(res, isSetup ? 503 : 502, message);
+    const rawMessage = error?.message || 'Generation failed. Please retry.';
+    console.error('Zulora generation request failed:', type, rawMessage);
+    const isSetup = /FIREBASE_|Firebase|Firestore|usage service|User profile was not found|No (?:text|video)-generation providers are configured|No image-(?:generation|editing) providers are configured/.test(rawMessage);
+    return safeError(res, isSetup ? 503 : 502, safeProviderFailure(rawMessage));
   }
 }

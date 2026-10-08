@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Mic, MicOff, Volume2, X, Sparkles, Zap, Settings2, Languages, Radio } from 'lucide-react';
 import { apiRouter } from '../services/apiRouter';
-import { requestVoiceAudio } from '../services/generationApi';
+import { requestVoiceAudio, requestVoiceOptions } from '../services/generationApi';
 import { getPreferredVoiceId, getVoiceByPreference, setPreferredVoiceId, VOICE_OPTIONS } from '../services/voicePreferences';
 import { useAuth } from '../context/AuthContext';
 
@@ -20,6 +20,7 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
   const [aiResponse, setAiResponse] = useState('');
   const [conversation, setConversation] = useState([]);
   const [selectedVoiceId, setSelectedVoiceId] = useState(getPreferredVoiceId);
+  const [voiceOptions, setVoiceOptions] = useState(VOICE_OPTIONS);
   const [language, setLanguage] = useState('hi-IN');
   const [errorMessage, setErrorMessage] = useState('');
   const [showSettings, setShowSettings] = useState(false);
@@ -37,19 +38,29 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
   const startListeningRef = useRef(null);
   statusRef.current = status;
 
-  const availableVoices = useMemo(() => VOICE_OPTIONS.filter(voice => voice.tier === 'free' || isPro), [isPro]);
-  const selectedVoice = getVoiceByPreference(selectedVoiceId);
+  const availableVoices = useMemo(() => voiceOptions.filter(voice => voice.tier === 'free' || isPro), [isPro, voiceOptions]);
+  const selectedVoice = getVoiceByPreference(selectedVoiceId, availableVoices);
 
   useEffect(() => {
     const syncVoice = event => {
       const id = event.detail || getPreferredVoiceId();
-      const voice = VOICE_OPTIONS.find(option => option.id === id);
-      setSelectedVoiceId(voice && (voice.tier === 'free' || isPro) ? id : 'adam');
+      const voice = voiceOptions.find(option => option.id === id || option.voiceId === id)
+        || VOICE_OPTIONS.find(option => option.id === id || option.voiceId === id);
+      setSelectedVoiceId(voice && (voice.tier === 'free' || isPro) ? (voice.id || id) : 'adam');
     };
     syncVoice({ detail: getPreferredVoiceId() });
     window.addEventListener('zulora:voice-preference', syncVoice);
     return () => window.removeEventListener('zulora:voice-preference', syncVoice);
-  }, [isPro]);
+  }, [isPro, voiceOptions]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    let active = true;
+    requestVoiceOptions(currentUser).then(voices => {
+      if (active && voices) setVoiceOptions(voices);
+    });
+    return () => { active = false; };
+  }, [currentUser?.uid, isOpen]);
 
   const cleanupAudio = useCallback(() => {
     voiceQueueRef.current = [];
@@ -89,7 +100,7 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
       void playQueuedVoiceSegment();
     };
     try {
-      const blob = await segment.audio;
+      const blob = await requestVoiceAudio(segment.text, selectedVoice.voiceId, currentUser);
       if (!activeRef.current) { voicePlayingRef.current = false; return; }
       if (!blob?.size) throw new Error('Voice provider returned an empty audio segment.');
       const url = URL.createObjectURL(blob);
@@ -129,7 +140,7 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
   const queueVoiceSegment = text => {
     const spokenText = cleanForSpeech(text);
     if (!spokenText || !activeRef.current) return;
-    voiceQueueRef.current.push({ text: spokenText, audio: requestVoiceAudio(spokenText, selectedVoice.voiceId, currentUser) });
+    voiceQueueRef.current.push({ text: spokenText });
     void playQueuedVoiceSegment();
   };
 
@@ -288,7 +299,7 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
     };
     try {
       const context = conversation.slice(-6).map(turn => ({ role: turn.role, content: turn.text }));
-      const result = await apiRouter.generateChat(voicePrompt, context, {
+      const generateVoiceReply = () => apiRouter.generateChat(voicePrompt, context, {
         model: 'auto', currentUser,
         onToken: token => {
           if (!activeRef.current || !token) return;
@@ -307,6 +318,23 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
           voicePlayingRef.current = false;
         }
       });
+      let result;
+      try {
+        result = await generateVoiceReply();
+      } catch (firstError) {
+        if (!activeRef.current || [401, 403].includes(firstError?.status)) throw firstError;
+        speechBuffer = '';
+        streamedReply = '';
+        queuedSegments = 0;
+        voiceQueueRef.current = [];
+        voicePlayingRef.current = false;
+        if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+        if (audioUrlRef.current) { URL.revokeObjectURL(audioUrlRef.current); audioUrlRef.current = ''; }
+        setAiResponse('');
+        setStatus('thinking');
+        await new Promise(resolve => window.setTimeout(resolve, 220));
+        result = await generateVoiceReply();
+      }
       if (!activeRef.current) return;
       const reply = result?.text?.trim() || 'I am here. What would you like to talk about?';
       setAiResponse(reply);
@@ -415,7 +443,7 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
           <div className="z-[5] mt-1 grid w-full gap-3 rounded-2xl border border-white/10 bg-white/[.045] p-3 text-left sm:grid-cols-2">
             <label className="text-[11px] font-semibold text-slate-300">
               Voice · {selectedVoice.gender}
-              <select value={selectedVoiceId} onChange={chooseVoice} className="mt-1.5 w-full rounded-xl border border-white/10 bg-[#131827] px-3 py-2.5 text-sm text-white outline-none focus:border-sky-400">
+              <select value={selectedVoice.voiceId || selectedVoice.id} onChange={chooseVoice} className="mt-1.5 w-full rounded-xl border border-white/10 bg-[#131827] px-3 py-2.5 text-sm text-white outline-none focus:border-sky-400">
                 {availableVoices.map(voice => <option key={voice.id} value={voice.id}>{voice.name} · {voice.gender}{voice.tier === 'pro' ? ' · Pro' : ''}</option>)}
               </select>
             </label>
