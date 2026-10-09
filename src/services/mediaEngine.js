@@ -12,22 +12,27 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * Generate high-definition image via Pollinations.ai default pipeline.
  */
 export async function generateImage(prompt, options = {}) {
-  const seed = options.seed || Math.floor(Math.random() * 99999999) + 1;
+  const cleanPrompt = String(prompt || '').trim();
+  if (!cleanPrompt) throw new Error('Please provide a prompt to generate an image.');
+  const requestedSeed = Number(options.seed);
+  const seed = Number.isInteger(requestedSeed) && requestedSeed >= 0
+    ? requestedSeed
+    : Math.floor(Math.random() * 1_000_000);
   const { width = 1024, height = 1024, aspectRatio = '1:1', style = '', negativePrompt = '' } = options;
   const dims = getDimensionsForRatio(aspectRatio);
   const finalWidth = options.width || dims.width || 1024;
   const finalHeight = options.height || dims.height || 1024;
 
-  const styled = buildStyledPrompt(prompt, style, negativePrompt);
-  const encoded = encodeURIComponent(styled || prompt);
-  const url = `https://image.pollinations.ai/prompt/${encoded}?width=${finalWidth}&height=${finalHeight}&seed=${seed}&nologo=true`;
+  const styled = buildStyledPrompt(cleanPrompt, style, negativePrompt) || cleanPrompt;
+  const encoded = encodeURIComponent(styled);
+  const url = `https://image.pollinations.ai/prompt/${encoded}?width=${finalWidth}&height=${finalHeight}&seed=${seed}&nologo=true&model=flux`;
 
   return {
     url,
     imageUrl: url,
     provider: 'Pollinations AI',
     model: 'FLUX.1-Schnell',
-    prompt,
+    prompt: cleanPrompt,
     enhancedPrompt: styled,
     seed,
     width: finalWidth,

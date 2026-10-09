@@ -37,19 +37,21 @@ export async function generatePollinationsImage(arg1, arg2 = {}) {
     options = arg2 || {};
   }
 
-  const cleanPrompt = String(prompt || '').trim();
-  if (!cleanPrompt) {
+  const userPrompt = String(prompt || '').trim();
+  if (!userPrompt) {
     throw new Error('Please provide a prompt to generate an image.');
   }
 
   const { width: targetWidth, height: targetHeight } = getDimensionsForRatio(options.aspectRatio || '1:1');
-  const seed = options.seed || Math.floor(Math.random() * 89999999) + 10000000;
-  const styledPrompt = buildStyledPrompt(cleanPrompt, options.style, options.negativePrompt);
-  const encodedPrompt = encodeURIComponent(styledPrompt);
+  const requestedSeed = Number(options.seed);
+  const seed = Number.isInteger(requestedSeed) && requestedSeed >= 0
+    ? requestedSeed
+    : Math.floor(Math.random() * 1_000_000);
+  const cleanPrompt = buildStyledPrompt(userPrompt, options.style, options.negativePrompt) || userPrompt;
+  const encodedPrompt = encodeURIComponent(cleanPrompt);
 
-  const modelParam = options.imageEngine === 'pollinations-hd' ? '&model=flux-hd' : '';
-  const primaryUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&nologo=true${modelParam}`;
-  const failoverUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=1024&height=1024&seed=${seed}&nologo=true`;
+  const primaryUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&nologo=true&model=${options.imageEngine === 'pollinations-hd' ? 'flux-hd' : 'flux'}`;
+  const failoverUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=1024&height=1024&seed=${seed}&nologo=true&model=flux`;
 
   try {
     // Attempt verification with short timeout to ensure server is reachable
@@ -64,8 +66,8 @@ export async function generatePollinationsImage(arg1, arg2 = {}) {
         imageUrl: primaryUrl,
         provider: 'Pollinations AI',
         model: options.imageEngine === 'pollinations-hd' ? 'Pollinations HD FLUX' : 'FLUX.1-Schnell',
-        prompt: cleanPrompt,
-        enhancedPrompt: styledPrompt,
+        prompt: userPrompt,
+        enhancedPrompt: cleanPrompt,
         seed
       };
     }
@@ -79,8 +81,8 @@ export async function generatePollinationsImage(arg1, arg2 = {}) {
     imageUrl: primaryUrl || failoverUrl,
     provider: 'Pollinations AI',
     model: 'FLUX.1-Schnell',
-    prompt: cleanPrompt,
-    enhancedPrompt: styledPrompt,
+    prompt: userPrompt,
+    enhancedPrompt: cleanPrompt,
     seed
   };
 }

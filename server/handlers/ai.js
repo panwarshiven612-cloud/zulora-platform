@@ -5,6 +5,7 @@ import { AI_STUDIO_SYSTEM_PROMPT } from '../../src/services/aiStudioPrompt.js';
 import { GEMINI_FLASH_MODEL_ID, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from '../../src/services/aiModels.js';
 import { buildImagePrompt } from '../../src/services/imageGen.js';
 import { webSearch } from '../../src/services/webSearch.js';
+import { googleSessionStatus, loadGoogleSession } from './googleOAuthStore.js';
 
 export const maxDuration = 60;
 export const config = { maxDuration };
@@ -585,6 +586,28 @@ function plainMessages(messages, systemPrompt) {
   ];
 }
 
+const WORKSPACE_PROVIDER_LABELS = Object.freeze({
+  calendar: 'Google Calendar',
+  gmail: 'Gmail',
+  sheets: 'Google Sheets',
+  drive: 'Google Drive',
+  forms: 'Google Forms'
+});
+
+function activeWorkspaceSystemContext(value) {
+  const providers = [...new Set(Array.isArray(value) ? value.filter(provider => Object.hasOwn(WORKSPACE_PROVIDER_LABELS, provider)) : [])];
+  if (!providers.length) return '';
+  const labels = providers.map(provider => WORKSPACE_PROVIDER_LABELS[provider]);
+  const capabilities = providers.flatMap(provider => ({
+    calendar: ['list past and upcoming meetings', 'create events with default reminders'],
+    gmail: ['read and analyze inbox messages', 'search messages', 'send HTML-formatted email'],
+    sheets: ['read and update spreadsheet data', 'create spreadsheets'],
+    drive: ['create folders', 'find and manage files'],
+    forms: ['read forms and responses', 'create forms']
+  })[provider]);
+  return `ACTIVE WORKSPACE CONNECTORS: ${labels.join(', ')} are CONNECTED AND AUTHORIZED in this signed-in session. The connector executor binds live function tools for these active services. Available operations include: ${[...new Set(capabilities)].join('; ')}. Use tool results as the source of truth and never claim an action succeeded without a successful result. Do not claim a listed connector is inactive or disconnected.`;
+}
+
 async function readProviderEventStream(response, readToken, onToken, streamState, onUsage = undefined, onGrounding = undefined) {
   if (!response.body) throw new Error('The model returned no response stream.');
   const reader = response.body.getReader();
@@ -825,6 +848,7 @@ async function generateChat(body, streamOptions = {}) {
     : '';
   const systemPrompt = [
     buildSystemPrompt(body.contextMemory, new Date(), body.aiBrain, body.userVault),
+    activeWorkspaceSystemContext(body.activeConnectorProviders),
     flagship ? FLAGSHIP_SYSTEM_PROMPT : '',
     body.studioMode ? AI_STUDIO_SYSTEM_PROMPT : '',
     researchContext
@@ -984,7 +1008,7 @@ async function pollinationsImage(prompt, sourceImage, aspectRatio, seed, quality
   const height = ratioH >= ratioW ? longest : Math.round(longest * ratioH / ratioW);
   const url = key
     ? `https://gen.pollinations.ai/image/${encodeURIComponent(prompt)}?model=flux&width=${width}&height=${height}&seed=${encodeURIComponent(seed || 0)}&nologo=true`
-    : `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${width}&height=${height}&seed=${encodeURIComponent(seed || 0)}&nologo=true`;
+    : `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${width}&height=${height}&seed=${encodeURIComponent(seed || 0)}&nologo=true&model=flux`;
   const response = await fetchWithTimeout(url, { headers: key ? { Authorization: `Bearer ${key}` } : {} }, 28_000);
   if (!response.ok) throw new Error('Pollinations image generation failed.');
   return responseImage(response);
@@ -1084,6 +1108,10 @@ async function generateImage(body) {
   const sourceImage = String(body.sourceImage || '');
   const imageEngine = String(body.imageEngine || 'flux-quick');
   if (!prompt) throw new Error('Write a prompt before generating an image.');
+  const requestedSeed = Number(body.seed);
+  const seed = Number.isInteger(requestedSeed) && requestedSeed >= 0
+    ? requestedSeed
+    : Math.floor(Math.random() * 1_000_000);
   const hasImageProvider = sourceImage
     ? availableProviders().includes('gemini') || Boolean(providerKeys.pollinations || providerKeys.huggingface)
     : true; // The legacy Pollinations image endpoint is the no-key last resort.
@@ -1105,19 +1133,19 @@ async function generateImage(body) {
       () => huggingfaceImage(fullPrompt, 'black-forest-labs/FLUX.1-Kontext-dev', sourceImage)
     ]);
     attempts.push(['Gemini 3.1 Flash Image', 'gemini-3.1-flash-image', () => geminiImageEdit(fullPrompt, sourceImage, body.aspectRatio)]);
-    attempts.push(['Pollinations', 'kontext', () => pollinationsImage(fullPrompt, sourceImage, body.aspectRatio, body.seed)]);
+    attempts.push(['Pollinations', 'kontext', () => pollinationsImage(fullPrompt, sourceImage, body.aspectRatio, seed)]);
   } else {
     if (imageEngine === 'hf-flux-dev' || imageEngine === 'hf-sdxl') {
       attempts.push(['Hugging Face Inference API', selectedHfModel, () => huggingfaceImage(fullPrompt, selectedHfModel)]);
     } else {
       if (providerKeys.huggingface) attempts.push(['Hugging Face Inference API', 'black-forest-labs/FLUX.1-schnell', () => huggingfaceImage(fullPrompt, 'black-forest-labs/FLUX.1-schnell')]);
-      if (imageEngine === 'pollinations-hd') attempts.push(['Pollinations HD', 'flux-hd', () => pollinationsImage(fullPrompt, '', body.aspectRatio, body.seed, 'hd')]);
-      else attempts.push(['Pollinations', 'flux', () => pollinationsImage(fullPrompt, '', body.aspectRatio, body.seed)]);
+      if (imageEngine === 'pollinations-hd') attempts.push(['Pollinations HD', 'flux-hd', () => pollinationsImage(fullPrompt, '', body.aspectRatio, seed, 'hd')]);
+      else attempts.push(['Pollinations', 'flux', () => pollinationsImage(fullPrompt, '', body.aspectRatio, seed)]);
     }
     if (imageEngine !== 'hf-flux-dev' && imageEngine !== 'hf-sdxl' && !providerKeys.huggingface) {
       attempts.push(['Hugging Face Inference API', 'black-forest-labs/FLUX.1-schnell', () => huggingfaceImage(fullPrompt)]);
     }
-    if (imageEngine !== 'pollinations-hd') attempts.push(['Pollinations HD', 'flux-hd', () => pollinationsImage(fullPrompt, '', body.aspectRatio, body.seed, 'hd')]);
+    if (imageEngine !== 'pollinations-hd') attempts.push(['Pollinations HD', 'flux-hd', () => pollinationsImage(fullPrompt, '', body.aspectRatio, seed, 'hd')]);
     attempts.push(['Fal AI', 'fal-ai/flux/schnell', async () => { const data = await falRequest('fal-ai/flux/schnell', { prompt: fullPrompt, image_size: falImageSize(body.aspectRatio) }); return data?.images?.[0]?.url || null; }]);
     attempts.push(['Cloudflare Workers AI', 'stable-diffusion-xl-lightning', () => cloudflareImage(fullPrompt, body.aspectRatio)]);
     attempts.push(['Replicate', 'black-forest-labs/flux-schnell', () => replicateImage(fullPrompt, body.aspectRatio)]);
@@ -1127,7 +1155,7 @@ async function generateImage(body) {
       const candidate = await run();
       if (candidate) {
         const url = await validateGeneratedImage(candidate);
-        return { url, provider, model, enhancedPrompt: fullPrompt, aspectRatio: body.aspectRatio || '1:1' };
+        return { url, provider, model, prompt, enhancedPrompt: fullPrompt, seed, aspectRatio: body.aspectRatio || '1:1' };
       }
     } catch (error) { console.warn(`${provider} image attempt failed:`, error.message); }
   }
@@ -1378,6 +1406,15 @@ export default async function handler(req, res) {
     try { uid = await verifyUser(req); }
     catch { return safeError(res, 503, 'Could not verify sign-in. Please retry.'); }
     if (!uid) return safeError(res, 401, 'Your sign-in session has expired. Sign in again.');
+    if (type === 'chat' && Array.isArray(body.activeConnectorProviders) && body.activeConnectorProviders.length) {
+      try {
+        const session = await loadGoogleSession(uid, token, String(req.headers.cookie || ''));
+        body = { ...body, activeConnectorProviders: googleSessionStatus(session).enabledProviders };
+      } catch (error) {
+        console.warn('Workspace context could not verify the active OAuth session:', error?.message || 'session unavailable');
+        body = { ...body, activeConnectorProviders: [] };
+      }
+    }
   }
   const preference = normalizeModelPreference(body.modelPreference || body.model);
   const highTierRequest = preference === 'think' || preference === 'pro' || preference === 'gemini-3.1-pro-preview' || preference === 'gemini-2.5-pro';

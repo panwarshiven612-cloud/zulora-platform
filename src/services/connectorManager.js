@@ -118,16 +118,16 @@ function buildHtmlMimeMessage({ to, subject, body }) {
     .replace(/&gt;/gi, '>')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'")
-    .trim() + '\n\nSent via Zulora AI Workspace';
+    .trim() + '\n\nSent via Zulora AI Workspace · Pearl & Azure';
   const html = '<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="x-apple-disable-message-reformatting"></head>'
-    + '<body style="margin:0;padding:0;background-color:#0b1221;color:#16233a;font-family:Arial,Helvetica,sans-serif;-webkit-text-size-adjust:100%;">'
-    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background-color:#0b1221;border-collapse:collapse;"><tr><td align="center" style="padding:32px 14px;">'
-    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:640px;background-color:#ffffff;border:1px solid #dbe6f1;border-radius:18px;overflow:hidden;border-collapse:separate;border-spacing:0;">'
+    + '<body style="margin:0;padding:0;background-color:#edf3f7;color:#203248;font-family:Arial,Helvetica,sans-serif;-webkit-text-size-adjust:100%;">'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background-color:#edf3f7;border-collapse:collapse;"><tr><td align="center" style="padding:32px 14px;">'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:640px;background-color:#fffefa;border:1px solid #dce8ef;border-radius:18px;overflow:hidden;border-collapse:separate;border-spacing:0;">'
     + '<tr><td style="height:5px;background-color:#168bd2;font-size:0;line-height:0;">&nbsp;</td></tr>'
-    + '<tr><td style="padding:25px 30px 10px;background-color:#ffffff;"><div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:#0879c9;">Zulora AI Workspace</div></td></tr>'
-    + '<tr><td style="padding:14px 30px 30px;background-color:#ffffff;color:#25344c;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.75;overflow-wrap:anywhere;">' + contentHtml + '</td></tr>'
-    + '<tr><td style="padding:18px 30px 22px;background-color:#f4f8fc;border-top:1px solid #e3edf5;color:#718096;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.6;">Sent via <a href="https://zulora.in" style="color:#0879c9;text-decoration:none;font-weight:700;">Zulora AI Workspace</a></td></tr>'
-    + '</table><div style="max-width:640px;padding:14px 8px 0;color:#8fa1b8;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:1.5;text-align:center;">A thoughtful note, delivered with care.</div>'
+    + '<tr><td style="padding:25px 30px 10px;background-color:#fffefa;"><div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:#0879c9;">Zulora AI <span style="color:#a6b8c5;">·</span> Pearl &amp; Azure</div></td></tr>'
+    + '<tr><td style="padding:14px 30px 30px;background-color:#fffefa;color:#25344c;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.75;overflow-wrap:anywhere;">' + contentHtml + '</td></tr>'
+    + '<tr><td style="padding:18px 30px 22px;background-color:#f5f9fb;border-top:1px solid #e3edf5;color:#718096;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.6;">Sent via <a href="https://zulora.in" style="color:#0879c9;text-decoration:none;font-weight:700;">Zulora AI Workspace</a> <span style="color:#a6b8c5;">· Pearl &amp; Azure</span></td></tr>'
+    + '</table><div style="max-width:640px;padding:14px 8px 0;color:#8499a9;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:1.5;text-align:center;">A thoughtful note, delivered with care.</div>'
     + '</td></tr></table></body></html>';
   const boundary = `zulora_${crypto.randomUUID().replaceAll('-', '')}`;
   const encodedSubject = `=?UTF-8?B?${encodeBase64Utf8(String(subject || '').replace(/[\r\n]+/g, ' ').trim())}?=`;
@@ -854,12 +854,18 @@ export const connectorManager = {
   },
 
   getActiveConnectorContext(driveConnected = false) {
-    const active = this.getActiveGoogleProviders().map(provider => CONNECTOR_CONFIG[provider].name);
-    if (this.getActiveGoogleProviders().includes('drive')) active.push('Google Drive');
-    if (driveConnected) active.push('Zulora Drive');
+    const activeProviders = this.getActiveGoogleProviders();
+    const active = ['calendar', 'gmail', 'sheets', 'drive']
+      .filter(provider => activeProviders.includes(provider))
+      .map(provider => `${CONNECTOR_CONFIG[provider].name}: CONNECTED AND AUTHORIZED`);
+    if (active.length) {
+      active.unshift('ACTIVE WORKSPACE CONNECTORS:');
+      active.push('Use the matching live connector function for supported requests. A connector action is complete only after its function returns success.');
+    }
+    if (driveConnected) active.push('Zulora Drive: CONNECTED AND AUTHORIZED');
     return active.length
-      ? `Available native connectors for this signed-in session: ${active.join(', ')}. When a request targets one of these services, Zulora can use its direct API connector without opening tabs or using the Computer Plugin.`
-      : 'No native connectors are active in this session. Ask the user to connect the requested service from the Connectors hub before accessing its data.';
+      ? active.join('\n')
+      : 'No Google Workspace connector is active in this signed-in session. Connect the requested service before accessing its data.';
   },
 
   getActiveGoogleProviders() {
@@ -879,15 +885,16 @@ export const connectorManager = {
     return this.getActiveGoogleProviders().length > 0;
   },
 
-  async sendGmailMessage({ to, subject, body }) {
-    const raw = buildHtmlMimeMessage({ to, subject, body });
+  async sendGmailMessage({ to, recipient = to, subject, body, htmlContent, body_html }) {
+    const resolvedBody = body ?? htmlContent ?? body_html ?? '';
+    const raw = buildHtmlMimeMessage({ to: recipient, subject, body: resolvedBody });
     const res = await this.apiFetch('gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
       method: 'POST', body: JSON.stringify({ raw }), expectedStatus: 200
     });
     if (!res?.id || !res?.threadId) {
       throw new Error('Gmail API did not confirm delivery with both a message ID and thread ID. The email is not reported as sent.');
     }
-    return { ...res, success: true, to, subject, delivered: true, messageId: res.id, threadId: res.threadId, verified: true, timestamp: Date.now() };
+    return { ...res, success: true, to: recipient, subject, delivered: true, messageId: res.id, threadId: res.threadId, verified: true, timestamp: Date.now() };
   },
 
   async sendRichEmail({ to, subject, body }) {
@@ -954,13 +961,13 @@ export const connectorManager = {
       totalAnalyzed: emails.length,
       todayCount,
       topSenders: Array.from(senders.entries()).map(([sender, count]) => ({ sender, count })),
-      emails: emails.map(e => ({ id: e.id, from: e.from, subject: e.subject, date: e.date, preview: e.snippet }))
+      emails: emails.map(e => ({ id: e.id, from: e.from, subject: e.subject, date: e.date, preview: e.snippet, body: String(e.body || '').slice(0, 6_000) }))
     };
   },
 
   async createCalendarEvent({ title, start_time, end_time, description = '' }) {
     const event = await this.apiFetch('calendar', 'https://www.googleapis.com/calendar/v3/calendars/primary/events', {
-      method: 'POST', body: JSON.stringify({ summary: title, description, start: { dateTime: start_time }, end: { dateTime: end_time } })
+      method: 'POST', body: JSON.stringify({ summary: title, description, start: { dateTime: start_time }, end: { dateTime: end_time }, reminders: { useDefault: true } })
     });
     if (!event?.id) throw new Error('Google Calendar did not return an event ID. The event is not reported as created.');
     return { ...event, verified: true };

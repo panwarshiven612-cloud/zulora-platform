@@ -1078,6 +1078,7 @@ export const apiRouter = {
           contextMemory: options.contextMemory,
           aiBrain: options.aiBrain || null,
           userVault: options.userVault || null,
+          activeConnectorProviders,
           studioMode: Boolean(options.studioMode),
           modelPreference: requestedTier,
           enableWebSearch: Boolean(options.webSearch),
@@ -1133,6 +1134,9 @@ export const apiRouter = {
       options = arg2 || {};
     }
 
+    prompt = String(prompt || '').trim();
+    if (!prompt) throw new Error('Please provide a prompt to generate an image.');
+
     const {
       width = 1024,
       height = 1024,
@@ -1149,6 +1153,7 @@ export const apiRouter = {
         negativePrompt: options.negativePrompt || '',
         aspectRatio,
         imageEngine,
+        seed: options.seed,
         width,
         height,
         sourceImage: options.sourceImage || '',
@@ -1171,9 +1176,13 @@ export const apiRouter = {
       targetHeight = Math.round(targetHeight * 1.5);
     }
 
-    const seed = Math.floor(Math.random() * 9999999);
+    const requestedSeed = Number(options.seed);
+    const seed = Number.isInteger(requestedSeed) && requestedSeed >= 0
+      ? requestedSeed
+      : Math.floor(Math.random() * 1_000_000);
     // Keep each generation call isolated to the current Image Studio prompt.
-    const styledPrompt = buildImagePrompt(prompt, options.style, options.negativePrompt);
+    const cleanPrompt = String(prompt).trim();
+    const styledPrompt = buildImagePrompt(cleanPrompt, options.style, options.negativePrompt) || cleanPrompt;
     const encoded = encodeURIComponent(styledPrompt);
 
     const referenceImage = options.sourceImage || (options.sourceImageBase64
@@ -1225,7 +1234,7 @@ export const apiRouter = {
     // â”€â”€ Engine 1: Pollinations FLUX â”€â”€
     try {
       const selectedPollinationsModel = imageEngine === 'pollinations-hd' ? 'flux-hd' : 'flux';
-      const fluxUrl = `https://image.pollinations.ai/prompt/${encoded}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&model=${selectedPollinationsModel}&nologo=true`;
+      const fluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(styledPrompt)}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&nologo=true&model=${selectedPollinationsModel}`;
       const fluxRes = await fetchWithTimeout(fluxUrl, {}, 18000);
       const fluxType = fluxRes.headers.get('content-type') || '';
       const fluxBlob = fluxType.startsWith('image/') ? await fluxRes.blob() : null;
@@ -1346,7 +1355,7 @@ export const apiRouter = {
     }
 
     // â”€â”€ Resilient Pollinations Failover (Guaranteed image generation) â”€â”€
-    const fallbackPollinationsUrl = `https://image.pollinations.ai/prompt/${encoded}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&nologo=true`;
+    const fallbackPollinationsUrl = `https://image.pollinations.ai/prompt/${encoded}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&nologo=true&model=flux`;
     return await syncUsage({
       url: fallbackPollinationsUrl,
       imageUrl: fallbackPollinationsUrl,

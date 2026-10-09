@@ -71,7 +71,7 @@ export function normalizeGoogleConnectorArguments(rawArguments, functionName = '
   const args = normalizeKeys(parsed);
   if (!args.to) args.to = args.recipient || args.email_to || args.recipient_email || args.email;
   if (!args.subject) args.subject = args.email_subject;
-  if (!args.body) args.body = args.body_html || args.email_body || args.message_body || args.message || args.content || args.text;
+  if (!args.body) args.body = args.html_content || args.body_html || args.email_body || args.message_body || args.message || args.content || args.text;
   if (!args.title) args.title = args.summary || args.spreadsheet_title;
   if (!args.name) args.name = args.folder_name;
   if (args.max_results !== undefined && args.max_results !== '') {
@@ -87,11 +87,12 @@ const GOOGLE_FUNCTIONS = Object.freeze({
     spreadsheet_title: text('Title for the new Google spreadsheet'),
     gmail_query: text('Optional Gmail search query; defaults to in:sent')
   }, ['folder_name', 'spreadsheet_title']),
-  gmail_send_email: fn('gmail', 'Send an email only when the user explicitly asks to send it. The Gmail connector formats the body as a responsive HTML email and confirms success with a message ID and thread ID. Never claim delivery unless this function succeeds.', { recipient: text('Recipient email address'), subject: text('Email subject'), body_html: text('Email body as HTML or plain text; do not return source code unless the user asks for code') }, ['recipient', 'subject', 'body_html']),
-  gmail_read_inbox: fn('gmail', 'Fetch recent, real messages from the connected Gmail inbox.', { max_results: integer('Number of recent inbox messages, from 1 to 20') }),
+  gmail_send_email: fn('gmail', 'Send an email only when the user explicitly asks to send it. The Gmail connector wraps plain text in the responsive Pearl & Azure email template and confirms success with a message ID and thread ID. Never claim delivery unless this function succeeds.', { recipient: text('Recipient email address'), subject: text('Email subject'), htmlContent: text('Email body as HTML or plain text; do not return source code unless the user asks for code') }, ['recipient', 'subject', 'htmlContent']),
+  gmail_read_inbox: fn('gmail', 'Fetch recent, real messages from the connected Gmail inbox.', { maxResults: integer('Number of recent inbox messages, from 1 to 20') }),
+  gmail_analyze_emails: fn('gmail', 'Read recent Gmail messages matching the query and return their contents and sender metadata for accurate analysis and summarization.', { query: text('Gmail search query, defaults to in:inbox'), maxResults: integer('Number of messages to analyze, from 1 to 20') }, ['query']),
   gmail_search_messages: fn('gmail', 'Search Gmail and return matching messages with their sender, subject, date, and content.', { query: text('Gmail search expression, such as from:person@example.com or newer_than:7d') }, ['query']),
-  calendar_create_event: fn('calendar', 'Create a Google Calendar event and return the event ID from the Calendar API. Use ISO 8601 times with timezone.', { summary: text('Event title'), start_time: text('ISO 8601 start time with timezone'), end_time: text('ISO 8601 end time with timezone'), description: text('Optional event description') }, ['summary', 'start_time', 'end_time']),
-  calendar_list_events: fn('calendar', 'Retrieve upcoming Google Calendar events in the requested time window.', { time_min: text('ISO 8601 start time with timezone'), time_max: text('ISO 8601 end time with timezone') }, ['time_min', 'time_max']),
+  calendar_create_event: fn('calendar', 'Create a Google Calendar event with the calendar default reminder enabled and return its event ID. Use ISO 8601 times with timezone.', { summary: text('Event title'), startTime: text('ISO 8601 start time with timezone'), endTime: text('ISO 8601 end time with timezone'), description: text('Optional event description') }, ['summary', 'startTime', 'endTime']),
+  calendar_list_events: fn('calendar', 'Retrieve Google Calendar events, including past or future meetings, in the requested time window.', { timeMin: text('ISO 8601 start time with timezone'), timeMax: text('ISO 8601 end time with timezone') }, ['timeMin', 'timeMax']),
   sheets_create_spreadsheet: fn('sheets', 'Create a Google spreadsheet. If folder_id is supplied, place it in that Google Drive folder.', { title: text('New spreadsheet title'), folder_id: text('Optional Google Drive folder ID') }, ['title']),
   sheets_append_data: fn('sheets', 'Append one or more rows to a Google spreadsheet using an A1 notation range.', { spreadsheet_id: text('Spreadsheet ID from its URL'), range: text('A1 notation range, for example Sheet1!A:Z'), values: rowValues }, ['spreadsheet_id', 'range', 'values']),
   drive_create_folder: fn('drive', 'Create a new folder in the connected Google Drive account.', { folder_name: text('New folder name') }, ['folder_name']),
@@ -139,7 +140,7 @@ export function getGoogleConnectorFunctionDeclarations(activeProviders = connect
   const workspaceWorkflow = isWorkspaceMetricsWorkflowRequest(prompt)
     && ['drive', 'sheets', 'gmail'].every(provider => providers.has(provider));
   const names = [
-    ...(providers.has('gmail') ? ['gmail_read_inbox', 'gmail_send_email', 'gmail_search_messages', 'reply_and_draft'] : []),
+    ...(providers.has('gmail') ? ['gmail_read_inbox', 'gmail_analyze_emails', 'gmail_send_email', 'gmail_search_messages', 'reply_and_draft'] : []),
     ...(providers.has('calendar') ? ['calendar_list_events', 'calendar_create_event', 'delete_event'] : []),
     ...(providers.has('sheets') ? ['sheets_create_spreadsheet', 'sheets_append_data', 'read_range'] : []),
     ...(providers.has('drive') ? ['drive_create_folder', 'list_drive', 'manage_files', 'download_file'] : []),
@@ -183,7 +184,7 @@ export function getGoogleConnectorToolInstructions(activeProviders = connectorMa
   const labels = ['gmail', 'calendar', 'sheets', 'forms', 'drive', 'computer'].filter(provider => providers.has(provider))
     .map(provider => ({ gmail: 'Gmail', calendar: 'Google Calendar', sheets: 'Google Sheets', forms: 'Google Forms', drive: 'Google Drive', computer: 'the Zulora Computer Plugin' })[provider]);
   if (!labels.length) return '';
-  return `You are equipped with active connectors for ${labels.join(', ')}. When a request asks you to send or read email, analyze inbox, compose drafts, schedule or list or analyze calendar events, read or write Sheets, inspect Forms, find/download/manage Drive files, or scan the computer, call the matching connector function using the live connected API or extension. Never claim an action succeeded until its function result confirms success. When sending or drafting emails, construct clean, professional HTML in the body. Do NOT output raw HTML in your chat response unless the user explicitly requested source code. Never claim you lack access when a connector function is available.`;
+  return `ACTIVE WORKSPACE CONNECTORS: ${labels.join(', ')} are connected and authorized for this signed-in session. Use the declared live function whenever the user asks to read or analyze Gmail, send email, list or create Calendar events, create or update Sheets, inspect Forms, or create/find/download/manage Drive files. Never say a listed connector is disconnected or unavailable. Never claim an action succeeded until its function result confirms success. Never generate Python or JavaScript to perform these Workspace actions unless the user explicitly asks for code. When sending or drafting emails, construct clean, professional HTML in the body. Do NOT output raw HTML in your chat response unless the user explicitly requested source code.`;
 }
 
 export function getGoogleConnectorFunctionProvider(name) {
@@ -222,6 +223,8 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
         }); break;
       case 'analyze_inbox':
         result = await connectorManager.analyzeInbox({ query: String(args.query || 'in:inbox'), max_results: Math.min(50, Math.max(1, Number(args.max_results) || 10)) }); break;
+      case 'gmail_analyze_emails':
+        result = await connectorManager.analyzeInbox({ query: String(args.query || 'in:inbox'), max_results: Math.min(20, Math.max(1, Number(args.max_results) || 10)) }); break;
       case 'gmail_read_inbox': case 'read_inbox': case 'summarize_emails': case 'read_emails':
         result = await connectorManager.readEmails({ query: String(args.query || 'in:inbox'), max_results: Math.min(20, Math.max(1, Number(args.max_results) || 5)) }); break;
       case 'gmail_search_messages':
