@@ -7,7 +7,10 @@ export const GOOGLE_SERVICE_SCOPES = Object.freeze({
     'https://www.googleapis.com/auth/gmail.send',
     'https://www.googleapis.com/auth/gmail.compose'
   ]),
-  sheets: Object.freeze(['https://www.googleapis.com/auth/spreadsheets']),
+  sheets: Object.freeze([
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive.file'
+  ]),
   drive: Object.freeze([
     'https://www.googleapis.com/auth/drive.file',
     'https://www.googleapis.com/auth/drive.readonly'

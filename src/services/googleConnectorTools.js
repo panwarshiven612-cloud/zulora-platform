@@ -71,7 +71,9 @@ export function normalizeGoogleConnectorArguments(rawArguments, functionName = '
   const args = normalizeKeys(parsed);
   if (!args.to) args.to = args.recipient || args.email_to || args.recipient_email || args.email;
   if (!args.subject) args.subject = args.email_subject;
-  if (!args.body) args.body = args.email_body || args.message_body || args.message || args.content || args.text;
+  if (!args.body) args.body = args.body_html || args.email_body || args.message_body || args.message || args.content || args.text;
+  if (!args.title) args.title = args.summary || args.spreadsheet_title;
+  if (!args.name) args.name = args.folder_name;
   if (args.max_results !== undefined && args.max_results !== '') {
     const maxResults = Number(args.max_results);
     if (Number.isFinite(maxResults)) args.max_results = maxResults;
@@ -85,9 +87,14 @@ const GOOGLE_FUNCTIONS = Object.freeze({
     spreadsheet_title: text('Title for the new Google spreadsheet'),
     gmail_query: text('Optional Gmail search query; defaults to in:sent')
   }, ['folder_name', 'spreadsheet_title']),
-  gmail_send_email: fn('gmail', 'Send an email only when the user explicitly asks to send it. The Gmail connector formats the body as a responsive HTML email and confirms success with a message ID and thread ID. Never claim delivery unless this function succeeds.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Email body as plain text or HTML; do not return source code unless the user asks for code') }, ['to', 'subject', 'body']),
-  gmail_read_inbox: fn('gmail', 'Read real Gmail inbox messages using the connected account.', { query: text('Gmail search query, defaults to in:inbox'), max_results: integer('Number of messages, from 1 to 20') }),
-  calendar_create_event: fn('calendar', 'Create a Google Calendar event and return the event ID from the Calendar API. Use ISO 8601 times with timezone.', { title: text('Event title'), start_time: text('ISO 8601 start time with timezone'), end_time: text('ISO 8601 end time with timezone'), description: text('Optional event description') }, ['title', 'start_time', 'end_time']),
+  gmail_send_email: fn('gmail', 'Send an email only when the user explicitly asks to send it. The Gmail connector formats the body as a responsive HTML email and confirms success with a message ID and thread ID. Never claim delivery unless this function succeeds.', { recipient: text('Recipient email address'), subject: text('Email subject'), body_html: text('Email body as HTML or plain text; do not return source code unless the user asks for code') }, ['recipient', 'subject', 'body_html']),
+  gmail_read_inbox: fn('gmail', 'Fetch recent, real messages from the connected Gmail inbox.', { max_results: integer('Number of recent inbox messages, from 1 to 20') }),
+  gmail_search_messages: fn('gmail', 'Search Gmail and return matching messages with their sender, subject, date, and content.', { query: text('Gmail search expression, such as from:person@example.com or newer_than:7d') }, ['query']),
+  calendar_create_event: fn('calendar', 'Create a Google Calendar event and return the event ID from the Calendar API. Use ISO 8601 times with timezone.', { summary: text('Event title'), start_time: text('ISO 8601 start time with timezone'), end_time: text('ISO 8601 end time with timezone'), description: text('Optional event description') }, ['summary', 'start_time', 'end_time']),
+  calendar_list_events: fn('calendar', 'Retrieve upcoming Google Calendar events in the requested time window.', { time_min: text('ISO 8601 start time with timezone'), time_max: text('ISO 8601 end time with timezone') }, ['time_min', 'time_max']),
+  sheets_create_spreadsheet: fn('sheets', 'Create a Google spreadsheet. If folder_id is supplied, place it in that Google Drive folder.', { title: text('New spreadsheet title'), folder_id: text('Optional Google Drive folder ID') }, ['title']),
+  sheets_append_data: fn('sheets', 'Append one or more rows to a Google spreadsheet using an A1 notation range.', { spreadsheet_id: text('Spreadsheet ID from its URL'), range: text('A1 notation range, for example Sheet1!A:Z'), values: rowValues }, ['spreadsheet_id', 'range', 'values']),
+  drive_create_folder: fn('drive', 'Create a new folder in the connected Google Drive account.', { folder_name: text('New folder name') }, ['folder_name']),
   computer_scan_system: fn('computer', 'Ask the installed Zulora Computer Plugin over its live extension IPC bridge for a browser and active-tab scan. Report only the returned scan fields; never simulate a scan.', { scope: { type: 'STRING', enum: ['active_browser'], description: 'Scan the connected browser agent and the active tab.' } }, ['scope']),
   send_email: fn('gmail', 'Send an email from the active Gmail account. Only call when the user explicitly asks to send it. Construct rich HTML in the body silently.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Email body (HTML or text)') }, ['to', 'subject', 'body']),
   send_rich_email: fn('gmail', 'Construct and send rich HTML emails in the background using UTF-8 encoding. Do not output raw HTML in final chat response unless asked.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Rich HTML email body') }, ['to', 'subject', 'body']),
@@ -129,35 +136,20 @@ const GOOGLE_FUNCTIONS = Object.freeze({
 
 export function getGoogleConnectorFunctionDeclarations(activeProviders = connectorManager.getActiveGoogleProviders(), prompt = '') {
   const providers = new Set(activeProviders);
-  const text = String(prompt || '').toLowerCase();
   const workspaceWorkflow = isWorkspaceMetricsWorkflowRequest(prompt)
     && ['drive', 'sheets', 'gmail'].every(provider => providers.has(provider));
-  if (workspaceWorkflow) {
-    const declaration = GOOGLE_FUNCTIONS.workspace_create_folder_sheet_email_metrics;
-    return [{ name: 'workspace_create_folder_sheet_email_metrics', description: declaration.description, parameters: declaration.parameters }];
-  }
-  const requestedProvider = providers.has('gmail') && /\b(?:gmail|inbox|e-?mails?|mail messages?)\b/.test(text) ? 'gmail'
-    : providers.has('calendar') && /\b(?:calendar|events?|meetings?|appointments?)\b/.test(text) ? 'calendar'
-      : providers.has('sheets') && /\b(?:spreadsheet|google\s*sheets?)\b/.test(text) ? 'sheets'
-        : providers.has('forms') && /\b(?:google\s+)?forms?\b/.test(text) ? 'forms'
-          : providers.has('drive') && /\b(?:drive|folder|directory)\b/.test(text) ? 'drive'
-            : providers.has('computer') && /\b(?:computer|system|browser)\b/.test(text) ? 'computer' : '';
-  const preferredNames = requestedProvider === 'gmail'
-    ? /\b(?:draft|compose)\b/.test(text) ? ['reply_and_draft'] : /\b(?:send|email|mail)\b/.test(text) ? ['gmail_send_email'] : ['gmail_read_inbox']
-    : requestedProvider === 'calendar'
-      ? /\b(?:delete|remove|cancel)\b/.test(text) ? ['delete_event'] : /\b(?:create|book|schedule|add)\b/.test(text) ? ['calendar_create_event', 'schedule_events'] : ['analyze_calendar', 'list_events']
-      : requestedProvider === 'sheets'
-        ? /\b(?:append|write|update|add|insert)\b/.test(text) ? ['append_row'] : /\bcreate\b/.test(text) ? ['create_sheet'] : ['read_range']
-        : requestedProvider === 'forms'
-          ? /\b(?:create|make|build)\b/.test(text) ? ['create_form'] : ['get_form', 'read_form_responses']
-      : requestedProvider === 'drive'
-            ? /\b(?:create|make|new)\b.{0,40}\b(?:folder|directory)\b/i.test(text) ? ['create_drive_folder']
-              : /\b(?:download|open)\b/.test(text) ? ['download_file'] : ['list_drive', 'manage_files']
-            : requestedProvider === 'computer' ? ['computer_scan_system'] : [];
-  if (!requestedProvider) return [];
-  return Object.entries(GOOGLE_FUNCTIONS)
-    .filter(([name, declaration]) => providers.has(declaration.provider) && preferredNames.includes(name))
-    .map(([name, declaration]) => ({ name, description: declaration.description, parameters: declaration.parameters }));
+  const names = [
+    ...(providers.has('gmail') ? ['gmail_read_inbox', 'gmail_send_email', 'gmail_search_messages', 'reply_and_draft'] : []),
+    ...(providers.has('calendar') ? ['calendar_list_events', 'calendar_create_event', 'delete_event'] : []),
+    ...(providers.has('sheets') ? ['sheets_create_spreadsheet', 'sheets_append_data', 'read_range'] : []),
+    ...(providers.has('drive') ? ['drive_create_folder', 'list_drive', 'manage_files', 'download_file'] : []),
+    ...(providers.has('forms') ? ['get_form', 'read_form_responses', 'create_form'] : []),
+    ...(providers.has('computer') ? ['computer_scan_system'] : []),
+    ...(workspaceWorkflow ? ['workspace_create_folder_sheet_email_metrics'] : [])
+  ];
+  if (!names.length) return [];
+  return names.filter(name => GOOGLE_FUNCTIONS[name])
+    .map(name => ({ name, description: GOOGLE_FUNCTIONS[name].description, parameters: GOOGLE_FUNCTIONS[name].parameters }));
 }
 
 export function isWorkspaceMetricsWorkflowRequest(prompt = '') {
@@ -232,6 +224,8 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
         result = await connectorManager.analyzeInbox({ query: String(args.query || 'in:inbox'), max_results: Math.min(50, Math.max(1, Number(args.max_results) || 10)) }); break;
       case 'gmail_read_inbox': case 'read_inbox': case 'summarize_emails': case 'read_emails':
         result = await connectorManager.readEmails({ query: String(args.query || 'in:inbox'), max_results: Math.min(20, Math.max(1, Number(args.max_results) || 5)) }); break;
+      case 'gmail_search_messages':
+        result = await connectorManager.readEmails({ query: requiredText(args, 'query'), max_results: Math.min(20, Math.max(1, Number(args.max_results) || 10)) }); break;
       case 'search_threads':
         result = await connectorManager.searchGmailThreads({ query: String(args.query || 'in:inbox'), max_results: args.max_results }); break;
       case 'calendar_create_event': case 'create_event': case 'create_calendar_event':
@@ -248,20 +242,20 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
         }); break;
       case 'analyze_calendar':
         result = await connectorManager.analyzeCalendar({ time_min: args.time_min, time_max: args.time_max }); break;
-      case 'list_events': case 'get_calendar_events':
+      case 'calendar_list_events': case 'list_events': case 'get_calendar_events':
         result = await connectorManager.getCalendarEvents({ time_min: requiredText(args, 'time_min'), time_max: requiredText(args, 'time_max') }); break;
       case 'delete_event':
         result = await connectorManager.deleteCalendarEvent({ event_id: requiredText(args, 'event_id') }); break;
-      case 'append_row': case 'append_sheet_row': {
+      case 'sheets_append_data': case 'append_row': case 'append_sheet_row': {
         const values = Array.isArray(args.values) ? args.values : [];
         if (!values.length) throw new Error('At least one row of values is required.');
         result = await connectorManager.appendSheetRow({ spreadsheet_id: requiredText(args, 'spreadsheet_id'), range: requiredText(args, 'range'), values }); break;
       }
       case 'read_range': case 'read_sheet_data':
         result = await connectorManager.readSheetData({ spreadsheet_id: requiredText(args, 'spreadsheet_id'), range: requiredText(args, 'range') }); break;
-      case 'create_sheet':
-        result = await connectorManager.createSpreadsheet({ title: requiredText(args, 'title') }); break;
-      case 'create_drive_folder':
+      case 'sheets_create_spreadsheet': case 'create_sheet':
+        result = await connectorManager.createSpreadsheet({ title: requiredText(args, 'title'), folder_id: String(args.folder_id || '').trim() }); break;
+      case 'drive_create_folder': case 'create_drive_folder':
         result = await connectorManager.createDriveFolder({ name: requiredText(args, 'name') }); break;
       case 'get_form':
         result = await connectorManager.getGoogleForm({ form_id: requiredText(args, 'form_id') }); break;

@@ -297,6 +297,32 @@ export const CONNECTOR_CONFIG = Object.freeze({
   }
 });
 
+function normalizeSpreadsheetId(value) {
+  const id = String(value || '').trim();
+  if (!/^[A-Za-z0-9_-]{6,200}$/.test(id)) throw new Error('Provide a valid Google spreadsheet ID.');
+  return id;
+}
+
+function normalizeSheetRange(value) {
+  const range = String(value || '').trim();
+  if (!range || range.length > 200 || /[\u0000-\u001f\u007f]/.test(range)) {
+    throw new Error('Provide a valid Google Sheets A1 notation range.');
+  }
+  return range;
+}
+
+function normalizeSheetValues(value) {
+  if (!Array.isArray(value) || !value.length) throw new Error('Provide at least one row of cell values.');
+  const rows = Array.isArray(value[0]) ? value : [value];
+  if (rows.some(row => !Array.isArray(row))) throw new Error('Google Sheets values must be one row or a matrix of rows.');
+  return rows.map(row => row.map(cell => {
+    if (cell == null) return '';
+    if (typeof cell === 'string' || typeof cell === 'boolean') return cell;
+    if (typeof cell === 'number' && Number.isFinite(cell)) return cell;
+    throw new Error('Google Sheets cells must contain only text, finite numbers, or booleans.');
+  }));
+}
+
 function connectorDoc(uid, provider) {
   return doc(db, 'users', uid, 'connectors', provider);
 }
@@ -993,16 +1019,29 @@ export const connectorManager = {
   },
 
   async appendSheetRow({ spreadsheet_id, range = 'Sheet1!A:Z', values = [] }) {
-    const encodedRange = encodeURIComponent(range);
-    return this.apiFetch('sheets', `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheet_id)}/values/${encodedRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
-      method: 'POST', body: JSON.stringify({ values })
+    const id = normalizeSpreadsheetId(spreadsheet_id);
+    const a1Range = normalizeSheetRange(range);
+    const rows = normalizeSheetValues(values);
+    const params = new URLSearchParams({ valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS' });
+    const endpoint = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(id)}/values/${encodeURIComponent(a1Range)}:append?${params}`;
+    const result = await this.apiFetch('sheets', endpoint, {
+      method: 'POST', body: JSON.stringify({ majorDimension: 'ROWS', values: rows })
     });
+    if (!result?.spreadsheetId || !result?.updates) throw new Error('Google Sheets did not confirm that the rows were appended.');
+    return result;
   },
 
-  async createSpreadsheet({ title }) {
-    return this.apiFetch('sheets', 'https://sheets.googleapis.com/v4/spreadsheets', {
-      method: 'POST', body: JSON.stringify({ properties: { title } })
+  async createSpreadsheet({ title, folder_id = '' }) {
+    const safeTitle = String(title || '').trim();
+    if (!safeTitle) throw new Error('A spreadsheet title is required.');
+    const spreadsheet = await this.apiFetch('sheets', 'https://sheets.googleapis.com/v4/spreadsheets', {
+      method: 'POST', body: JSON.stringify({ properties: { title: safeTitle } })
     });
+    if (!spreadsheet?.spreadsheetId) throw new Error('Google Sheets did not return the new spreadsheet ID.');
+    if (!String(folder_id || '').trim()) return spreadsheet;
+    const folder = normalizeSpreadsheetId(folder_id);
+    const file = await this.moveDriveFileToFolder({ file_id: spreadsheet.spreadsheetId, folder_id: folder });
+    return { ...spreadsheet, driveFile: file };
   },
 
   async createDriveFolder({ name }) {
@@ -1013,11 +1052,13 @@ export const connectorManager = {
   },
 
   async moveDriveFileToFolder({ file_id, folder_id }) {
-    const fileUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file_id)}?fields=id,parents`;
+    const safeFileId = normalizeSpreadsheetId(file_id);
+    const safeFolderId = normalizeSpreadsheetId(folder_id);
+    const fileUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(safeFileId)}?fields=id,parents`;
     const file = await this.apiFetch('drive', fileUrl);
-    const params = new URLSearchParams({ addParents: folder_id, fields: 'id,name,parents,webViewLink' });
+    const params = new URLSearchParams({ addParents: safeFolderId, fields: 'id,name,parents,webViewLink' });
     if (Array.isArray(file.parents) && file.parents.length) params.set('removeParents', file.parents.join(','));
-    return this.apiFetch('drive', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file_id)}?${params}`, {
+    return this.apiFetch('drive', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(safeFileId)}?${params}`, {
       method: 'PATCH', body: JSON.stringify({})
     });
   },
@@ -1191,7 +1232,9 @@ export const connectorManager = {
   },
 
   async readSheetData({ spreadsheet_id, range }) {
-    const result = await this.apiFetch('sheets', `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheet_id)}/values/${encodeURIComponent(range)}`);
+    const id = normalizeSpreadsheetId(spreadsheet_id);
+    const a1Range = normalizeSheetRange(range);
+    const result = await this.apiFetch('sheets', `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(id)}/values/${encodeURIComponent(a1Range)}`);
     return result.values || [];
   }
 };

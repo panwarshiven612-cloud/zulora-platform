@@ -544,7 +544,7 @@ function connectorFailureResult({ name, error, model, provider, totalTokens, too
   };
 }
 
-function verifyConnectorToolResult(name, result) {
+function verifyConnectorToolResult(name, result, args = {}) {
   if (result?.error || result?.success === false) throw new Error(result.error || 'The connector reported failure.');
   if (name === 'workspace_create_folder_sheet_email_metrics'
     && (!result?.folder?.id || !result?.spreadsheet?.id || !Number.isFinite(Number(result?.metrics?.sentCount)))) {
@@ -560,6 +560,16 @@ function verifyConnectorToolResult(name, result) {
   }
   if (name === 'calendar_create_event' || ['create_event', 'create_calendar_event'].includes(name)) {
     if (result?.verified !== true || !result?.id) throw new Error('Google Calendar did not return a verified event ID.');
+  }
+  if (name === 'sheets_create_spreadsheet' || name === 'create_sheet') {
+    if (!result?.spreadsheetId) throw new Error('Google Sheets did not return a spreadsheet ID.');
+    if (args.folder_id && !result?.driveFile?.id) throw new Error('Google Drive did not confirm that the spreadsheet was moved into the requested folder.');
+  }
+  if (name === 'sheets_append_data' || ['append_row', 'append_sheet_row'].includes(name)) {
+    if (!result?.spreadsheetId || !result?.updates) throw new Error('Google Sheets did not confirm that the rows were appended.');
+  }
+  if (name === 'drive_create_folder' || name === 'create_drive_folder') {
+    if (!result?.id || result?.mimeType !== 'application/vnd.google-apps.folder') throw new Error('Google Drive did not confirm the new folder.');
   }
   if (name === 'computer_scan_system' && (result?.verified !== true || !result?.scannedAt)) {
     throw new Error('The Computer Plugin did not return a verified scan.');
@@ -665,7 +675,7 @@ async function runGeminiConnectorToolProvider({ key, keyIndex, prompt, contextMe
         try {
           options.onProgress?.({ label: `Executing ${name.replaceAll('_', ' ')}`, status: 'running' });
           result = await executeGoogleConnectorFunction(name, args, { onProgress: options.onProgress });
-          verifyConnectorToolResult(name, result);
+          verifyConnectorToolResult(name, result, args);
           executedCalls.set(signature, result);
         } catch (error) {
           const message = error.message || 'Connector request failed.';
@@ -767,7 +777,7 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
         try {
           options.onProgress?.({ label: `Executing ${name.replaceAll('_', ' ')}`, status: 'running' });
           result = await executeGoogleConnectorFunction(name, args, { onProgress: options.onProgress });
-          verifyConnectorToolResult(name, result);
+          verifyConnectorToolResult(name, result, args);
         }
         catch (error) {
           if (isGoogleReconnectError(error)) {
