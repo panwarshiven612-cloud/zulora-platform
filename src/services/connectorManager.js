@@ -20,6 +20,8 @@ const TOKEN_STORAGE_KEY = 'zulora_oauth_token';
 const TOKEN_DB_NAME = 'zulora-connector-sessions';
 const TOKEN_DB_VERSION = 1;
 const CONNECTOR_STATE_KEY = 'zulora_connector_sessions';
+const OAUTH_SESSION_DOCUMENT_ID = 'googleOAuth';
+const OAUTH_REDIRECT_STATE_KEY = 'zulora_google_oauth_state';
 const sessionTokens = new Map();
 let identityScriptPromise;
 let tokenDbPromise;
@@ -360,6 +362,7 @@ async function oauthApiRequest(action, payload = {}) {
   if (!user?.getIdToken) throw new Error('Sign in again to use Google connectors.');
   const response = await fetch('/api/google-oauth', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${await user.getIdToken()}`,
@@ -373,35 +376,100 @@ async function oauthApiRequest(action, payload = {}) {
 }
 
 function authorizationCodeRequest(oauth, scopes) {
-  return new Promise((resolve, reject) => {
-    const client = oauth.initCodeClient({
-      client_id: GOOGLE_CLIENT_ID,
-      scope: scopes.join(' '),
-      access_type: 'offline',
-      prompt: 'consent',
-      include_granted_scopes: true,
-      ux_mode: 'popup',
-      callback: async response => {
-        if (response?.error) {
-          reject(new Error(response.error_description || response.error));
-          return;
-        }
-        if (!response?.code) {
-          reject(new Error('Google did not return an authorization code.'));
-          return;
-        }
-        try {
-          const session = await oauthApiRequest('exchange', {
-            code: response.code,
-              redirectUri: new URL(GOOGLE_REDIRECT_URI || window.location.origin).origin
-          });
-          resolve(session);
-        } catch (error) { reject(error); }
-      },
-      error_callback: error => reject(new Error(error?.message || 'Google authorization was cancelled.'))
-    });
-    client.requestCode();
+  const state = crypto.randomUUID();
+  const redirectUri = new URL(GOOGLE_REDIRECT_URI || window.location.origin, window.location.origin).href;
+  sessionStorage.setItem(OAUTH_REDIRECT_STATE_KEY, state);
+  const client = oauth.initCodeClient({
+    client_id: GOOGLE_CLIENT_ID,
+    scope: scopes.join(' '),
+    access_type: 'offline',
+    prompt: 'consent',
+    include_granted_scopes: true,
+    ux_mode: 'redirect',
+    redirect_uri: redirectUri,
+    state
   });
+  try { client.requestCode(); }
+  catch (error) {
+    sessionStorage.removeItem(OAUTH_REDIRECT_STATE_KEY);
+    throw error;
+  }
+  return new Promise(() => {});
+}
+
+async function persistOAuthSession(uid, token) {
+  if (!token?.encryptedSession) return { storage: 'memory' };
+  try {
+    await setDoc(connectorDoc(uid, OAUTH_SESSION_DOCUMENT_ID), {
+      encryptedSession: token.encryptedSession,
+      updatedAt: Date.now()
+    }, { merge: true });
+    return { storage: 'firestore' };
+  } catch (firestoreError) {
+    console.warn('Google OAuth session could not be saved to Firestore; using secure cookie fallback:', firestoreError.message);
+    try {
+      const fallback = await oauthApiRequest('cookie-fallback', { encryptedSession: token.encryptedSession });
+      return { storage: fallback.storage || 'secure-cookie' };
+    } catch (fallbackError) {
+      throw new Error(`Google Workspace session could not be saved. ${fallbackError.message}`);
+    }
+  }
+}
+
+async function activateGoogleSession(uid, token) {
+  const persistence = await persistOAuthSession(uid, token);
+  const grantedScopes = Array.isArray(token.scopes)
+    ? token.scopes
+    : String(token.scope || '').split(/\s+/).filter(Boolean);
+  const accessToken = token.accessToken || token.access_token || '';
+  const email = token.email || (accessToken ? await readGoogleAccount(accessToken).catch(() => '') : '');
+  const enabledProviders = Array.isArray(token.enabledProviders)
+    ? token.enabledProviders
+    : Object.keys(CONNECTOR_CONFIG).filter(id => CONNECTOR_CONFIG[id].scopes.some(scope => grantedScopes.includes(scope)));
+  const expiresAt = Number(token.expiresAt) || Date.now() + (Number(token.expires_in) || 3600) * 1000;
+  const connections = enabledProviders.filter(id => CONNECTOR_CONFIG[id]).map(id => {
+    const connection = { provider: id, email, scopes: grantedScopes, connected: true, connectedAt: Date.now(), updatedAt: Date.now() };
+    writeStoredConnectorState(id, connection);
+    sessionTokens.set(id, { accessToken, expiresAt, email, uid, provider: id, scopes: grantedScopes, enabledProviders, connected: true });
+    return connection;
+  });
+  writeStoredTokens();
+  emitConnectorChange();
+  let metadataSaved = true;
+  try { await Promise.all(connections.map(connection => setDoc(connectorDoc(uid, connection.provider), connection, { merge: true }))); }
+  catch (error) {
+    metadataSaved = false;
+    console.warn('Google connector is active, but its display metadata could not be saved:', error.message);
+  }
+  return { connections, enabledProviders, email, scopes: grantedScopes, expiresAt, metadataSaved, storage: persistence.storage };
+}
+
+function cleanOAuthCallbackUrl(url) {
+  for (const parameter of ['code', 'state', 'scope', 'authuser', 'prompt', 'error', 'error_description']) url.searchParams.delete(parameter);
+  window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
+}
+
+async function handleGoogleOAuthRedirect(uid) {
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get('code');
+  const oauthError = url.searchParams.get('error');
+  if (!code && !oauthError) return false;
+  const expectedState = sessionStorage.getItem(OAUTH_REDIRECT_STATE_KEY) || '';
+  const receivedState = url.searchParams.get('state') || '';
+  sessionStorage.removeItem(OAUTH_REDIRECT_STATE_KEY);
+  try {
+    if (!expectedState || expectedState !== receivedState) throw new Error('Google OAuth state validation failed. Please reconnect Google Workspace.');
+    if (oauthError) throw new Error(url.searchParams.get('error_description') || oauthError);
+    if (!code) throw new Error('Google did not return an authorization code.');
+    const token = await oauthApiRequest('exchange', { code, redirectUri: GOOGLE_REDIRECT_URI || url.origin });
+    await activateGoogleSession(uid, token);
+    window.dispatchEvent(new CustomEvent('zulora-google-oauth-complete'));
+    return true;
+  } catch (error) {
+    console.warn('Google OAuth callback could not be completed:', error.message);
+    window.dispatchEvent(new CustomEvent('zulora-google-oauth-error', { detail: { message: error.message } }));
+    return false;
+  } finally { cleanOAuthCallbackUrl(url); }
 }
 
 async function providerAccessToken(providerId, token) {
@@ -513,6 +581,7 @@ export const connectorManager = {
       return [];
     }
     if (!import.meta.env?.DEV && uid) {
+      await handleGoogleOAuthRedirect(uid);
       sessionTokens.clear();
       writeStoredTokens(Object.keys(CONNECTOR_CONFIG));
       try {
@@ -584,32 +653,10 @@ export const connectorManager = {
     const token = import.meta.env?.DEV
       ? await tokenRequest(oauth, scopes, 'consent')
       : await authorizationCodeRequest(oauth, scopes);
-    const grantedScopes = Array.isArray(token.scopes)
-      ? token.scopes
-      : String(token.scope || scopes.join(' ')).split(/\s+/).filter(Boolean);
-    const accessToken = token.accessToken || token.access_token || '';
-    const email = token.email || (accessToken ? await readGoogleAccount(accessToken).catch(() => '') : '');
-    const enabledProviders = Array.isArray(token.enabledProviders)
-      ? token.enabledProviders
-      : Object.keys(CONNECTOR_CONFIG).filter(id => CONNECTOR_CONFIG[id].scopes.some(scope => grantedScopes.includes(scope)));
-    const expiresAt = Number(token.expiresAt) || Date.now() + (Number(token.expires_in) || 3600) * 1000;
-    const connections = enabledProviders.filter(id => CONNECTOR_CONFIG[id]).map(id => {
-      const connection = { provider: id, email, scopes: grantedScopes, connectedAt: Date.now(), updatedAt: Date.now() };
-      writeStoredConnectorState(id, connection);
-      sessionTokens.set(id, { accessToken, expiresAt, email, uid, provider: id, scopes: grantedScopes, enabledProviders, connected: true });
-      return connection;
-    });
-    writeStoredTokens();
-    emitConnectorChange();
-    let metadataSaved = true;
-    try { await Promise.all(connections.map(connection => setDoc(connectorDoc(uid, connection.provider), connection, { merge: true }))); }
-    catch (error) {
-      metadataSaved = false;
-      console.warn('Google connector is available for this session, but its status could not be saved:', error.message);
-    }
-    const connection = connections.find(item => item.provider === providerId) || connections[0];
+    const activated = await activateGoogleSession(uid, token);
+    const connection = activated.connections.find(item => item.provider === providerId) || activated.connections[0];
     if (!connection) throw new Error(`Google did not grant the required ${provider.name} access scope.`);
-    return { ...connection, connected: true, metadataSaved };
+    return { ...connection, connected: true, metadataSaved: activated.metadataSaved, storage: activated.storage };
   },
 
   async disconnect(providerId, uid) {
@@ -666,6 +713,7 @@ export const connectorManager = {
         const firebaseToken = await user.getIdToken();
         response = await fetch('/api/google-connector', {
           method: 'POST',
+          credentials: 'same-origin',
           signal: requestOptions.signal,
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${firebaseToken}` },
           body: JSON.stringify({

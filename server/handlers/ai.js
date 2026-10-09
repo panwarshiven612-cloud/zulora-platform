@@ -235,7 +235,7 @@ function base64Url(value) {
 export async function firestoreAccessToken() {
   if (cachedFirestoreToken?.expiresAt > Date.now() + 60_000) return cachedFirestoreToken.token;
   const credentials = firestoreAdminCredentials();
-  if (!credentials) throw new Error('Firestore Admin credentials are not configured on the server.');
+  if (!credentials) throw new Error('Firestore usage tracking is unavailable.');
   const { email, privateKey } = credentials;
   const now = Math.floor(Date.now() / 1000);
   const claims = base64Url(JSON.stringify({ alg: 'RS256', typ: 'JWT' })) + '.' + base64Url(JSON.stringify({

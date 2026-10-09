@@ -53,9 +53,14 @@ service cloud.firestore {
         allow read, write: if isOwner(uid);
       }
 
-      // OAuth metadata contains scopes and account labels only, never tokens.
+      // OAuth session payloads are AES-encrypted with a server-only key before storage.
       match /connectors/{providerId} {
         allow read, write: if isOwner(uid);
+      }
+
+      // Existing encrypted Google sessions can be read during migration only.
+      match /private/{documentId} {
+        allow read: if isOwner(uid);
       }
 
       // Zulora Drive metadata is stored in the dedicated Drive Firebase project.

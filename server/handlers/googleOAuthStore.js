@@ -1,5 +1,4 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
-import { firestoreAccessToken, firestoreRoot } from './ai.js';
 import { readServerEnv } from './keyResolver.js';
 
 export const GOOGLE_SERVICE_SCOPES = Object.freeze({
@@ -25,18 +24,28 @@ export const GOOGLE_OAUTH_SCOPES = Object.freeze([
   ...new Set([...Object.values(GOOGLE_SERVICE_SCOPES).flat(), 'openid', 'email'])
 ]);
 
-const USERINFO_URL = 'https://www.googleapis.com/oauth2/v3/userinfo';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const GOOGLE_DOCUMENT_ID = 'googleOAuth';
-const serviceAccountDocumentPath = uid => `${firestoreRoot()}/users/${encodeURIComponent(uid)}/private/${GOOGLE_DOCUMENT_ID}`;
-const serviceAccountCollectionPath = uid => `${firestoreRoot()}/users/${encodeURIComponent(uid)}/private`;
+const USERINFO_URL = 'https://www.googleapis.com/oauth2/v3/userinfo';
+const SESSION_DOCUMENT_ID = 'googleOAuth';
+const LEGACY_SESSION_DOCUMENT_ID = 'googleOAuth';
+const SESSION_COOKIE = 'zulora_google_oauth';
+const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 180;
+
+function firestoreRoot() {
+  const projectId = readServerEnv('FIREBASE_PROJECT_ID')
+    || readServerEnv('VITE_FIREBASE_PROJECT_ID')
+    || 'zulora-al';
+  return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents`;
+}
+
+const sessionDocumentPath = uid => `${firestoreRoot()}/users/${encodeURIComponent(uid)}/connectors/${SESSION_DOCUMENT_ID}`;
 
 function googleClientId() {
   return readServerEnv('GOOGLE_CLIENT_ID') || '791256936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com';
 }
 
 function googleClientSecret() {
-  return readServerEnv('GOOGLE_CLIENT_SECRET');
+  return readServerEnv('GOOGLE_CLIENT_SECRET', { allowViteAlias: false });
 }
 
 function encryptionKey() {
@@ -47,15 +56,12 @@ function encryptionKey() {
     if (configuredKey.length === 32) return configuredKey;
   }
 
-  // Derive a stable AES key from an existing server-only secret when the
-  // dedicated encryption key is absent or malformed. Do not use a VITE key:
-  // those values can be included in the public browser bundle.
-  const serverSecret = readServerEnv('FIREBASE_ADMIN_PRIVATE_KEY', { allowViteAlias: false })
-    || readServerEnv('FIREBASE_PRIVATE_KEY', { allowViteAlias: false })
-    || googleClientSecret();
+  // The OAuth client secret is server-only and already required for the code
+  // exchange. It provides a stable key when a dedicated AES key is absent.
+  const serverSecret = googleClientSecret();
   if (serverSecret) {
     return createHash('sha256')
-      .update('zulora-google-oauth-token-encryption:v1\0', 'utf8')
+      .update('zulora-google-oauth-token-encryption:v2\0', 'utf8')
       .update(serverSecret, 'utf8')
       .digest();
   }
@@ -65,78 +71,181 @@ function encryptionKey() {
   throw error;
 }
 
-function encryptSession(session) {
+function legacyEncryptionKey() {
+  const raw = readServerEnv('GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY', { allowViteAlias: false });
+  if (raw) {
+    const decoded = Buffer.from(raw, 'base64');
+    const configuredKey = decoded.length === 32 ? decoded : Buffer.from(raw, 'utf8');
+    if (configuredKey.length === 32) return configuredKey;
+  }
+  const serverSecret = readServerEnv('FIREBASE_ADMIN_PRIVATE_KEY', { allowViteAlias: false })
+    || readServerEnv('FIREBASE_PRIVATE_KEY', { allowViteAlias: false })
+    || googleClientSecret();
+  if (serverSecret) {
+    return createHash('sha256')
+      .update('zulora-google-oauth-token-encryption:v1\0', 'utf8')
+      .update(serverSecret, 'utf8')
+      .digest();
+  }
+  throw new Error('Google Workspace is temporarily unavailable. Please try again later.');
+}
+
+export function sealGoogleSession(uid, session) {
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', encryptionKey(), iv);
-  const encrypted = Buffer.concat([cipher.update(JSON.stringify(session), 'utf8'), cipher.final()]);
+  cipher.setAAD(Buffer.from(`zulora-google-oauth:${uid}`, 'utf8'));
+  const payload = {
+    ...session,
+    uid,
+    access_token: session.accessToken || '',
+    refresh_token: session.refreshToken || '',
+    expiry_date: Number(session.expiresAt) || 0
+  };
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(payload), 'utf8'), cipher.final()]);
   return JSON.stringify({
-    version: 1,
+    version: 2,
     iv: iv.toString('base64'),
     tag: cipher.getAuthTag().toString('base64'),
     data: encrypted.toString('base64')
   });
 }
 
-function decryptSession(value) {
+export function openGoogleSession(uid, value) {
   if (!value) return null;
   let sealed;
-  try { sealed = JSON.parse(value); } catch { throw new Error('Stored Google OAuth credentials are invalid.'); }
-  if (sealed?.version !== 1 || !sealed.iv || !sealed.tag || !sealed.data) {
+  try { sealed = JSON.parse(value); }
+  catch { throw new Error('Stored Google OAuth credentials are invalid.'); }
+  if (![1, 2].includes(sealed?.version) || !sealed.iv || !sealed.tag || !sealed.data) {
     throw new Error('Stored Google OAuth credentials use an unsupported format.');
   }
-  const decipher = createDecipheriv('aes-256-gcm', encryptionKey(), Buffer.from(sealed.iv, 'base64'));
+  const decipher = createDecipheriv('aes-256-gcm', sealed.version === 1 ? legacyEncryptionKey() : encryptionKey(), Buffer.from(sealed.iv, 'base64'));
+  if (sealed.version === 2) decipher.setAAD(Buffer.from(`zulora-google-oauth:${uid}`, 'utf8'));
   decipher.setAuthTag(Buffer.from(sealed.tag, 'base64'));
   const decrypted = Buffer.concat([
     decipher.update(Buffer.from(sealed.data, 'base64')),
     decipher.final()
   ]).toString('utf8');
-  return JSON.parse(decrypted);
+  const payload = JSON.parse(decrypted);
+  if (sealed.version === 2 && payload.uid !== uid) throw new Error('Stored Google OAuth credentials belong to another account.');
+  const session = { ...payload, uid };
+  return session;
 }
 
-async function firestoreRequest(uid, path, options = {}) {
-  const token = await firestoreAccessToken();
-  return fetch(path, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...options.headers
-    }
-  });
+function userCookieValue(cookieHeader = '') {
+  const cookie = String(cookieHeader).split(';').map(part => part.trim()).find(part => part.startsWith(`${SESSION_COOKIE}=`));
+  if (!cookie) return '';
+  try {
+    const encoded = cookie.slice(SESSION_COOKIE.length + 1);
+    return Buffer.from(decodeURIComponent(encoded), 'base64url').toString('utf8');
+  } catch { return ''; }
 }
 
-export async function loadGoogleSession(uid) {
-  const response = await firestoreRequest(uid, serviceAccountDocumentPath(uid));
-  if (response.status === 404) return null;
-  if (!response.ok) throw new Error(`Could not read Google OAuth credentials (HTTP ${response.status}).`);
-  const document = await response.json();
-  return decryptSession(document.fields?.encrypted?.stringValue || '');
+export function setGoogleSessionCookie(res, uid, encryptedSession) {
+  openGoogleSession(uid, encryptedSession);
+  const value = Buffer.from(encryptedSession, 'utf8').toString('base64url');
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/api; Max-Age=${COOKIE_MAX_AGE_SECONDS}${secure}`);
 }
 
-export async function saveGoogleSession(uid, session) {
-  const path = serviceAccountDocumentPath(uid);
-  const encrypted = encryptSession(session);
-  let existing = await firestoreRequest(uid, path);
-  if (existing.status === 404) {
-    const created = await firestoreRequest(uid, `${serviceAccountCollectionPath(uid)}?documentId=${GOOGLE_DOCUMENT_ID}`, {
-      method: 'POST',
-      body: JSON.stringify({ fields: { encrypted: { stringValue: encrypted } } })
+export function clearGoogleSessionCookie(res) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/api; Max-Age=0${secure}`);
+}
+
+async function firestoreRequest(idToken, path, options = {}) {
+  if (!idToken) throw new Error('Sign in again to use Google connectors.');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8_000);
+  try {
+    return await fetch(path, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        ...options.headers
+      }
     });
-    if (created.ok) return;
-    if (created.status !== 409) throw new Error(`Could not save Google OAuth credentials (HTTP ${created.status}).`);
-    existing = await firestoreRequest(uid, path);
-  }
-  if (!existing.ok) throw new Error(`Could not read Google OAuth credentials (HTTP ${existing.status}).`);
-  const updated = await firestoreRequest(uid, `${path}?updateMask.fieldPaths=encrypted`, {
-    method: 'PATCH',
-    body: JSON.stringify({ fields: { encrypted: { stringValue: encrypted } } })
-  });
-  if (!updated.ok) throw new Error(`Could not update Google OAuth credentials (HTTP ${updated.status}).`);
+  } finally { clearTimeout(timer); }
 }
 
-export async function deleteGoogleSession(uid) {
-  const response = await firestoreRequest(uid, serviceAccountDocumentPath(uid), { method: 'DELETE' });
-  if (!response.ok && response.status !== 404) throw new Error(`Could not delete Google OAuth credentials (HTTP ${response.status}).`);
+function decryptCookieSession(uid, cookieHeader) {
+  const encrypted = userCookieValue(cookieHeader);
+  return encrypted ? openGoogleSession(uid, encrypted) : null;
+}
+
+export async function loadGoogleSession(uid, idToken, cookieHeader = '') {
+  let firestoreError = null;
+  if (idToken) {
+    try {
+      const response = await firestoreRequest(idToken, sessionDocumentPath(uid));
+      if (response.ok) {
+        const document = await response.json();
+        const encrypted = document.fields?.encryptedSession?.stringValue || '';
+        if (encrypted) return openGoogleSession(uid, encrypted);
+      } else if (response.status !== 404) {
+        firestoreError = new Error(`Could not read Google OAuth credentials (HTTP ${response.status}).`);
+      }
+      if (response.status === 404) {
+        const legacyPath = `${firestoreRoot()}/users/${encodeURIComponent(uid)}/private/${LEGACY_SESSION_DOCUMENT_ID}`;
+        const legacyResponse = await firestoreRequest(idToken, legacyPath);
+        if (legacyResponse.ok) {
+          const legacyDocument = await legacyResponse.json();
+          const encrypted = legacyDocument.fields?.encrypted?.stringValue || '';
+          if (encrypted) return openGoogleSession(uid, encrypted);
+        } else if (legacyResponse.status !== 404) {
+          firestoreError = new Error(`Could not read the previous Google OAuth session (HTTP ${legacyResponse.status}).`);
+        }
+      }
+    } catch (error) { firestoreError = error; }
+  }
+
+  try {
+    const cookieSession = decryptCookieSession(uid, cookieHeader);
+    if (cookieSession) return cookieSession;
+  } catch (error) {
+    if (!firestoreError) firestoreError = error;
+  }
+
+  // A transient Firestore outage with no cookie should show the connector as
+  // unavailable rather than triggering a Firebase Admin credential crash.
+  if (firestoreError && !/AbortError/i.test(String(firestoreError.name || ''))) {
+    console.warn('Google Workspace session could not be loaded:', firestoreError.message);
+  }
+  return null;
+}
+
+export async function saveGoogleSession(uid, session, idToken, res = null) {
+  const encryptedSession = sealGoogleSession(uid, session);
+  let firestoreError;
+  try {
+    const response = await firestoreRequest(idToken, `${sessionDocumentPath(uid)}?updateMask.fieldPaths=encryptedSession`, {
+      method: 'PATCH',
+      body: JSON.stringify({ fields: { encryptedSession: { stringValue: encryptedSession } } })
+    });
+    if (response.ok) {
+      if (res) setGoogleSessionCookie(res, uid, encryptedSession);
+      return { storage: 'firestore', encryptedSession };
+    }
+    firestoreError = new Error(`Firestore returned HTTP ${response.status}.`);
+  } catch (error) { firestoreError = error; }
+
+  if (res) {
+    setGoogleSessionCookie(res, uid, encryptedSession);
+    console.warn('Google OAuth session is using its secure cookie fallback:', firestoreError?.message || 'Firestore is unavailable.');
+    return { storage: 'secure-cookie', encryptedSession };
+  }
+  throw new Error('Google Workspace could not save this session. Please reconnect while online.');
+}
+
+export async function deleteGoogleSession(uid, idToken, res = null) {
+  let firestoreError = null;
+  try {
+    const response = await firestoreRequest(idToken, sessionDocumentPath(uid), { method: 'DELETE' });
+    if (!response.ok && response.status !== 404) firestoreError = new Error(`Firestore returned HTTP ${response.status}.`);
+  } catch (error) { firestoreError = error; }
+  if (res) clearGoogleSessionCookie(res);
+  if (firestoreError) throw new Error('Google Workspace could not remove the saved session from Firestore.');
 }
 
 async function exchangeToken(params) {
@@ -174,19 +283,21 @@ function activeProviders(session) {
     .filter(provider => (session?.enabledProviders || []).includes(provider));
 }
 
-export async function exchangeGoogleAuthorizationCode(uid, { code, redirectUri }) {
-  const origin = new URL(String(redirectUri || '')).origin;
-  if (origin !== String(redirectUri || '')) throw new Error('Google OAuth redirect URI must be an application origin.');
-  const prior = await loadGoogleSession(uid).catch(() => null);
+export async function exchangeGoogleAuthorizationCode(uid, { code, redirectUri, priorSession = null }) {
+  const redirect = new URL(String(redirectUri || ''));
+  if (redirect.username || redirect.password || redirect.hash || redirect.search) {
+    throw new Error('Google OAuth redirect URI is invalid.');
+  }
   const response = await exchangeToken({
     grant_type: 'authorization_code',
     code: String(code || ''),
-    redirect_uri: origin
+    redirect_uri: String(redirectUri)
   });
-  const scopes = scopesFrom(response.scope || prior?.scopes?.join(' '));
-  const refreshToken = String(response.refresh_token || prior?.refreshToken || '');
+  const scopes = scopesFrom(response.scope || priorSession?.scopes?.join(' '));
+  const refreshToken = String(response.refresh_token || priorSession?.refreshToken || '');
   if (!refreshToken) throw new Error('Google did not issue an offline refresh token. Reconnect Google with consent enabled.');
-  const session = {
+  return {
+    uid,
     accessToken: response.access_token,
     refreshToken,
     expiresAt: Date.now() + Math.max(60, Number(response.expires_in) || 3600) * 1000,
@@ -195,37 +306,37 @@ export async function exchangeGoogleAuthorizationCode(uid, { code, redirectUri }
     email: await readGoogleEmail(response.access_token),
     updatedAt: Date.now()
   };
-  await saveGoogleSession(uid, session);
-  return session;
 }
 
-export async function refreshGoogleSession(uid, current = null) {
-  const session = current || await loadGoogleSession(uid);
+export async function refreshGoogleSession(uid, idToken, cookieHeader = '', res = null, current = null, force = false) {
+  const session = current || await loadGoogleSession(uid, idToken, cookieHeader);
   if (!session?.refreshToken) throw new Error('OAuth Permission Required: Connect Google Workspace to authorize this service.');
-  if (Number(session.expiresAt) > Date.now() + 60_000 && session.accessToken) return session;
+  if (!force && Number(session.expiresAt) > Date.now() + 60_000 && session.accessToken) return session;
   const response = await exchangeToken({ grant_type: 'refresh_token', refresh_token: session.refreshToken });
   const refreshed = {
     ...session,
+    uid,
     accessToken: response.access_token,
     refreshToken: response.refresh_token || session.refreshToken,
     expiresAt: Date.now() + Math.max(60, Number(response.expires_in) || 3600) * 1000,
     scopes: scopesFrom(response.scope || session.scopes.join(' ')),
     updatedAt: Date.now()
   };
-  await saveGoogleSession(uid, refreshed);
+  refreshed.expiry_date = refreshed.expiresAt;
+  await saveGoogleSession(uid, refreshed, idToken, res);
   return refreshed;
 }
 
-export async function getValidGoogleSession(uid, provider) {
-  const session = await loadGoogleSession(uid);
+export async function getValidGoogleSession(uid, provider, idToken, cookieHeader = '', res = null) {
+  const session = await loadGoogleSession(uid, idToken, cookieHeader);
   if (!session || !(session.enabledProviders || []).includes(provider)) {
     throw new Error(`OAuth Permission Required: Connect Google ${provider} to authorize this service.`);
   }
-  return refreshGoogleSession(uid, session);
+  return refreshGoogleSession(uid, idToken, cookieHeader, res, session);
 }
 
 export function googleSessionStatus(session) {
-  if (!session) return { connected: false, email: '', scopes: [], enabledProviders: [] };
+  if (!session) return { connected: false, email: '', expiresAt: 0, scopes: [], enabledProviders: [] };
   return {
     connected: Boolean(session.refreshToken),
     email: session.email || '',

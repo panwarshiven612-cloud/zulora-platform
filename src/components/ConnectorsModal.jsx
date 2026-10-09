@@ -110,7 +110,8 @@ export default function ConnectorsModal({ currentUser, reconnectProvider = '', o
     setNotice('');
     try {
       const result = await connectorManager.connect(provider, currentUser?.uid);
-      if (!result.metadataSaved) setNotice('Connected for this browser session. Deploy the updated Firestore rules to persist connector status across sessions.');
+      if (result.storage === 'secure-cookie') setNotice('Connected with a secure browser cookie because Firestore could not save the OAuth session. Other devices may need to reconnect.');
+      else if (!result.metadataSaved) setNotice('Connected, but Firestore could not sync connector status yet.');
       await refresh();
     } catch (error) { setNotice(error.message); }
     finally { setBusy(''); }

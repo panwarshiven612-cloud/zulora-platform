@@ -81,7 +81,7 @@
           <li><strong>Files:</strong> images, documents, media, and other files that you attach, upload, generate, or ask Zulora Drive to retrieve or analyze.</li>
           <li><strong>Connected Google Workspace data:</strong> Gmail message headers, metadata and preview snippets; Calendar event details; spreadsheet cell values and spreadsheet metadata; Drive file metadata; and Forms responses, as applicable to the scopes you authorize and the action you request.</li>
           <li><strong>Zulora Drive records:</strong> file name, type, size, folder path, owner identifier, upload and update timestamps, searchable text for supported text files, storage path, and file download URL.</li>
-          <li><strong>Connector details:</strong> connected account email, provider, authorized scopes, and connection status. Google OAuth access tokens are held in browser memory for the session and are not written to LocalStorage or Firestore by the connector flow.</li>
+          <li><strong>Connector details:</strong> connected account email, provider, authorized scopes, and connection status. Google OAuth credentials are encrypted on the server before they are saved in the signed-in user's Firestore connector document. An encrypted, HttpOnly cookie provides a browser-session fallback when Firestore is unavailable.</li>
           <li><strong>Storage metric:</strong> Zulora Drive calculates the combined size of indexed files for the signed-in Drive account. Firebase does not expose a per-user remaining bucket quota to the web application.</li>
         </ul>
       </section>
@@ -128,7 +128,7 @@
 
       <section>
         <h2>7. Security measures</h2>
-        <p>Browser-to-service and service-to-service connections use HTTPS/TLS encryption in transit where supported by the relevant endpoint. Firebase Authentication and owner-scoped Firestore and Storage security rules are used to restrict account and file access. OAuth access tokens are kept in browser memory for the active session and are not stored in LocalStorage or Firestore by the connector flow. Firebase download URLs are bearer links; anyone who obtains one may be able to access that file. No internet service can guarantee absolute security, so keep credentials and download links private and contact support if you suspect unauthorized access.</p>
+        <p>Browser-to-service and service-to-service connections use HTTPS/TLS encryption in transit where supported by the relevant endpoint. Firebase Authentication and owner-scoped Firestore and Storage security rules are used to restrict account and file access. Google OAuth access and refresh tokens are encrypted before storage and are only decrypted by the server for authorized connector requests. An encrypted HttpOnly cookie supports the session if Firestore is temporarily unavailable. Firebase download URLs are bearer links; anyone who obtains one may be able to access that file. No internet service can guarantee absolute security, so keep credentials and download links private and contact support if you suspect unauthorized access.</p>
       </section>
 
       <section>

@@ -15,6 +15,8 @@ function respond(res, status, payload) {
   return res.status(status).json(payload);
 }
 
+const bearer = req => String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i)?.[1] || '';
+
 export default async function googleConnector(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -49,7 +51,7 @@ export default async function googleConnector(req, res) {
   }
 
   let session;
-  try { session = await getValidGoogleSession(uid, provider); }
+  try { session = await getValidGoogleSession(uid, provider, bearer(req), String(req.headers.cookie || ''), res); }
   catch (error) {
     const message = error?.message || 'Google OAuth session is unavailable.';
     return respond(res, /OAuth Permission Required/.test(message) ? 401 : 503, {
