@@ -87,7 +87,7 @@ const GOOGLE_FUNCTIONS = Object.freeze({
     spreadsheet_title: text('Title for the new Google spreadsheet'),
     gmail_query: text('Optional Gmail search query; defaults to in:sent')
   }, ['folder_name', 'spreadsheet_title']),
-  gmail_send_email: fn('gmail', 'Send an email only when the user explicitly asks to send it. The Gmail connector wraps plain text in the responsive Pearl & Azure email template and confirms success with a message ID and thread ID. Never claim delivery unless this function succeeds.', { recipient: text('Recipient email address'), subject: text('Email subject'), htmlContent: text('Email body as HTML or plain text; do not return source code unless the user asks for code') }, ['recipient', 'subject', 'htmlContent']),
+  gmail_send_email: fn('gmail', 'Send an email only when the user explicitly asks to send it. The Gmail connector selects a responsive Pearl & Azure template for the message intent and confirms success with a message ID and thread ID. Never claim delivery unless this function succeeds.', { recipient: text('Recipient email address'), subject: text('Email subject'), htmlContent: text('Email body as HTML or plain text; do not return source code unless the user asks for code') }, ['recipient', 'subject', 'htmlContent']),
   gmail_read_inbox: fn('gmail', 'Fetch recent, real messages from the connected Gmail inbox.', { maxResults: integer('Number of recent inbox messages, from 1 to 20') }),
   gmail_analyze_emails: fn('gmail', 'Read recent Gmail messages matching the query and return their contents and sender metadata for accurate analysis and summarization.', { query: text('Gmail search query, defaults to in:inbox'), maxResults: integer('Number of messages to analyze, from 1 to 20') }, ['query']),
   gmail_search_messages: fn('gmail', 'Search Gmail and return matching messages with their sender, subject, date, and content.', { query: text('Gmail search expression, such as from:person@example.com or newer_than:7d') }, ['query']),
@@ -211,8 +211,17 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
           onProgress
         });
         break;
-      case 'gmail_send_email': case 'send_email': case 'send_gmail': case 'send_rich_email':
-        result = await connectorManager.sendGmailMessage({ to: requiredText(args, 'to'), subject: requiredText(args, 'subject'), body: requiredText(args, 'body') }); break;
+      case 'gmail_send_email': case 'send_email': case 'send_gmail': case 'send_rich_email': {
+        const recipient = String(args.recipient || args.to || '').trim();
+        const emailBody = String(args.htmlContent ?? args.body ?? '').trim();
+        if (!recipient) throw new Error('The recipient email address is required.');
+        if (!emailBody) throw new Error('The email body is required.');
+        result = await connectorManager.sendGmailMessage({
+          to: recipient,
+          subject: requiredText(args, 'subject'),
+          body: emailBody
+        }); break;
+      }
       case 'reply_and_draft':
         result = await connectorManager.replyAndDraft({
           to: requiredText(args, 'to'),

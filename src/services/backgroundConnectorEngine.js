@@ -84,9 +84,15 @@ function spreadsheetIdFromPrompt(prompt) {
 }
 
 async function getRecentSpreadsheets() {
+  const query = new URLSearchParams({
+    q: "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+    orderBy: 'modifiedTime desc',
+    pageSize: '6',
+    fields: 'files(id,name,modifiedTime,webViewLink)'
+  });
   const result = await connectorManager.apiFetch(
-    'sheets',
-    `https://www.googleapis.com/drive/v3/files?q=${escapeQuery("mimeType='application/vnd.google-apps.spreadsheet' and trashed=false")}&orderBy=modifiedTime%20desc&pageSize=6&fields=files(id,name,modifiedTime,webViewLink)`
+    'drive',
+    `https://www.googleapis.com/drive/v3/files?${query}`
   );
   return result.files || [];
 }

@@ -278,10 +278,17 @@ function scopesFrom(value) {
   return [...new Set(String(value || '').split(/\s+/).filter(Boolean))];
 }
 
+function providerScopesGranted(provider, scopes) {
+  const required = GOOGLE_SERVICE_SCOPES[provider] || [];
+  const granted = new Set(scopes || []);
+  return provider === 'sheets'
+    ? required.every(scope => granted.has(scope))
+    : required.some(scope => granted.has(scope));
+}
+
 function activeProviders(session) {
-  const granted = new Set(session?.scopes || []);
   return Object.entries(GOOGLE_SERVICE_SCOPES)
-    .filter(([, scopes]) => scopes.some(scope => granted.has(scope)))
+    .filter(([provider]) => providerScopesGranted(provider, session?.scopes || []))
     .map(([provider]) => provider)
     .filter(provider => (session?.enabledProviders || []).includes(provider));
 }
@@ -305,7 +312,7 @@ export async function exchangeGoogleAuthorizationCode(uid, { code, redirectUri, 
     refreshToken,
     expiresAt: Date.now() + Math.max(60, Number(response.expires_in) || 3600) * 1000,
     scopes,
-    enabledProviders: Object.keys(GOOGLE_SERVICE_SCOPES).filter(provider => GOOGLE_SERVICE_SCOPES[provider].some(scope => scopes.includes(scope))),
+    enabledProviders: Object.keys(GOOGLE_SERVICE_SCOPES).filter(provider => providerScopesGranted(provider, scopes)),
     email: await readGoogleEmail(response.access_token),
     updatedAt: Date.now()
   };
@@ -360,10 +367,10 @@ export function googleScopeAllowed(session, provider, url, method) {
     else if (/\/messages\/send$/.test(pathname)) required = ['https://www.googleapis.com/auth/gmail.send'];
     else required = ['https://www.googleapis.com/auth/gmail.readonly'];
   } else if (provider === 'sheets') {
-    required = ['https://www.googleapis.com/auth/spreadsheets'];
+    required = GOOGLE_SERVICE_SCOPES.sheets;
   } else if (provider === 'drive') {
     required = verb === 'GET' || verb === 'HEAD'
-      ? ['https://www.googleapis.com/auth/drive.readonly']
+      ? ['https://www.googleapis.com/auth/drive.readonly', 'https://www.googleapis.com/auth/drive.file']
       : ['https://www.googleapis.com/auth/drive.file'];
   } else if (provider === 'calendar') {
     required = ['https://www.googleapis.com/auth/calendar'];
@@ -374,5 +381,7 @@ export function googleScopeAllowed(session, provider, url, method) {
         ? ['https://www.googleapis.com/auth/forms.body.readonly']
         : ['https://www.googleapis.com/auth/forms.body'];
   }
-  return required.every(scope => scopes.has(scope));
+  return provider === 'drive' && (verb === 'GET' || verb === 'HEAD')
+    ? required.some(scope => scopes.has(scope))
+    : required.every(scope => scopes.has(scope));
 }

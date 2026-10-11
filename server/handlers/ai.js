@@ -4,6 +4,7 @@ import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from '../../src/services/sy
 import { AI_STUDIO_SYSTEM_PROMPT } from '../../src/services/aiStudioPrompt.js';
 import { GEMINI_FLASH_MODEL_ID, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from '../../src/services/aiModels.js';
 import { buildImagePrompt } from '../../src/services/imageGen.js';
+import { refineVideoPrompt } from '../../src/services/videoPrompt.js';
 import { webSearch } from '../../src/services/webSearch.js';
 import { googleSessionStatus, loadGoogleSession } from './googleOAuthStore.js';
 
@@ -1310,7 +1311,7 @@ async function validateVideoCandidate(candidate, timeoutMs = 7_000) {
 }
 
 async function generateVideo(body, onProgress = () => {}) {
-  const prompt = String(body.prompt || '').trim();
+  const prompt = refineVideoPrompt(body.prompt);
   if (!prompt) throw new Error('Write a prompt before generating a video.');
   const enriched = [prompt, body.cameraAngle ? `Camera movement: ${body.cameraAngle}.` : '', body.motionSpeed ? `Motion intensity: ${body.motionSpeed}/10.` : ''].filter(Boolean).join(' ');
   const deadline = Date.now() + 56_000;
@@ -1334,7 +1335,7 @@ async function generateVideo(body, onProgress = () => {}) {
         const url = await validateVideoCandidate(candidate, Math.min(7_000, Math.max(1_000, deadline - Date.now())));
         const generatedDuration = provider === 'Replicate' ? 6 : Math.min(Number(body.duration) || 6, provider === 'Pollinations' ? 8 : 10);
         onProgress({ provider, phase: 'Video ready', message: 'Your generated video is ready.' });
-        return { url, provider, model, duration: generatedDuration };
+        return { url, provider, model, duration: generatedDuration, prompt };
       }
     } catch (error) {
       onProgress({ provider, phase: 'Trying another provider', message: `${provider} could not finish this request. Trying the next video provider.` });

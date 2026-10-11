@@ -84,7 +84,7 @@ export const VideoGenerator = () => {
     }
 
     setGenerationError('');
-    setGenerationProgress({ provider: 'Video model pipeline', phase: 'Initializing Engine', message: 'Starting hosted video engines, then a local animated WebM fallback if required.' });
+    setGenerationProgress({ provider: 'Video model pipeline', phase: 'Initializing Engine', message: 'Starting hosted Luma, Replicate, and Pollinations video providers.' });
     setAssetNotice('');
     setLoading(true);
 
@@ -105,7 +105,7 @@ export const VideoGenerator = () => {
       const videoAsset = {
         type: 'video',
         url: result.url,
-        prompt: prompt.trim(),
+        prompt: result.prompt || prompt.trim(),
         cameraAngle,
         motionSpeed,
         duration: result.duration || duration,

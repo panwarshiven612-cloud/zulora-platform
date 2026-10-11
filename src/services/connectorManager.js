@@ -97,40 +97,136 @@ function sanitizeEmailContent(value) {
     .replace(/<\/?(?:html|head|body)\b[^>]*>/gi, '');
 }
 
-function buildHtmlMimeMessage({ to, subject, body }) {
-  const contentHtml = sanitizeEmailContent(body)
-    .replace(/<a\b([^>]*)>/gi, (_match, attributes) => {
-      const href = attributes.match(/\bhref\s*=\s*(["'])(.*?)\1/i)?.[2] || '#';
-      const safeHref = escapeHtml(href.replace(/&amp;/gi, '&'));
-      const withoutStyle = attributes
-        .replace(/\s+style\s*=\s*(?:"[^"]*"|'[^']*')/i, '')
-        .replace(/\s+href\s*=\s*(?:"[^"]*"|'[^']*')/i, '');
-      return '<a' + withoutStyle + ' href="' + safeHref + '" style="display:inline-block;background-color:#0879c9;color:#ffffff;text-decoration:none;font-family:Arial,sans-serif;font-size:14px;font-weight:700;line-height:20px;padding:12px 20px;border-radius:8px;margin:8px 0">';
-    });
-  const plainText = contentHtml
-    .replace(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_match, href, label) => label.replace(/<[^>]*>/g, '') + ' (' + href + ')')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(?:div|p|li|h[1-6])>/gi, '\n')
-    .replace(/<[^>]*>/g, '')
+function emailText(value) {
+  return String(value || '')
+    .replace(/<a\b[^>]*href\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi, (_match, _quote, href, label) => label.replace(/<[^>]*>/g, '').trim() + ' (' + href + ')')
+    .replace(/<\s*br\b[^>]*\/?\s*>/gi, '\n')
+    .replace(/<\/(?:p|div|li|tr|td|th|h[1-6]|table|section|header|footer)\s*>/gi, '\n')
+    .replace(/<[^>]*>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
+    .replace(/&middot;/gi, '·')
     .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'")
-    .trim() + '\n\nSent via Zulora AI Workspace · Pearl & Azure';
+    .replace(/&#x([\da-f]{1,6});/gi, (_match, code) => {
+      const point = parseInt(code, 16);
+      return point <= 0x10ffff ? String.fromCodePoint(point) : '';
+    })
+    .replace(/&#(\d{1,7});/g, (_match, code) => {
+      const point = Number(code);
+      return point <= 0x10ffff ? String.fromCodePoint(point) : '';
+    })
+    .replace(/\r/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .trim();
+}
+
+function emailTemplateIntent(subject, body) {
+  const text = (String(subject || '') + '\n' + emailText(body)).toLowerCase();
+  if (/\b(meeting|calendar invite|invitation|rsvp|agenda|conference|appointment|stand-?up|sync call|video call)\b/.test(text)) return 'meeting';
+  const reportSubject = /\b(report|status update|team update|metrics summary|daily brief)\b/i.test(String(subject || ''));
+  if (reportSubject || /\b(daily|weekly|monthly)\s+(?:status\s+)?(?:update|report)\b|\b(status update|team update|metrics summary|daily brief|progress report)\b/.test(text)) return 'report';
+  if (/\b(launch|new product|product release|promotion|promotional|special offer|discount|limited time|early access|now available)\b/.test(text)) return 'promotion';
+  if (/\b(corporate|business|client|proposal|partnership|executive|board meeting)\b/.test(text)) return 'corporate';
+  return 'general';
+}
+
+function meetingRows(body, subject) {
+  const labels = /^(date|time|when|location|where|venue|agenda|duration|meeting link|video call|attendees|participants|organizer)$/i;
+  const lines = emailText(body).split('\n').map(line => line.trim()).filter(Boolean);
+  const rows = [{ label: 'Event', value: String(subject || 'Meeting').trim() }];
+  const notes = [];
+  for (const line of lines) {
+    const match = line.match(/^([^:]{2,30}):\s*(.+)$/);
+    if (match && labels.test(match[1].trim())) rows.push({ label: match[1].trim(), value: match[2].trim() });
+    else notes.push(line.replace(/^(?:[-*•]|\d+[.)])\s*/, ''));
+  }
+  return { rows, notes };
+}
+
+function firstEmailLink(contentHtml) {
+  const match = String(contentHtml || '').match(/<a\b[^>]*\bhref\s*=\s*(["'])(https?:\/\/[^"']+|mailto:[^"']+)\1[^>]*>([\s\S]*?)<\/a>/i);
+  if (!match) return null;
+  return { href: match[2], label: emailText(match[3]) || 'Learn more', markup: match[0] };
+}
+
+function emailReplyLink(senderEmail, subject, response) {
+  const params = new URLSearchParams({
+    subject: 'Re: ' + String(subject || 'Zulora AI update').replace(/[\r\n]+/g, ' ').trim(),
+    body: response
+  });
+  return 'mailto:' + encodeURIComponent(String(senderEmail || '').trim()) + '?' + params.toString();
+}
+
+function actionButton(href, label, background, foreground = '#ffffff') {
+  return '<a href="' + escapeHtml(href) + '" style="display:inline-block;margin:5px 4px;padding:12px 18px;border-radius:8px;background-color:' + background + ';color:' + foreground + ';font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;line-height:20px;text-decoration:none;">' + escapeHtml(label) + '</a>';
+}
+
+function reportBodyHtml(body, contentHtml) {
+  if (/<(?:ul|ol|table)\b/i.test(String(body || ''))) return contentHtml;
+  const entries = emailText(body).split('\n').map(line => line.trim()).filter(Boolean)
+    .map(line => line.replace(/^(?:[-*•]|\d+[.)])\s*/, ''));
+  if (!entries.length) return contentHtml;
+  return '<ul style="margin:0;padding:0 0 0 22px;color:#26384d;">' + entries.map(line => '<li style="padding:0 0 10px 4px;line-height:1.65;">' + sanitizeEmailContent(line) + '</li>').join('') + '</ul>';
+}
+
+function buildHtmlMimeMessage({ to, subject, body, senderEmail = '' }) {
+  const safeSubject = String(subject || '').trim();
+  const intent = emailTemplateIntent(safeSubject, body);
+  const contentHtml = sanitizeEmailContent(body);
+  const link = firstEmailLink(contentHtml);
+  const headerTitle = escapeHtml(safeSubject || 'A note from Zulora AI');
+  const brand = '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:#57b9f2;">Zulora AI <span style="color:#a6b8c5;">&middot;</span> Pearl &amp; Azure</div>';
+  let banner = '<tr><td style="padding:25px 30px 10px;background-color:#fffefa;">' + brand + '</td></tr><tr><td style="padding:8px 30px 22px;background-color:#fffefa;color:#1e2d43;font-family:Arial,Helvetica,sans-serif;font-size:24px;font-weight:700;line-height:1.3;">' + headerTitle + '</td></tr>';
+  let bodyContent = contentHtml;
+  let bodyBackground = '#fffefa';
+  let actionContent = '';
+
+  if (intent === 'meeting') {
+    const details = meetingRows(body, safeSubject);
+    const detailRows = details.rows.map(row => '<tr><td style="width:27%;padding:10px 12px;border-bottom:1px solid #e4ebf2;color:#52657b;font-size:12px;font-weight:700;vertical-align:top;">' + escapeHtml(row.label) + '</td><td style="padding:10px 12px;border-bottom:1px solid #e4ebf2;color:#1e2d43;font-size:14px;line-height:1.5;">' + escapeHtml(row.value) + '</td></tr>').join('');
+    const noteHtml = details.notes.length
+      ? '<div style="padding:18px 0 0;color:#25344c;font-size:15px;line-height:1.7;">' + details.notes.map(line => '<p style="margin:0 0 10px;">' + sanitizeEmailContent(line) + '</p>').join('') + '</div>'
+      : '';
+    bodyContent = '<div style="margin:0 0 14px;color:#536980;font-size:11px;font-weight:700;letter-spacing:1.3px;text-transform:uppercase;">Meeting details</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border:1px solid #e1e8f0;border-radius:10px;border-collapse:separate;border-spacing:0;background-color:#f8fafc;">' + detailRows + '</table>' + noteHtml;
+    actionContent = '<tr><td align="center" style="padding:0 22px 24px;background-color:#fffefa;text-align:center;"><div style="padding:0 0 8px;color:#536980;font-size:12px;font-weight:700;">RSVP</div>'
+      + actionButton(emailReplyLink(senderEmail, safeSubject, 'I will attend.'), 'Yes, I will attend', '#0879c9')
+      + actionButton(emailReplyLink(senderEmail, safeSubject, 'I may attend. Please share any updates.'), 'Maybe', '#e8f3fa', '#18324b')
+      + actionButton(emailReplyLink(senderEmail, safeSubject, 'I cannot attend.'), 'Decline', '#eef1f5', '#31445b')
+      + '</td></tr>';
+  } else if (intent === 'promotion') {
+    bodyBackground = '#f8fbfe';
+    banner = '<tr><td style="padding:28px 30px 8px;background-color:#10192b;background-image:linear-gradient(125deg,#10192b 0%,#19314c 60%,#07578f 100%);border-bottom:1px solid rgba(125,211,252,.35);">' + brand + '</td></tr>'
+      + '<tr><td style="padding:10px 30px 30px;background-color:#10192b;background-image:linear-gradient(125deg,#10192b 0%,#19314c 60%,#07578f 100%);color:#f8fbff;font-family:Arial,Helvetica,sans-serif;font-size:27px;font-weight:700;line-height:1.3;">' + headerTitle + '</td></tr>';
+    const ctaHref = link?.href || emailReplyLink(senderEmail, safeSubject, 'I would like to learn more about this launch.');
+    const ctaLabel = link?.label || 'Ask us about the launch';
+    if (link) bodyContent = contentHtml.replace(link.markup, '');
+    actionContent = '<tr><td align="center" style="padding:4px 22px 28px;background-color:#f8fbfe;text-align:center;">' + actionButton(ctaHref, ctaLabel, '#0879c9') + '</td></tr>';
+  } else if (intent === 'report') {
+    bodyBackground = '#f4f8fb';
+    banner = '<tr><td style="padding:24px 28px 10px;background-color:#f4f8fb;">' + brand + '</td></tr><tr><td style="padding:8px 28px 18px;background-color:#f4f8fb;color:#1e2d43;font-family:Arial,Helvetica,sans-serif;font-size:24px;font-weight:700;line-height:1.3;">' + headerTitle + '</td></tr>';
+    bodyContent = '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border:1px solid #dce7ef;border-radius:12px;background-color:#ffffff;border-collapse:separate;border-spacing:0;"><tr><td style="padding:20px 22px;color:#26384d;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.7;">' + reportBodyHtml(body, contentHtml) + '</td></tr></table>';
+  } else if (intent === 'corporate') {
+    banner = '<tr><td style="padding:25px 30px 10px;background-color:#fffefa;">' + brand + '</td></tr><tr><td style="padding:8px 30px 22px;background-color:#fffefa;color:#1e2d43;font-family:Arial,Helvetica,sans-serif;font-size:24px;font-weight:700;line-height:1.3;">' + headerTitle + '</td></tr>';
+  }
+
+  const stripe = intent === 'meeting' || intent === 'corporate' ? '#14283f' : '#168bd2';
   const html = '<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="x-apple-disable-message-reformatting"></head>'
     + '<body style="margin:0;padding:0;background-color:#edf3f7;color:#203248;font-family:Arial,Helvetica,sans-serif;-webkit-text-size-adjust:100%;">'
-    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background-color:#edf3f7;border-collapse:collapse;"><tr><td align="center" style="padding:32px 14px;">'
-    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:640px;background-color:#fffefa;border:1px solid #dce8ef;border-radius:18px;overflow:hidden;border-collapse:separate;border-spacing:0;">'
-    + '<tr><td style="height:5px;background-color:#168bd2;font-size:0;line-height:0;">&nbsp;</td></tr>'
-    + '<tr><td style="padding:25px 30px 10px;background-color:#fffefa;"><div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:#0879c9;">Zulora AI <span style="color:#a6b8c5;">·</span> Pearl &amp; Azure</div></td></tr>'
-    + '<tr><td style="padding:14px 30px 30px;background-color:#fffefa;color:#25344c;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.75;overflow-wrap:anywhere;">' + contentHtml + '</td></tr>'
-    + '<tr><td style="padding:18px 30px 22px;background-color:#f5f9fb;border-top:1px solid #e3edf5;color:#718096;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.6;">Sent via <a href="https://zulora.in" style="color:#0879c9;text-decoration:none;font-weight:700;">Zulora AI Workspace</a> <span style="color:#a6b8c5;">· Pearl &amp; Azure</span></td></tr>'
-    + '</table><div style="max-width:640px;padding:14px 8px 0;color:#8499a9;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:1.5;text-align:center;">A thoughtful note, delivered with care.</div>'
-    + '</td></tr></table></body></html>';
-  const boundary = `zulora_${crypto.randomUUID().replaceAll('-', '')}`;
-  const encodedSubject = `=?UTF-8?B?${encodeBase64Utf8(String(subject || '').replace(/[\r\n]+/g, ' ').trim())}?=`;
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background-color:#edf3f7;border-collapse:collapse;"><tr><td align="center" style="padding:28px 14px;">'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:640px;background-color:' + bodyBackground + ';border:1px solid #dce8ef;border-radius:16px;overflow:hidden;border-collapse:separate;border-spacing:0;">'
+    + '<tr><td style="height:5px;background-color:' + stripe + ';font-size:0;line-height:0;">&nbsp;</td></tr>'
+    + banner
+    + '<tr><td style="padding:20px 22px 24px;background-color:' + bodyBackground + ';color:#25344c;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.75;overflow-wrap:anywhere;">' + bodyContent + '</td></tr>'
+    + actionContent
+    + '<tr><td style="padding:17px 22px 20px;background-color:#f2f7fa;border-top:1px solid #e3edf5;color:#718096;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.6;">Sent via <a href="https://zulora.in" style="color:#0879c9;text-decoration:none;font-weight:700;">Zulora AI Workspace</a> <span style="color:#a6b8c5;">&middot; Pearl &amp; Azure</span></td></tr>'
+    + '</table></td></tr></table></body></html>';
+  const plainText = emailText(html);
+  const boundary = 'zulora_' + crypto.randomUUID().replaceAll('-', '');
+  const encodedSubject = '=?UTF-8?B?' + encodeBase64Utf8(safeSubject.replace(/[\r\n]+/g, ' ').trim()) + '?=';
   const mime = [
     `To: ${String(to || '').replace(/[\r\n]+/g, '').trim()}`,
     `Subject: ${encodedSubject}`,
@@ -297,6 +393,14 @@ export const CONNECTOR_CONFIG = Object.freeze({
   }
 });
 
+function hasRequiredConnectorScopes(provider, session) {
+  const apiScopes = CONNECTOR_CONFIG[provider]?.scopes.filter(scope => scope.startsWith('https://www.googleapis.com/auth/')) || [];
+  const grantedScopes = new Set(session?.scopes || []);
+  return provider === 'sheets'
+    ? apiScopes.every(scope => grantedScopes.has(scope))
+    : apiScopes.some(scope => grantedScopes.has(scope));
+}
+
 function normalizeSpreadsheetId(value) {
   const id = String(value || '').trim();
   if (!/^[A-Za-z0-9_-]{6,200}$/.test(id)) throw new Error('Provide a valid Google spreadsheet ID.');
@@ -451,7 +555,7 @@ async function activateGoogleSession(uid, token) {
   const email = token.email || (accessToken ? await readGoogleAccount(accessToken).catch(() => '') : '');
   const enabledProviders = Array.isArray(token.enabledProviders)
     ? token.enabledProviders
-    : Object.keys(CONNECTOR_CONFIG).filter(id => CONNECTOR_CONFIG[id].scopes.some(scope => grantedScopes.includes(scope)));
+    : Object.keys(CONNECTOR_CONFIG).filter(id => hasRequiredConnectorScopes(id, { scopes: grantedScopes }));
   const expiresAt = Number(token.expiresAt) || Date.now() + (Number(token.expires_in) || 3600) * 1000;
   const connections = enabledProviders.filter(id => CONNECTOR_CONFIG[id]).map(id => {
     const connection = { provider: id, email, scopes: grantedScopes, connected: true, connectedAt: Date.now(), updatedAt: Date.now() };
@@ -812,6 +916,7 @@ export const connectorManager = {
       const session = sessionTokens.get(provider) || restoreStoredToken(provider);
       const connected = Boolean(session && session.connected !== false
         && (session.enabledProviders ? session.enabledProviders.includes(provider) : true)
+        && (provider !== 'sheets' || hasRequiredConnectorScopes(provider, session))
         && (import.meta.env?.DEV ? session.expiresAt > Date.now() + TOKEN_REFRESH_MARGIN_MS : true)
         && (!uid || !session.uid || session.uid === uid));
       return [provider, {
@@ -839,6 +944,7 @@ export const connectorManager = {
       }
       const connected = Boolean(session && session.connected !== false
         && (session.enabledProviders ? session.enabledProviders.includes(provider) : true)
+        && (provider !== 'sheets' || hasRequiredConnectorScopes(provider, session))
         && (import.meta.env?.DEV ? session.expiresAt > Date.now() + TOKEN_REFRESH_MARGIN_MS : true)
         && (!uid || !session.uid || session.uid === uid));
       if (import.meta.env?.DEV && session && !connected && uid && session.uid === uid) silentlyRefresh(provider, uid).catch(() => {});
@@ -871,12 +977,13 @@ export const connectorManager = {
   getActiveGoogleProviders() {
     return Object.keys(CONNECTOR_CONFIG).filter(provider => {
       const token = sessionTokens.get(provider) || restoreStoredToken(provider);
-      const hasProviderScope = token?.scopes?.some(scope => CONNECTOR_CONFIG[provider].scopes.includes(scope));
+      const hasProviderScope = hasRequiredConnectorScopes(provider, token);
       const enabled = token?.enabledProviders ? token.enabledProviders.includes(provider) : true;
       const liveToken = import.meta.env?.DEV
         ? Boolean(token?.accessToken && token.expiresAt > Date.now() + TOKEN_REFRESH_MARGIN_MS)
         : Boolean(token?.connected !== false);
-      return Boolean(token && liveToken && enabled && (hasProviderScope || !token.scopes?.length)
+      return Boolean(token && liveToken && enabled
+        && (hasProviderScope || (provider !== 'sheets' && !token.scopes?.length))
         && (!auth.currentUser?.uid || !token.uid || token.uid === auth.currentUser.uid));
     });
   },
@@ -887,7 +994,7 @@ export const connectorManager = {
 
   async sendGmailMessage({ to, recipient = to, subject, body, htmlContent, body_html }) {
     const resolvedBody = body ?? htmlContent ?? body_html ?? '';
-    const raw = buildHtmlMimeMessage({ to: recipient, subject, body: resolvedBody });
+    const raw = buildHtmlMimeMessage({ to: recipient, subject, body: resolvedBody, senderEmail: sessionTokens.get('gmail')?.email || '' });
     const res = await this.apiFetch('gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
       method: 'POST', body: JSON.stringify({ raw }), expectedStatus: 200
     });
@@ -902,7 +1009,7 @@ export const connectorManager = {
   },
 
   async createGmailDraft({ to, subject, body }) {
-    const raw = buildHtmlMimeMessage({ to, subject, body });
+    const raw = buildHtmlMimeMessage({ to, subject, body, senderEmail: sessionTokens.get('gmail')?.email || '' });
     const res = await this.apiFetch('gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/drafts', {
       method: 'POST', body: JSON.stringify({ message: { raw } })
     });
@@ -914,7 +1021,7 @@ export const connectorManager = {
     if (is_draft) {
       return this.createGmailDraft({ to, subject, body });
     }
-    const raw = buildHtmlMimeMessage({ to, subject, body });
+    const raw = buildHtmlMimeMessage({ to, subject, body, senderEmail: sessionTokens.get('gmail')?.email || '' });
     const payload = { raw };
     if (thread_id) payload.threadId = thread_id;
     const res = await this.apiFetch('gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
