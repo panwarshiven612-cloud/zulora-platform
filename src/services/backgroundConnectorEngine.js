@@ -2,26 +2,50 @@ import connectorManager from './connectorManager';
 import { driveAuth } from '../config/firebaseDrive';
 import { uploadFileToDrive } from './zuloraDriveService';
 
-const escapeQuery = value => encodeURIComponent(value);
 const getHeader = (headers = [], name) => headers.find(header => header.name?.toLowerCase() === name)?.value || '';
 
 export function extractMessageCount(prompt) {
-  const text = String(prompt);
-  const match = text.match(/\b(?:last|top|recent|latest|first)\s+(\d{1,2})\b/i)
-    || text.match(/\b(\d{1,2})\s+(?:latest|recent|first)\s+(?:e-?mails?|gmails?|messages?)\b/i);
+  const text = String(prompt || '');
+  const match = text.match(/\b(?:last|top|recent|latest|first)\s+(\d{1,3})\b/i)
+    || text.match(/\b(\d{1,3})\s+(?:latest|recent|first|last)\s+(?:e-?mails?|gmails?|messages?)\b/i);
+  if (/\ball\b.{0,30}\btoday\b|\btoday\b.{0,30}\ball\b/i.test(text)) return 500;
   if (/\b(?:few|several)\s+(?:latest|recent|newest)\b/i.test(text)) return 5;
   if (/\b(?:couple|two)\s+(?:latest|recent|newest)\b/i.test(text)) return 2;
-  return Math.min(20, Math.max(1, Number(match?.[1]) || 5));
+  return Math.min(500, Math.max(1, Number(match?.[1]) || 5));
+}
+
+export function gmailQueryFromPrompt(prompt, now = new Date(), baseQuery = 'in:inbox') {
+  const text = String(prompt || '');
+  const base = String(baseQuery || 'in:inbox').trim();
+  if (/\b(?:after|before|newer_than|older_than):/i.test(base)) return base;
+  const dayCount = text.match(/\b(?:last|past|previous)\s+(\d{1,3})\s+days?\b/i);
+  const start = new Date(now);
+  let end;
+  if (/\btoday\b/i.test(text)) {
+    start.setHours(0, 0, 0, 0);
+    end = new Date(start);
+    end.setDate(end.getDate() + 1);
+  } else if (/\byesterday\b/i.test(text)) {
+    start.setDate(start.getDate() - 1);
+    start.setHours(0, 0, 0, 0);
+    end = new Date(start);
+    end.setDate(end.getDate() + 1);
+  } else if (dayCount) {
+    start.setDate(start.getDate() - Math.min(365, Number(dayCount[1]) || 1));
+  } else {
+    return base;
+  }
+  return `${base}${base ? ' ' : ''}after:${Math.floor(start.getTime() / 1000)}${end ? ` before:${Math.floor(end.getTime() / 1000)}` : ''}`;
 }
 
 export function detectConnectorTask(prompt) {
   const text = String(prompt || '').trim();
   const asksGmail = ( /\b(gmails?|inbox|e-?mails?|mail messages?)\b/i.test(text)
     || /\b(send|draft|compose)\b.{0,50}\bemail\b/i.test(text) )
-    && /\b(read|review|summari[sz]e|check|find|search|fetch|get|retrieve|extract|tell|show|last|recent|latest|first|send|draft|inbox)\b/i.test(text);
-  const asksCalendar = ( /\b(calendar|events?)\b/i.test(text)
+    && /\b(read|review|summari[sz]e|check|find|search|fetch|get|retrieve|extract|tell|show|last|recent|latest|first|send|draft|inbox|today|all)\b/i.test(text);
+  const asksCalendar = ( /\b(calendar|events?|meetings?|schedule|agenda)\b/i.test(text)
     || /\b(schedule|book|create)\b.{0,40}\b(meeting|appointment)\b/i.test(text) )
-    && /\b(list|show|view|upcoming|schedule|create|add|book|delete|remove|cancel)\b/i.test(text);
+    && /\b(list|show|view|upcoming|schedule|agenda|create|add|book|delete|remove|cancel|tomorrow|today|last|past|next)\b/i.test(text);
   const asksForms = /\b(forms?|responses?)\b/i.test(text)
     && /\b(read|sync|fetch|show|list|responses?)\b/i.test(text);
   const asksGoogleDrive = /\bgoogle\s+drive\b/i.test(text)
@@ -36,17 +60,22 @@ export function detectConnectorTask(prompt) {
   return null;
 }
 
-async function readRecentGmail(count) {
-  const result = await connectorManager.apiFetch(
-    'gmail',
-    `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${count}&q=${escapeQuery('in:inbox')}`
-  );
-  if (!result || typeof result !== 'object' || (result.messages !== undefined && !Array.isArray(result.messages))
-    || (!Array.isArray(result.messages) && !Number.isFinite(Number(result.resultSizeEstimate)))) {
-    throw new Error('Gmail returned an invalid inbox response. No inbox result is reported.');
-  }
-  const ids = (result.messages || []).slice(0, count);
-  const messages = await Promise.all(ids.map(async item => {
+async function readRecentGmail(count, query = 'in:inbox', readAll = false) {
+  const ids = [];
+  let pageToken = '';
+  do {
+    const params = new URLSearchParams({ maxResults: String(readAll ? 500 : Math.min(500, count - ids.length)), q: query });
+    if (pageToken) params.set('pageToken', pageToken);
+    const result = await connectorManager.apiFetch('gmail', `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`);
+    if (!result || typeof result !== 'object' || (result.messages !== undefined && !Array.isArray(result.messages))
+      || (!Array.isArray(result.messages) && !Number.isFinite(Number(result.resultSizeEstimate)))) {
+      throw new Error('Gmail returned an invalid inbox response. No inbox result is reported.');
+    }
+    ids.push(...(result.messages || []));
+    pageToken = result.nextPageToken || '';
+  } while (pageToken && (readAll || ids.length < count));
+  const selectedIds = readAll ? ids : ids.slice(0, count);
+  const messages = await Promise.all(selectedIds.map(async item => {
     if (!item?.id) throw new Error('Gmail returned a message without an ID. No inbox result is reported.');
     const message = await connectorManager.apiFetch(
       'gmail',
@@ -143,11 +172,11 @@ export async function listConnectorSpreadsheets() {
   return getRecentSpreadsheets();
 }
 
-export async function listUpcomingCalendarEvents(maxResults = 8) {
-  const timeMin = new Date().toISOString();
+export async function listUpcomingCalendarEvents(maxResults = 8, { timeMin, timeMax } = {}) {
   const query = new URLSearchParams({
-    timeMin, maxResults: String(maxResults), singleEvents: 'true', orderBy: 'startTime'
+    timeMin: timeMin || new Date().toISOString(), maxResults: String(maxResults), singleEvents: 'true', orderBy: 'startTime'
   });
+  if (timeMax) query.set('timeMax', timeMax);
   const result = await connectorManager.apiFetch(
     'calendar',
     `https://www.googleapis.com/calendar/v3/calendars/primary/events?${query}`
@@ -157,6 +186,50 @@ export async function listUpcomingCalendarEvents(maxResults = 8) {
     throw new Error('Google Calendar returned an invalid event-list response. No schedule result is reported.');
   }
   return result.items || [];
+}
+
+export function parseCalendarTimeRange(prompt, now = new Date()) {
+  const text = String(prompt || '').toLowerCase();
+  const lastDays = text.match(/\b(?:last|past|previous)\s+(\d{1,3})\s+days?\b/);
+  const nextDays = text.match(/\b(?:next|coming)\s+(\d{1,3})\s+days?\b/);
+  const makeLocalDay = offset => {
+    const start = new Date(now);
+    start.setDate(start.getDate() + offset);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return { timeMin: start.toISOString(), timeMax: end.toISOString() };
+  };
+  if (lastDays) {
+    const timeMax = new Date(now);
+    const timeMin = new Date(now);
+    timeMin.setDate(timeMin.getDate() - Math.min(365, Number(lastDays[1]) || 1));
+    return { timeMin: timeMin.toISOString(), timeMax: timeMax.toISOString() };
+  }
+  if (nextDays) {
+    const timeMin = new Date(now);
+    const timeMax = new Date(now);
+    timeMax.setDate(timeMax.getDate() + Math.min(365, Number(nextDays[1]) || 1));
+    return { timeMin: timeMin.toISOString(), timeMax: timeMax.toISOString() };
+  }
+  if (/\btomorrow\b/.test(text)) return makeLocalDay(1);
+  if (/\btoday\b/.test(text)) return makeLocalDay(0);
+  const date = text.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
+  if (date) {
+    const target = new Date(Number(date[1]), Number(date[2]) - 1, Number(date[3]));
+    target.setHours(0, 0, 0, 0);
+    const end = new Date(target);
+    end.setDate(end.getDate() + 1);
+    return { timeMin: target.toISOString(), timeMax: end.toISOString() };
+  }
+  return null;
+}
+
+export function extractCalendarEventCount(prompt) {
+  const text = String(prompt || '');
+  const match = text.match(/\b(?:last|top|recent|latest|upcoming|next|first)\s+(\d{1,4})\b/i)
+    || text.match(/\b(\d{1,4})\s+(?:latest|recent|upcoming|next|first|last)\s+(?:calendar\s+)?(?:events?|meetings?|appointments?)\b/i);
+  return Math.min(2500, Math.max(1, Number(match?.[1]) || 10));
 }
 
 export async function listGoogleFormResponses(formId, maxResults = 20) {
@@ -253,23 +326,36 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
         const sent = await connectorManager.sendGmailMessage({ to, subject, body });
         return { handled: true, executed: sent.verified === true && Boolean(sent.id && sent.threadId), provider, data: sent, text: `Sent the email to ${to} with the subject “${subject}”.` };
       }
-      const emails = await readRecentGmail(extractMessageCount(request));
+      const allToday = /\ball\b.{0,30}\btoday\b|\btoday\b.{0,30}\ball\b/i.test(request);
+      const emails = await readRecentGmail(extractMessageCount(request), gmailQueryFromPrompt(request), allToday);
       const output = formatEmailReport(emails);
       const wantsSheet = /\b(sheet|spreadsheet|sheets|export)\b/i.test(request);
       let sheetNote = '';
-      if (wantsSheet && emails.length) {
+      if (wantsSheet) {
         const id = spreadsheetIdFromPrompt(request);
-        if (!id) {
+        const createNew = /\b(?:create|new|make)\b.{0,40}\b(?:sheet|spreadsheet)\b|\b(?:sheet|spreadsheet)\b.{0,40}\b(?:create|new)\b/i.test(request)
+          || (!id && !/\b(?:append|update|add\s+to|existing)\b/i.test(request));
+        const rows = [
+          ['Sender Name & Email', 'Subject', 'Snippet / Summary', 'Timestamp'],
+          ...emails.map(email => [email.sender, email.subject, email.preview, email.date])
+        ];
+        if (createNew) {
+          onStatus('Creating and populating the Google Sheet');
+          const populated = await connectorManager.createAndPopulateSpreadsheet({ title: `Gmail Export ${new Date().toLocaleDateString()}`, rows });
+          sheetNote = `\n\nCreated and populated [${populated.spreadsheet.title}](${populated.spreadsheet.url}) with ${emails.length} email rows.`;
+        } else if (!id) {
           const candidates = await getRecentSpreadsheets();
           if (candidates.length === 1) {
+            if (!emails.length) throw new Error('No matching Gmail messages were available to append. No spreadsheet was changed.');
             await appendRows(candidates[0].id, [['Date', 'From', 'Subject', 'Preview'], ...emails.map(email => [email.date, email.sender, email.subject, email.preview])]);
             sheetNote = `\n\nAppended the email details to [${candidates[0].name}](${candidates[0].webViewLink || `https://docs.google.com/spreadsheets/d/${candidates[0].id}`}).`;
           } else if (candidates.length) {
             sheetNote = `\n\nI found these spreadsheets. Tell me which one to update:\n${candidates.map(file => `- ${file.name}: ${file.webViewLink || `https://docs.google.com/spreadsheets/d/${file.id}`}`).join('\n')}`;
           } else {
-            sheetNote = '\n\nTo export these rows, connect Google Sheets and provide a spreadsheet link. No spreadsheet was changed.';
+            sheetNote = '\n\nTo append these rows, provide a Google Sheets link. No spreadsheet was changed.';
           }
         } else {
+          if (!emails.length) throw new Error('No matching Gmail messages were available to append. No spreadsheet was changed.');
           await appendRows(id, [['Date', 'From', 'Subject', 'Preview'], ...emails.map(email => [email.date, email.sender, email.subject, email.preview])]);
           sheetNote = `\n\nAppended ${emails.length} email rows to the requested spreadsheet.`;
         }
@@ -317,11 +403,33 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
       if (/\b(create|add|book|schedule)\b/i.test(request)) {
         const event = parseCalendarEvent(request);
         if (!event) return { handled: true, provider, data: [], text: 'I have not created an event. Provide a title and a clear date/time such as “2026-10-03 15:30” so Calendar can schedule it accurately.' };
-        const created = await createGoogleCalendarEvent(event);
+        const created = await createGoogleCalendarEvent({ ...event, reminders: { useDefault: true } });
         return { handled: true, executed: created.verified === true && Boolean(created.id), provider, data: created, text: `Created “${created.summary || event.summary}” on Calendar for ${created.start?.dateTime || event.start.dateTime}.` };
       }
-      const events = await listUpcomingCalendarEvents(10);
-      const driveNote = await autoSaveReport('Calendar', events, request);
+      const range = parseCalendarTimeRange(request);
+      const events = await listUpcomingCalendarEvents(extractCalendarEventCount(request), range || {});
+      const wantsSheet = /\b(sheet|spreadsheet|sheets|export)\b/i.test(request);
+      let sheetNote = '';
+      if (wantsSheet) {
+        const rows = [
+          ['Meeting', 'Start', 'End', 'Location', 'Description', 'Calendar Event Link'],
+          ...events.map(event => [event.summary || '(untitled)', event.start?.dateTime || event.start?.date || '', event.end?.dateTime || event.end?.date || '', event.location || '', event.description || '', event.htmlLink || ''])
+        ];
+        const id = spreadsheetIdFromPrompt(request);
+        if (id) {
+          if (events.length) {
+            await appendRows(id, rows);
+            sheetNote = `\n\nAppended ${events.length} calendar events to the requested spreadsheet.`;
+          } else {
+            sheetNote = '\n\nThere were no Calendar events in this time range to append.';
+          }
+        } else {
+          onStatus('Creating and populating the Google Sheet');
+          const populated = await connectorManager.createAndPopulateSpreadsheet({ title: `Calendar Export ${new Date().toLocaleDateString()}`, rows });
+          sheetNote = `\n\nCreated and populated [${populated.spreadsheet.title}](${populated.spreadsheet.url}) with ${events.length} calendar events.`;
+        }
+      }
+      const driveNote = `${sheetNote}${await autoSaveReport('Calendar', events, request)}`;
       const text = events.length ? `Upcoming Calendar events:\n${events.map(event => `- ${event.summary || '(untitled)'} — ${event.start?.dateTime || event.start?.date || 'time not set'}`).join('\n')}${driveNote}` : 'There are no upcoming Calendar events.';
       return { handled: true, executed: true, provider, data: events, text };
     }

@@ -1033,26 +1033,39 @@ export const connectorManager = {
     return { ...res, success: true, replied: Boolean(thread_id), to, subject, messageId: res.id, threadId: res.threadId, verified: true };
   },
 
-  async readEmails({ query = 'in:inbox', max_results = 5 } = {}) {
-    const params = new URLSearchParams({ q: String(query || 'in:inbox'), maxResults: String(Math.min(20, Math.max(1, Number(max_results) || 5))) });
-    const list = await this.apiFetch('gmail', `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`);
-    if (!list || typeof list !== 'object' || (list.messages !== undefined && !Array.isArray(list.messages))
-      || (!Array.isArray(list.messages) && !Number.isFinite(Number(list.resultSizeEstimate)))) {
-      throw new Error('Gmail returned an invalid inbox response. No inbox result is reported.');
-    }
-    const messages = await Promise.all((list.messages || []).map(async item => {
+  async readEmails({ query = 'in:inbox', max_results = 5, all_results = false } = {}) {
+    const limit = all_results ? Infinity : Math.min(500, Math.max(1, Number(max_results) || 5));
+    const ids = [];
+    let pageToken = '';
+    do {
+      const params = new URLSearchParams({ q: String(query || 'in:inbox'), maxResults: String(all_results ? 500 : Math.min(500, limit - ids.length)) });
+      if (pageToken) params.set('pageToken', pageToken);
+      const list = await this.apiFetch('gmail', `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`);
+      if (!list || typeof list !== 'object' || (list.messages !== undefined && !Array.isArray(list.messages))
+        || (!Array.isArray(list.messages) && !Number.isFinite(Number(list.resultSizeEstimate)))) {
+        throw new Error('Gmail returned an invalid inbox response. No inbox result is reported.');
+      }
+      ids.push(...(list.messages || []));
+      pageToken = list.nextPageToken || '';
+    } while (pageToken && (all_results || ids.length < limit));
+    const messages = [];
+    const messageIds = all_results ? ids : ids.slice(0, limit);
+    for (let offset = 0; offset < messageIds.length; offset += 50) {
+      const pageMessages = await Promise.all(messageIds.slice(offset, offset + 50).map(async item => {
       if (!item?.id) throw new Error('Gmail returned a message without an ID. No inbox result is reported.');
       const message = await this.apiFetch('gmail', `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(item.id)}?format=full`);
       if (!message?.id || !message?.threadId) throw new Error('Gmail returned an invalid message record. No inbox result is reported.');
       const headers = message.payload?.headers || [];
       const getHeader = name => headers.find(header => header.name?.toLowerCase() === name)?.value || '';
       return { id: message.id, from: getHeader('from'), subject: getHeader('subject'), date: getHeader('date'), snippet: message.snippet || '', body: getGmailText(message.payload) || message.snippet || '' };
-    }));
+      }));
+      messages.push(...pageMessages);
+    }
     return messages;
   },
 
-  async analyzeInbox({ query = 'in:inbox', max_results = 10 } = {}) {
-    const emails = await this.readEmails({ query, max_results });
+  async analyzeInbox({ query = 'in:inbox', max_results = 10, all_results = false } = {}) {
+    const emails = await this.readEmails({ query, max_results, all_results });
     const now = new Date();
     const todayStr = now.toDateString();
     let todayCount = 0;
@@ -1077,22 +1090,27 @@ export const connectorManager = {
       method: 'POST', body: JSON.stringify({ summary: title, description, start: { dateTime: start_time }, end: { dateTime: end_time }, reminders: { useDefault: true } })
     });
     if (!event?.id) throw new Error('Google Calendar did not return an event ID. The event is not reported as created.');
-    return { ...event, verified: true };
+    return { ...event, eventUrl: event.htmlLink || '', confirmation: event.htmlLink ? `Created “${event.summary || title}”: ${event.htmlLink}` : `Created “${event.summary || title}” (event ${event.id}).`, verified: true };
   },
 
   async scheduleEvents({ events = [], title, start_time, end_time, description = '' } = {}) {
     if (Array.isArray(events) && events.length > 0) {
       const created = [];
-      for (const ev of events) {
-        const res = await this.createCalendarEvent({
-          title: ev.title || ev.summary,
-          start_time: ev.start_time || ev.start,
-          end_time: ev.end_time || ev.end,
-          description: ev.description || ''
-        });
-        created.push(res);
+      for (const [index, ev] of events.entries()) {
+        try {
+          const res = await this.createCalendarEvent({
+            title: ev.title || ev.summary,
+            start_time: ev.start_time || ev.start,
+            end_time: ev.end_time || ev.end,
+            description: ev.description || ''
+          });
+          created.push(res);
+        } catch (error) {
+          const partial = created.map(event => `${event.summary || 'Untitled event'} (${event.htmlLink || event.id})`).join(', ');
+          throw new Error(`Calendar batch stopped at event ${index + 1} of ${events.length}; ${created.length} event(s) were created before the failure.${partial ? ` Created events: ${partial}.` : ''} ${error.message}`);
+        }
       }
-      return { success: true, count: created.length, events: created };
+      return { success: true, count: created.length, events: created, confirmation: created.map(event => event.confirmation).join('\n') };
     }
     if (title && start_time && end_time) {
       const res = await this.createCalendarEvent({ title, start_time, end_time, description });
@@ -1101,19 +1119,70 @@ export const connectorManager = {
     throw new Error('Provide event details (title, start_time, end_time) or a list of events to schedule.');
   },
 
-  async getCalendarEvents({ time_min, time_max } = {}) {
-    const params = new URLSearchParams({ timeMin: time_min || new Date().toISOString(), singleEvents: 'true', orderBy: 'startTime', maxResults: '50' });
-    if (time_max) params.set('timeMax', time_max);
-    const result = await this.apiFetch('calendar', `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`);
-    if (!result || typeof result !== 'object' || (result.items !== undefined && !Array.isArray(result.items))
-      || (!Array.isArray(result.items) && result.kind !== 'calendar#events')) {
-      throw new Error('Google Calendar returned an invalid event-list response. No schedule result is reported.');
+  async createAndPopulateSpreadsheet({ title, rows = [] } = {}) {
+    if (!Array.isArray(rows) || !rows.length) throw new Error('At least one header or data row is required to populate the spreadsheet.');
+    const spreadsheet = await this.createSpreadsheet({ title });
+    const spreadsheetId = spreadsheet?.spreadsheetId;
+    if (!spreadsheetId) throw new Error('Google Sheets did not return the new spreadsheet ID.');
+    let appendResult;
+    try {
+      appendResult = await this.appendSheetRow({ spreadsheet_id: spreadsheetId, range: 'Sheet1!A1', values: rows });
+    } catch (error) {
+      throw new Error(`Google Sheets values.append failed after spreadsheet creation. The sheet was not confirmed as populated, so no link is being returned. ${error.message}`);
     }
-    return result.items || [];
+    return {
+      success: true,
+      spreadsheet: {
+        id: spreadsheetId,
+        title: spreadsheet.properties?.title || String(title || '').trim(),
+        url: spreadsheet.spreadsheetUrl || `https://docs.google.com/spreadsheets/d/${spreadsheetId}`
+      },
+      appended: appendResult.updates,
+      populated: true
+    };
   },
 
-  async analyzeCalendar({ time_min, time_max } = {}) {
-    const events = await this.getCalendarEvents({ time_min, time_max });
+  async exportGmailToSheet({ title = `Gmail Export ${new Date().toLocaleDateString()}`, query = 'in:inbox', max_results = 5 } = {}) {
+    const emails = await this.readEmails({ query, max_results });
+    const rows = [
+      ['Sender Name & Email', 'Subject', 'Snippet / Summary', 'Timestamp'],
+      ...emails.map(email => [email.from || '', email.subject || '(no subject)', email.snippet || email.body || '', email.date || ''])
+    ];
+    const populated = await this.createAndPopulateSpreadsheet({ title, rows });
+    return { ...populated, messagesCount: emails.length, query, confirmation: `Created and populated [${populated.spreadsheet.title}](${populated.spreadsheet.url}) with ${emails.length} email rows.` };
+  },
+
+  async exportCalendarToSheet({ title = `Calendar Export ${new Date().toLocaleDateString()}`, time_min, time_max, max_results = 50 } = {}) {
+    const events = await this.getCalendarEvents({ time_min, time_max, max_results });
+    const rows = [
+      ['Meeting', 'Start', 'End', 'Location', 'Description', 'Calendar Event Link'],
+      ...events.map(event => [event.summary || '(untitled)', event.start?.dateTime || event.start?.date || '', event.end?.dateTime || event.end?.date || '', event.location || '', event.description || '', event.htmlLink || ''])
+    ];
+    const populated = await this.createAndPopulateSpreadsheet({ title, rows });
+    return { ...populated, eventsCount: events.length, confirmation: `Created and populated [${populated.spreadsheet.title}](${populated.spreadsheet.url}) with ${events.length} calendar events.` };
+  },
+
+  async getCalendarEvents({ time_min, time_max, max_results = 50 } = {}) {
+    const limit = Math.min(2500, Math.max(1, Number(max_results) || 50));
+    const events = [];
+    let pageToken = '';
+    do {
+      const params = new URLSearchParams({ timeMin: time_min || new Date().toISOString(), singleEvents: 'true', orderBy: 'startTime', maxResults: String(Math.min(2500, limit - events.length)) });
+      if (time_max) params.set('timeMax', time_max);
+      if (pageToken) params.set('pageToken', pageToken);
+      const result = await this.apiFetch('calendar', `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`);
+      if (!result || typeof result !== 'object' || (result.items !== undefined && !Array.isArray(result.items))
+        || (!Array.isArray(result.items) && result.kind !== 'calendar#events')) {
+        throw new Error('Google Calendar returned an invalid event-list response. No schedule result is reported.');
+      }
+      events.push(...(result.items || []));
+      pageToken = result.nextPageToken || '';
+    } while (pageToken && events.length < limit);
+    return events.slice(0, limit);
+  },
+
+  async analyzeCalendar({ time_min, time_max, max_results = 50 } = {}) {
+    const events = await this.getCalendarEvents({ time_min, time_max, max_results });
     return {
       totalEvents: events.length,
       timeWindow: { timeMin: time_min || 'now', timeMax: time_max || 'upcoming' },
@@ -1136,12 +1205,14 @@ export const connectorManager = {
     const id = normalizeSpreadsheetId(spreadsheet_id);
     const a1Range = normalizeSheetRange(range);
     const rows = normalizeSheetValues(values);
-    const params = new URLSearchParams({ valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS' });
+    const params = new URLSearchParams({ valueInputOption: 'USER_ENTERED' });
     const endpoint = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(id)}/values/${encodeURIComponent(a1Range)}:append?${params}`;
     const result = await this.apiFetch('sheets', endpoint, {
-      method: 'POST', body: JSON.stringify({ majorDimension: 'ROWS', values: rows })
+      method: 'POST', body: JSON.stringify({ range: a1Range, majorDimension: 'ROWS', values: rows }), expectedStatus: 200
     });
-    if (!result?.spreadsheetId || !result?.updates) throw new Error('Google Sheets did not confirm that the rows were appended.');
+    if (!result?.spreadsheetId || !result?.updates || Number(result.updates.updatedRows) < rows.length) {
+      throw new Error(`Google Sheets did not confirm that all ${rows.length} requested row(s) were appended.`);
+    }
     return result;
   },
 
@@ -1149,7 +1220,7 @@ export const connectorManager = {
     const safeTitle = String(title || '').trim();
     if (!safeTitle) throw new Error('A spreadsheet title is required.');
     const spreadsheet = await this.apiFetch('sheets', 'https://sheets.googleapis.com/v4/spreadsheets', {
-      method: 'POST', body: JSON.stringify({ properties: { title: safeTitle } })
+      method: 'POST', body: JSON.stringify({ properties: { title: safeTitle } }), expectedStatus: 200
     });
     if (!spreadsheet?.spreadsheetId) throw new Error('Google Sheets did not return the new spreadsheet ID.');
     if (!String(folder_id || '').trim()) return spreadsheet;

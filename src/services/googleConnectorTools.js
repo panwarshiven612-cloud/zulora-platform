@@ -1,5 +1,6 @@
 import connectorManager from './connectorManager';
 import { scanComputerSystem } from './browserAgentEngine';
+import { gmailQueryFromPrompt, parseCalendarTimeRange } from './backgroundConnectorEngine';
 
 const text = description => ({ type: 'STRING', description });
 const integer = description => ({ type: 'INTEGER', description });
@@ -87,29 +88,36 @@ const GOOGLE_FUNCTIONS = Object.freeze({
     spreadsheet_title: text('Title for the new Google spreadsheet'),
     gmail_query: text('Optional Gmail search query; defaults to in:sent')
   }, ['folder_name', 'spreadsheet_title']),
+  workspace_export_gmail_to_sheet: fn('workspace', 'Fetch the requested Gmail messages, create a new spreadsheet, append the header and all fetched rows synchronously, and return a link only after Sheets confirms the append.', {
+    title: text('Optional title for the new spreadsheet'), query: text('Gmail search query, defaults to in:inbox'), date_range: text('Optional relative date range such as today, yesterday, or last 4 days'), max_results: integer('Number of messages to fetch, from 1 to 500'), all_results: { type: 'BOOLEAN', description: 'Set true when the user asks for all matching messages, such as all today emails.' }
+  }),
+  workspace_export_calendar_to_sheet: fn('workspace', 'Fetch Calendar events in the requested window, create a new spreadsheet, append the header and event rows synchronously, and return a link only after Sheets confirms the append.', {
+    title: text('Optional title for the new spreadsheet'), date_range: text('Optional natural-language window such as last 4 days, next 7 days, or tomorrow'), time_min: text('Optional ISO 8601 start time'), time_max: text('Optional ISO 8601 end time'), max_results: integer('Maximum Calendar events to export, from 1 to 2500')
+  }),
   gmail_send_email: fn('gmail', 'Send an email only when the user explicitly asks to send it. The Gmail connector selects a responsive Pearl & Azure template for the message intent and confirms success with a message ID and thread ID. Never claim delivery unless this function succeeds.', { recipient: text('Recipient email address'), subject: text('Email subject'), htmlContent: text('Email body as HTML or plain text; do not return source code unless the user asks for code') }, ['recipient', 'subject', 'htmlContent']),
-  gmail_read_inbox: fn('gmail', 'Fetch recent, real messages from the connected Gmail inbox.', { maxResults: integer('Number of recent inbox messages, from 1 to 20') }),
-  gmail_analyze_emails: fn('gmail', 'Read recent Gmail messages matching the query and return their contents and sender metadata for accurate analysis and summarization.', { query: text('Gmail search query, defaults to in:inbox'), maxResults: integer('Number of messages to analyze, from 1 to 20') }, ['query']),
+  gmail_read_inbox: fn('gmail', 'Fetch the requested number of real messages from the connected Gmail inbox. Pass the exact count requested in maxResults, set allResults for all matching mail, and use dateRange for today/yesterday/last N days.', { query: text('Optional Gmail search query, defaults to in:inbox'), dateRange: text('Optional date window such as today, yesterday, or last 4 days'), maxResults: integer('Number of inbox messages, from 1 to 500'), allResults: { type: 'BOOLEAN', description: 'Set true when the user asks for all matching messages.' } }),
+  gmail_analyze_emails: fn('gmail', 'Read Gmail messages matching the query and return their contents and sender metadata. Preserve the requested count in maxResults and use dateRange for relative date windows.', { query: text('Gmail search query, defaults to in:inbox'), dateRange: text('Optional date window such as today, yesterday, or last 4 days'), maxResults: integer('Number of messages to analyze, from 1 to 500'), allResults: { type: 'BOOLEAN', description: 'Set true when the user asks for all matching messages.' } }),
   gmail_search_messages: fn('gmail', 'Search Gmail and return matching messages with their sender, subject, date, and content.', { query: text('Gmail search expression, such as from:person@example.com or newer_than:7d') }, ['query']),
-  calendar_create_event: fn('calendar', 'Create a Google Calendar event with the calendar default reminder enabled and return its event ID. Use ISO 8601 times with timezone.', { summary: text('Event title'), startTime: text('ISO 8601 start time with timezone'), endTime: text('ISO 8601 end time with timezone'), description: text('Optional event description') }, ['summary', 'startTime', 'endTime']),
-  calendar_list_events: fn('calendar', 'Retrieve Google Calendar events, including past or future meetings, in the requested time window.', { timeMin: text('ISO 8601 start time with timezone'), timeMax: text('ISO 8601 end time with timezone') }, ['timeMin', 'timeMax']),
+  calendar_create_event: fn('calendar', 'Create a Google Calendar event with the calendar default reminder enabled and confirm it with the event link. Use ISO 8601 times with timezone.', { summary: text('Event title'), startTime: text('ISO 8601 start time with timezone'), endTime: text('ISO 8601 end time with timezone'), description: text('Optional event description') }, ['summary', 'startTime', 'endTime']),
+  calendar_list_events: fn('calendar', 'Retrieve Google Calendar events in the requested time window. For relative date phrases, pass dateRange as the original phrase; an explicit count should be passed as maxResults.', { dateRange: text('Natural-language date window, such as last 4 days, next 7 days, or tomorrow'), timeMin: text('Optional ISO 8601 start time with timezone'), timeMax: text('Optional ISO 8601 end time with timezone'), maxResults: integer('Maximum events to return, from 1 to 2500') }),
   sheets_create_spreadsheet: fn('sheets', 'Create a Google spreadsheet. If folder_id is supplied, place it in that Google Drive folder.', { title: text('New spreadsheet title'), folder_id: text('Optional Google Drive folder ID') }, ['title']),
+  sheets_create_and_populate: fn('sheets', 'Strictly create a spreadsheet, then append the supplied header/data rows to Sheet1!A1 and only return a spreadsheet link after Google Sheets confirms the append.', { title: text('New spreadsheet title'), rows: rowValues }, ['title', 'rows']),
   sheets_append_data: fn('sheets', 'Append one or more rows to a Google spreadsheet using an A1 notation range.', { spreadsheet_id: text('Spreadsheet ID from its URL'), range: text('A1 notation range, for example Sheet1!A:Z'), values: rowValues }, ['spreadsheet_id', 'range', 'values']),
   drive_create_folder: fn('drive', 'Create a new folder in the connected Google Drive account.', { folder_name: text('New folder name') }, ['folder_name']),
   computer_scan_system: fn('computer', 'Ask the installed Zulora Computer Plugin over its live extension IPC bridge for a browser and active-tab scan. Report only the returned scan fields; never simulate a scan.', { scope: { type: 'STRING', enum: ['active_browser'], description: 'Scan the connected browser agent and the active tab.' } }, ['scope']),
   send_email: fn('gmail', 'Send an email from the active Gmail account. Only call when the user explicitly asks to send it. Construct rich HTML in the body silently.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Email body (HTML or text)') }, ['to', 'subject', 'body']),
   send_rich_email: fn('gmail', 'Construct and send rich HTML emails in the background using UTF-8 encoding. Do not output raw HTML in final chat response unless asked.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Rich HTML email body') }, ['to', 'subject', 'body']),
   reply_and_draft: fn('gmail', 'Automatically compose drafts and reply to email threads based on user directive.', { to: text('Recipient email address'), subject: text('Email subject'), body: text('Email body (HTML or text)'), thread_id: text('Optional thread ID to reply to'), is_draft: { type: 'BOOLEAN', description: 'True to save as draft instead of sending' } }, ['to', 'subject', 'body']),
-  analyze_inbox: fn('gmail', 'Read, filter, inspect, and summarize inbox messages (e.g., analyze all my emails, count today emails, highlight urgent senders).', { query: text('Gmail search query e.g. "in:inbox" or "newer_than:1d"'), max_results: integer('Number of messages, from 1 to 50') }),
-  read_inbox: fn('gmail', 'Read recent Gmail messages matching a Gmail search query.', { query: text('Gmail search query'), max_results: integer('Number of messages, from 1 to 20') }, ['query']),
-  summarize_emails: fn('gmail', 'Fetch Gmail messages for the requested period or query so you can summarize their contents.', { query: text('Gmail search query, for example newer_than:7d'), max_results: integer('Number of messages, from 1 to 20') }, ['query']),
+  analyze_inbox: fn('gmail', 'Read, filter, inspect, and summarize inbox messages (e.g., analyze all my emails, count today emails, highlight urgent senders). Preserve an explicit count up to 500 and use Gmail date searches for requested periods.', { query: text('Gmail search query e.g. "in:inbox" or "newer_than:1d"'), max_results: integer('Number of messages, from 1 to 500') }),
+  read_inbox: fn('gmail', 'Read the requested number of Gmail messages matching a Gmail search query.', { query: text('Gmail search query'), max_results: integer('Number of messages, from 1 to 500') }, ['query']),
+  summarize_emails: fn('gmail', 'Fetch Gmail messages for the requested period or query so you can summarize their contents. Preserve an explicit count up to 500.', { query: text('Gmail search query, for example newer_than:7d'), max_results: integer('Number of messages, from 1 to 500') }, ['query']),
   search_threads: fn('gmail', 'Search and return full matching Gmail conversation threads.', { query: text('Gmail search query'), max_results: integer('Number of threads, from 1 to 20') }, ['query']),
   create_event: fn('calendar', 'Create an event in Google Calendar. Use ISO 8601 times including timezone.', { title: text('Event title'), start_time: text('ISO 8601 start time with timezone'), end_time: text('ISO 8601 end time with timezone'), description: text('Optional description') }, ['title', 'start_time', 'end_time']),
-  schedule_events: fn('calendar', 'Book single meetings or batch-schedule weekly routines/tasks via Calendar API.', {
+  schedule_events: fn('calendar', 'Synchronously create one or more Google Calendar events in order. Each event is created with the calendar default reminder; return confirmation links for the created events.', {
     title: text('Title if single event'), start_time: text('Start time if single event'), end_time: text('End time if single event'), description: text('Optional description'),
     events: { type: 'ARRAY', description: 'Batch events list', items: { type: 'OBJECT', properties: { title: text('Event title'), start_time: text('Start time'), end_time: text('End time'), description: text('Description') } } }
   }),
-  analyze_calendar: fn('calendar', 'Fetch and inspect upcoming schedule (e.g., analyze all my meetings, show my weekly schedule, find free slots).', { time_min: text('ISO 8601 start time'), time_max: text('ISO 8601 end time') }),
+  analyze_calendar: fn('calendar', 'Fetch and inspect the schedule in the requested time window. Use date_range for relative date phrases and preserve any requested event count.', { date_range: text('Natural-language date window'), time_min: text('Optional ISO 8601 start time'), time_max: text('Optional ISO 8601 end time'), max_results: integer('Maximum events to analyze, from 1 to 2500') }),
   list_events: fn('calendar', 'List events in Google Calendar for the requested time range.', { time_min: text('ISO 8601 start time'), time_max: text('ISO 8601 end time') }, ['time_min', 'time_max']),
   delete_event: fn('calendar', 'Delete a specific Google Calendar event only when the user explicitly requests deletion.', { event_id: text('Calendar event ID') }, ['event_id']),
   append_row: fn('sheets', 'Append one or more rows to a Google Sheet.', { spreadsheet_id: text('Spreadsheet ID from its URL'), range: text('A1 notation range'), values: rowValues }, ['spreadsheet_id', 'range', 'values']),
@@ -141,11 +149,13 @@ export function getGoogleConnectorFunctionDeclarations(activeProviders = connect
     && ['drive', 'sheets', 'gmail'].every(provider => providers.has(provider));
   const names = [
     ...(providers.has('gmail') ? ['gmail_read_inbox', 'gmail_analyze_emails', 'gmail_send_email', 'gmail_search_messages', 'reply_and_draft'] : []),
-    ...(providers.has('calendar') ? ['calendar_list_events', 'calendar_create_event', 'delete_event'] : []),
-    ...(providers.has('sheets') ? ['sheets_create_spreadsheet', 'sheets_append_data', 'read_range'] : []),
+    ...(providers.has('calendar') ? ['calendar_list_events', 'calendar_create_event', 'schedule_events', 'delete_event'] : []),
+    ...(providers.has('sheets') ? ['sheets_create_spreadsheet', 'sheets_create_and_populate', 'sheets_append_data', 'read_range'] : []),
     ...(providers.has('drive') ? ['drive_create_folder', 'list_drive', 'manage_files', 'download_file'] : []),
     ...(providers.has('forms') ? ['get_form', 'read_form_responses', 'create_form'] : []),
     ...(providers.has('computer') ? ['computer_scan_system'] : []),
+    ...(providers.has('gmail') && providers.has('sheets') ? ['workspace_export_gmail_to_sheet'] : []),
+    ...(providers.has('calendar') && providers.has('sheets') ? ['workspace_export_calendar_to_sheet'] : []),
     ...(workspaceWorkflow ? ['workspace_create_folder_sheet_email_metrics'] : [])
   ];
   if (!names.length) return [];
@@ -167,13 +177,13 @@ export function classifyGoogleConnectorIntents(prompt = '') {
   const text = String(prompt || '').toLowerCase();
   const intents = [];
   if (/\b(?:gmail|inbox|e-?mails?|mail messages?)\b/.test(text)
-    && /\b(?:send|read|review|summari[sz]e|draft|compose|search|check|show|list|find|retrieve|fetch|latest|recent|analy[sz]e|stats?|metrics?|count|how\s+many)\b/.test(text)) intents.push('gmail');
+    && /\b(?:send|read|review|summari[sz]e|draft|compose|search|check|show|list|find|retrieve|fetch|latest|recent|today|all|analy[sz]e|stats?|metrics?|count|how\s+many)\b/.test(text)) intents.push('gmail');
   if (/\b(?:spreadsheet|google\s*sheets?)\b/.test(text)
     && /\b(?:read|append|write|update|add|create|make|populate|fill|list|show|find|search|format)\b/.test(text)) intents.push('sheets');
   if (/\b(?:drive|folder|directory|drive\s+file)\b/.test(text)
     && /\b(?:list|show|search|find|download|open|manage|delete|trash|inspect|create|make|move)\b/.test(text)) intents.push('drive');
-  if (/\b(?:calendar|events?|meetings?|appointments?)\b/.test(text)
-    && /\b(?:schedule|book|create|list|show|check|find|delete|remove|cancel|upcoming|analy[sz]e)\b/.test(text)) intents.push('calendar');
+  if (/\b(?:calendar|events?|meetings?|appointments?|schedule|agenda)\b/.test(text)
+    && /\b(?:schedule|agenda|book|create|list|show|check|find|delete|remove|cancel|upcoming|tomorrow|today|last|past|next|analy[sz]e)\b/.test(text)) intents.push('calendar');
   if (/\b(?:google\s+)?forms?\b/.test(text)
     && /\b(?:read|create|make|build|show|list|responses?)\b/.test(text)) intents.push('forms');
   return [...new Set(intents)];
@@ -211,6 +221,25 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
           onProgress
         });
         break;
+      case 'workspace_export_gmail_to_sheet':
+        result = await connectorManager.exportGmailToSheet({
+          title: String(args.title || '').trim() || undefined,
+          query: gmailQueryFromPrompt(args.date_range || '', new Date(), String(args.query || 'in:inbox')),
+          max_results: Math.min(500, Math.max(1, Number(args.max_results) || 5)),
+          all_results: args.all_results === true
+        });
+        break;
+      case 'workspace_export_calendar_to_sheet':
+        {
+        const parsedRange = parseCalendarTimeRange(args.date_range || '');
+        result = await connectorManager.exportCalendarToSheet({
+          title: String(args.title || '').trim() || undefined,
+          time_min: args.time_min || parsedRange?.timeMin,
+          time_max: args.time_max || parsedRange?.timeMax,
+          max_results: Math.min(2500, Math.max(1, Number(args.max_results) || 50))
+        });
+        break;
+        }
       case 'gmail_send_email': case 'send_email': case 'send_gmail': case 'send_rich_email': {
         const recipient = String(args.recipient || args.to || '').trim();
         const emailBody = String(args.htmlContent ?? args.body ?? '').trim();
@@ -231,11 +260,11 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
           is_draft: Boolean(args.is_draft)
         }); break;
       case 'analyze_inbox':
-        result = await connectorManager.analyzeInbox({ query: String(args.query || 'in:inbox'), max_results: Math.min(50, Math.max(1, Number(args.max_results) || 10)) }); break;
+        result = await connectorManager.analyzeInbox({ query: gmailQueryFromPrompt(args.date_range || '', new Date(), String(args.query || 'in:inbox')), max_results: Math.min(500, Math.max(1, Number(args.max_results) || 10)), all_results: args.all_results === true }); break;
       case 'gmail_analyze_emails':
-        result = await connectorManager.analyzeInbox({ query: String(args.query || 'in:inbox'), max_results: Math.min(20, Math.max(1, Number(args.max_results) || 10)) }); break;
+        result = await connectorManager.analyzeInbox({ query: gmailQueryFromPrompt(args.date_range || '', new Date(), String(args.query || 'in:inbox')), max_results: Math.min(500, Math.max(1, Number(args.max_results) || 10)), all_results: args.all_results === true }); break;
       case 'gmail_read_inbox': case 'read_inbox': case 'summarize_emails': case 'read_emails':
-        result = await connectorManager.readEmails({ query: String(args.query || 'in:inbox'), max_results: Math.min(20, Math.max(1, Number(args.max_results) || 5)) }); break;
+        result = await connectorManager.readEmails({ query: gmailQueryFromPrompt(args.date_range || '', new Date(), String(args.query || 'in:inbox')), max_results: Math.min(500, Math.max(1, Number(args.max_results) || 5)), all_results: args.all_results === true }); break;
       case 'gmail_search_messages':
         result = await connectorManager.readEmails({ query: requiredText(args, 'query'), max_results: Math.min(20, Math.max(1, Number(args.max_results) || 10)) }); break;
       case 'search_threads':
@@ -253,9 +282,15 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
           description: args.description
         }); break;
       case 'analyze_calendar':
-        result = await connectorManager.analyzeCalendar({ time_min: args.time_min, time_max: args.time_max }); break;
+        {
+        const parsedRange = parseCalendarTimeRange(args.date_range || '');
+        result = await connectorManager.analyzeCalendar({ time_min: args.time_min || parsedRange?.timeMin, time_max: args.time_max || parsedRange?.timeMax, max_results: Math.min(2500, Math.max(1, Number(args.max_results) || 50)) }); break;
+        }
       case 'calendar_list_events': case 'list_events': case 'get_calendar_events':
-        result = await connectorManager.getCalendarEvents({ time_min: requiredText(args, 'time_min'), time_max: requiredText(args, 'time_max') }); break;
+        {
+        const parsedRange = parseCalendarTimeRange(args.date_range || '');
+        result = await connectorManager.getCalendarEvents({ time_min: args.time_min || parsedRange?.timeMin, time_max: args.time_max || parsedRange?.timeMax, max_results: Math.min(2500, Math.max(1, Number(args.max_results) || 50)) }); break;
+        }
       case 'delete_event':
         result = await connectorManager.deleteCalendarEvent({ event_id: requiredText(args, 'event_id') }); break;
       case 'sheets_append_data': case 'append_row': case 'append_sheet_row': {
@@ -267,6 +302,10 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
         result = await connectorManager.readSheetData({ spreadsheet_id: requiredText(args, 'spreadsheet_id'), range: requiredText(args, 'range') }); break;
       case 'sheets_create_spreadsheet': case 'create_sheet':
         result = await connectorManager.createSpreadsheet({ title: requiredText(args, 'title'), folder_id: String(args.folder_id || '').trim() }); break;
+      case 'sheets_create_and_populate':
+        result = await connectorManager.createAndPopulateSpreadsheet({ title: requiredText(args, 'title'), rows: Array.isArray(args.rows) ? args.rows : [] });
+        result = { ...result, confirmation: `Created and populated [${result.spreadsheet.title}](${result.spreadsheet.url}).` };
+        break;
       case 'drive_create_folder': case 'create_drive_folder':
         result = await connectorManager.createDriveFolder({ name: requiredText(args, 'name') }); break;
       case 'get_form':
