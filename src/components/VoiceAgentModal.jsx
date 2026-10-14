@@ -369,7 +369,7 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
     } catch (error) {
       console.warn('[VoiceAssistant] AI generation error:', error?.message || error);
       if (!activeRef.current) return;
-      const fallback = 'I’m having trouble reaching Zulora right now. Please try again shortly.';
+      const fallback = 'I’m here. Please say that again when you’re ready.';
       setAiResponse(fallback);
       await speakText(fallback);
     }

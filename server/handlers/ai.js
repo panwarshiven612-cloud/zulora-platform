@@ -387,7 +387,7 @@ async function incrementTokenUsage(uid, estimatedTokens = 1000, allowOverage = f
   throw new Error('Firestore token usage update could not be committed.');
 }
 
-export async function reserveVoiceUsage(uid, characterCount) {
+export async function reserveVoiceUsage(uid, characterCount, requestId = '', requestFingerprint = '') {
   const adminToken = await firestoreAccessToken();
   const charge = Math.max(1, Math.min(5_000, Math.ceil(Number(characterCount) || 0)));
   const voiceLimits = { free: 60_000, pro: 120_000, ultra: 300_000 };
@@ -403,16 +403,24 @@ export async function reserveVoiceUsage(uid, characterCount) {
     const state = tokenUsageState(profile, now);
     const events = (Array.isArray(state.usage.voiceEvents) ? state.usage.voiceEvents : [])
       .filter(event => Number(event.timestamp) > now - CHAT_WINDOW_MS && Number(event.timestamp) <= now)
-      .map(event => ({ timestamp: Number(event.timestamp), characters: Math.max(0, Number(event.characters) || 0) }));
+      .map(event => ({ timestamp: Number(event.timestamp), characters: Math.max(0, Number(event.characters) || 0), ...(event.requestId ? { requestId: String(event.requestId), requestFingerprint: String(event.requestFingerprint || '') } : {}) }));
     const used = events.reduce((total, event) => total + event.characters, 0);
     const limit = voiceLimits[state.tier];
+    const priorRequest = requestId ? events.find(event => event.requestId === requestId) : null;
+    if (priorRequest) {
+      await fetchWithTimeout(`${firestoreRoot()}:rollback`, {
+        method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction })
+      }, 8_000).catch(() => {});
+      if (priorRequest.requestFingerprint !== requestFingerprint) return { allowed: false, remainingCharacters: Math.max(0, limit - used) };
+      return { allowed: true, duplicate: true, remainingCharacters: Math.max(0, limit - used) };
+    }
     if (used + charge > limit) {
       await fetchWithTimeout(`${firestoreRoot()}:rollback`, {
         method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction })
       }, 8_000).catch(() => {});
       return { allowed: false, remainingCharacters: Math.max(0, limit - used), resetAt: events.length ? new Date(events[0].timestamp + CHAT_WINDOW_MS).toISOString() : new Date(now).toISOString() };
     }
-    const nextEvents = [...events, { timestamp: now, characters: charge }];
+    const nextEvents = [...events, { timestamp: now, characters: charge, ...(requestId ? { requestId, requestFingerprint } : {}) }];
     const usage = { ...state.usage, voiceEvents: nextEvents };
     const write = {
       update: { name: firestoreDoc(uid), fields: { usage: toFirestoreValue(usage) } },
@@ -742,7 +750,7 @@ async function tryGemini(messages, options = {}) {
   for (const { key, index } of keys) {
     const startedAt = Date.now();
     try {
-      const model = options.model || 'gemini-2.5-flash';
+      const model = options.model || GEMINI_FLASH_MODEL_ID;
       const endpoint = options.stream ? 'streamGenerateContent?alt=sse' : 'generateContent';
       const response = await fetchProviderWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${model}:${endpoint}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
@@ -812,11 +820,15 @@ export async function generateTextWithWaterfall(prompt, systemPrompt = '') {
     ...(systemPrompt ? [{ role: 'system', content: String(systemPrompt) }] : []),
     { role: 'user', content: String(prompt || '') }
   ];
-  const gemini = await tryGeminiWithModelFallback(messages, { maxTokens: 1024 });
+  let gemini = null;
+  try { gemini = await tryGeminiWithModelFallback(messages, { maxTokens: 1024 }); }
+  catch (error) { console.warn('Gemini waterfall failed; trying alternate providers:', error?.message || 'provider error'); }
   if (gemini?.text) return gemini.text;
   for (const provider of ['groq', 'cerebras', 'openrouter']) {
-    const result = await tryOpenAiProvider(provider, messages, { maxTokens: 1024 });
-    if (result?.text) return result.text;
+    try {
+      const result = await tryOpenAiProvider(provider, messages, { maxTokens: 1024 });
+      if (result?.text) return result.text;
+    } catch (error) { console.warn(`${provider} waterfall failed:`, error?.message || 'provider error'); }
   }
   throw new Error('AI response is temporarily unavailable.');
 }
@@ -879,11 +891,11 @@ async function generateChat(body, streamOptions = {}) {
   const coding = isCodeGenerationRequest({ messages: [{ role: 'user', content: latestUserPrompt }] });
   const complex = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(requestedPreference) ||
     /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(latestUserPrompt);
-  const preference = requestedPreference === 'auto' ? (coding ? 'pro' : complex ? 'pro' : 'flash') : requestedPreference;
+  const preference = requestedPreference === 'auto' ? 'flash' : requestedPreference;
   const useProModel = ['pro', 'think', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference);
   const geminiModel = String(preference).startsWith('gemini-')
     ? preference
-    : requestedPreference === 'gemini' ? (coding || complex ? GEMINI_PRO_MODEL_ID : GEMINI_FLASH_MODEL)
+    : requestedPreference === 'gemini' ? GEMINI_FLASH_MODEL
       : flagship || useProModel ? GEMINI_PRO_MODEL_ID : GEMINI_FLASH_MODEL;
   const groqModel = 'llama-3.3-70b-versatile';
   const order = vision ? ['gemini'] : chooseChatOrder(preference);
@@ -902,13 +914,11 @@ async function generateChat(body, streamOptions = {}) {
         });
       if (result) return { ...result, ...(body.enableWebSearch ? { sources: searchResults } : {}) };
     } catch (error) {
+      console.warn(`${provider} chat generation failed; trying the next fallback:`, error?.message || 'provider error');
       if (streamOptions.stream && streamOptions.streamState?.sent) {
-        console.warn(`${provider} stream failed after output began; restarting with the next fallback:`, error.message);
         streamOptions.onReset?.();
         streamOptions.streamState.sent = false;
-        continue;
       }
-      throw error;
     }
   }
   if (!availableProviders().length) throw new Error('No text-generation providers are configured. Add server-side provider credentials.');

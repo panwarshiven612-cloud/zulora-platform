@@ -102,12 +102,14 @@ export async function requestVoiceAudio(text, voiceId, currentUser) {
   let token;
   try { token = await currentUser.getIdToken(); }
   catch { return null; }
-  const voicePayload = { text, voiceId };
+  const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const voicePayload = { text, voiceId, requestId };
   const openWebSocket = tokenValue => new Promise(resolve => {
     const chunks = [];
     let finished = false;
     let timeout;
     let socket;
+    const partialAudio = () => chunks.length ? new Blob(chunks, { type: 'audio/mpeg' }) : null;
     const finish = result => {
       if (finished) return;
       finished = true;
@@ -125,7 +127,7 @@ export async function requestVoiceAudio(text, voiceId, currentUser) {
     try {
       socket = new WebSocket(`wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream-input?${query}`);
     } catch { finish(null); return; }
-    timeout = window.setTimeout(() => finish(null), 25_000);
+    timeout = window.setTimeout(() => finish(partialAudio()), 10_000);
     socket.onopen = () => {
       try {
         socket.send(JSON.stringify({
@@ -151,12 +153,13 @@ export async function requestVoiceAudio(text, voiceId, currentUser) {
       }
       if (data.is_final) finish(chunks.length ? new Blob(chunks, { type: 'audio/mpeg' }) : null);
     };
-    socket.onerror = () => finish(null);
-    socket.onclose = () => { if (!finished) finish(null); };
+    socket.onerror = () => finish(partialAudio());
+    socket.onclose = () => { if (!finished) finish(partialAudio()); };
   });
 
   let useRestFallback = false;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const reconnectDelays = [300, 600, 1_200];
+  for (let attempt = 0; attempt <= reconnectDelays.length; attempt += 1) {
     let tokenResponse;
     try {
       tokenResponse = await fetch('/api/voice-token', {
@@ -165,18 +168,21 @@ export async function requestVoiceAudio(text, voiceId, currentUser) {
         body: JSON.stringify(voicePayload)
       });
     } catch {
-      if (attempt === 0) { await new Promise(resolve => window.setTimeout(resolve, 180)); continue; }
+      if (attempt < reconnectDelays.length) {
+        await new Promise(resolve => window.setTimeout(resolve, reconnectDelays[attempt]));
+        continue;
+      }
       useRestFallback = true;
       break;
     }
     if (tokenResponse.status === 404) { useRestFallback = true; break; }
     if (!tokenResponse.ok) {
       const data = await tokenResponse.json().catch(() => ({}));
-      if ([408, 425, 429, 503].includes(tokenResponse.status) && attempt === 0) {
-        await new Promise(resolve => window.setTimeout(resolve, 180));
+      if ([408, 425, 429, 500, 502, 503, 504].includes(tokenResponse.status) && attempt < reconnectDelays.length) {
+        await new Promise(resolve => window.setTimeout(resolve, reconnectDelays[attempt]));
         continue;
       }
-      if ([408, 425, 503].includes(tokenResponse.status)) { useRestFallback = true; break; }
+      if ([408, 425, 429, 500, 502, 503, 504].includes(tokenResponse.status)) { useRestFallback = true; break; }
       throw new GenerationApiError(data.error || 'Voice synthesis failed.', tokenResponse.status, data);
     }
     const tokenPayload = await tokenResponse.json().catch(() => ({}));
@@ -184,7 +190,10 @@ export async function requestVoiceAudio(text, voiceId, currentUser) {
     const blob = await openWebSocket(tokenPayload.token);
     if (blob?.size) return blob;
     useRestFallback = true;
-    if (attempt === 0) await new Promise(resolve => window.setTimeout(resolve, 180));
+    if (attempt < reconnectDelays.length) {
+      await new Promise(resolve => window.setTimeout(resolve, reconnectDelays[attempt]));
+      useRestFallback = false;
+    }
   }
 
   // Recover a failed or disconnected WebSocket through ElevenLabs REST streaming.
@@ -204,7 +213,7 @@ export async function requestVoiceAudio(text, voiceId, currentUser) {
     }
     if (response.ok) return response.blob();
     if (response.status === 404) return null;
-    if ([408, 425, 429, 503].includes(response.status) && attempt === 0) {
+    if ([408, 425, 429, 500, 502, 503, 504].includes(response.status) && attempt === 0) {
       await new Promise(resolve => window.setTimeout(resolve, 180));
       continue;
     }

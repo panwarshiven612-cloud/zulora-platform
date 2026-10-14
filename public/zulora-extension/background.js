@@ -142,7 +142,7 @@ function resolveDirectUrlBg(phrase) {
 }
 
 // ─── 5. API Key Waterfall Brain — BUGFIX 4: Exponential Backoff Retry Engine ──
-async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemini-2.0-flash') {
+async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemini-3.8-flash') {
 
   // Helper: per-provider retry with exponential backoff; 429 → silent skip
   const tryProvider = async (name, callFn, retries = 2) => {
@@ -165,7 +165,30 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
     ? [{ role: 'system', content: systemInstruction }, { role: 'user', content: prompt }]
     : [{ role: 'user', content: prompt }];
 
-  // ── Priority 1: Groq Llama-3.3-70b (Fastest <400ms) ──
+  // Gemini models are attempted in a fixed order; each key is rotated before
+  // moving on from a rate-limited, quota-expired, or unavailable model request.
+  const geminiKeys = [...new Set((cachedApiKeys.geminiKeys || []).filter(key => key && key.length > 20))];
+  const modelsToTry = [...new Set([model, 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-pro', 'gemini-3.5-flash'])];
+  for (const modelId of modelsToTry) {
+    for (const apiKey of geminiKeys) {
+      try {
+        const body = {
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
+        };
+        if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        });
+        if (!response.ok) continue;
+        const data = await response.json();
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) return { success: true, text, provider: 'gemini', model: modelId };
+      } catch { /* Move to the next key or model without interrupting the task. */ }
+    }
+  }
+
+  // Gemini is exhausted: fail over to Groq, then Cerebras, then OpenRouter.
   if (cachedApiKeys.groqKey) {
     const result = await tryProvider('Groq', async () => {
       const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -182,7 +205,7 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
     if (result) return result;
   }
 
-  // ── Priority 2: Cerebras Llama-3.1-70b (<300ms ultra-fast) ──
+  // ── Fallback 2: Cerebras ──
   if (cachedApiKeys.cerebrasKey) {
     const result = await tryProvider('Cerebras', async () => {
       const res = await fetch('https://api.cerebras.ai/v1/chat/completions', {
@@ -199,32 +222,22 @@ async function executeAiWaterfall(prompt, systemInstruction = '', model = 'gemin
     if (result) return result;
   }
 
-  // ── Priority 3: Gemini REST key pool (2.0 Flash → 1.5 Flash) ──
-  const keys = (cachedApiKeys.geminiKeys || []).filter(k => k && k.length > 20);
-  const modelsToTry = [...new Set(['gemini-2.0-flash', model, 'gemini-1.5-flash'])];
-
-  for (const apiKey of keys) {
-    let keyRateLimited = false;
-    for (const modelId of modelsToTry) {
-      if (keyRateLimited) break;
-      const result = await tryProvider(`Gemini/${modelId}`, async () => {
-        const body = {
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
-        };
-        if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`,
-          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
-        );
-        if (res.status === 429 || res.status === 403) { keyRateLimited = true; return { _rateLimit: true }; }
-        if (!res.ok) return null;
-        const data = await res.json();
-        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        return text ? { success: true, text, provider: 'gemini', model: modelId } : null;
-      }, 1);
-      if (result && result.success) return result;
-    }
+  // ── Fallback 3: OpenRouter key pool ──
+  const openrouterKeys = [...new Set([...(cachedApiKeys.openrouterKeys || []), cachedApiKeys.openrouterKey].filter(key => key && key.length > 20))];
+  for (const apiKey of openrouterKeys) {
+    const result = await tryProvider('OpenRouter', async () => {
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model: 'meta-llama/llama-3.3-70b-instruct', messages, max_tokens: 1024, temperature: 0.2 })
+      });
+      if (response.status === 429 || response.status === 403) return { _rateLimit: true };
+      if (!response.ok) return null;
+      const data = await response.json();
+      const text = data?.choices?.[0]?.message?.content;
+      return text ? { success: true, text, provider: 'openrouter' } : null;
+    }, 1);
+    if (result) return result;
   }
 
   // ── Priority 4: Graceful fallback — NEVER crash the agent UI ──

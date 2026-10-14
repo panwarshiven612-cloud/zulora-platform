@@ -4,17 +4,28 @@ import { readFirstServerKey, readServerKeys } from './keyResolver.js';
 const readKeys = (...names) => readServerKeys(...names);
 const readFirstKey = (...names) => readFirstServerKey(...names);
 
+const readListKey = name => {
+  const value = readFirstKey(name);
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed.map(item => String(item || '').trim()).filter(Boolean);
+  } catch { /* Comma or newline separated environment variable. */ }
+  return value.split(/[\r\n,]+/).map(item => item.trim()).filter(Boolean);
+};
+
 // Provider credentials are read from server-only environment variables.
 const geminiKeysFor = () => [...new Set([
   ...Array.from({ length: 7 }, (_, index) => readFirstKey(`GEMINI_API_KEY_${index + 1}`, `GEMINI_KEY_${index + 1}`)),
-  ...readKeys('GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY')
+  ...readKeys('GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY'),
+  ...readListKey('GEMINI_API_KEYS')
 ].filter(Boolean))];
 export const GEMINI_KEYS = Object.freeze(geminiKeysFor());
 
 const providerKeyNames = {
   gemini: [],
-  groq: ['GROQ_API_KEY', 'GROQ_KEY'],
-  cerebras: ['CEREBRAS_API_KEY', 'CEREBRAS_KEY'],
+  groq: ['GROQ_API_KEY', 'GROQ_KEY', 'GROQ_API_KEYS'],
+  cerebras: ['CEREBRAS_API_KEY', 'CEREBRAS_KEY', 'CEREBRAS_API_KEYS'],
   openrouter: ['OPENROUTER_API_KEY_1', 'OPENROUTER_KEY_1', 'OPENROUTER_API_KEY', 'OPENROUTER_KEY', 'OPENROUTER_API_KEY_2', 'OPENROUTER_KEY_2'],
   mistral: ['MISTRAL_API_KEY', 'MISTRAL_KEY']
 };
@@ -25,7 +36,10 @@ const numberedProviderKeys = provider => {
 };
 const providerKeysFor = provider => provider === 'gemini'
   ? geminiKeysFor()
-  : readKeys(...(providerKeyNames[provider] || []), ...numberedProviderKeys(provider));
+  : [...new Set([
+    ...readKeys(...(providerKeyNames[provider] || []).filter(name => !name.endsWith('_KEYS')), ...numberedProviderKeys(provider)),
+    ...(providerKeyNames[provider] || []).filter(name => name.endsWith('_KEYS')).flatMap(readListKey)
+  ])];
 
 const providers = Object.fromEntries(Object.keys(providerKeyNames).map(provider => [provider, providerKeysFor(provider)]));
 

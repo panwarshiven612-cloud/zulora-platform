@@ -110,7 +110,7 @@ async function fetchJson(url, options, timeoutMs = 18_000) {
 
 async function callGemini(messages, tools) {
   const modelPreference = String(messages.find(message => message.role === 'system')?.model || '');
-  const model = /^gemini-[A-Za-z0-9.-]+$/.test(modelPreference) ? modelPreference : 'gemini-2.5-flash';
+  const model = /^gemini-[A-Za-z0-9.-]+$/.test(modelPreference) ? modelPreference : 'gemini-3.8-flash';
   const system = messages.find(message => message.role === 'system')?.content || '';
   for (const { key, index } of apiKeyPool.candidates('gemini')) {
     try {

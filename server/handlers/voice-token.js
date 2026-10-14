@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { reserveVoiceUsage, verifyRequestUser } from './ai.js';
 import { readServerEnv } from './keyResolver.js';
 
@@ -20,6 +21,7 @@ export default async function handler(req, res) {
   }
   const text = String(body?.text || '').trim();
   const voiceId = String(body?.voiceId || 'pNInz6obpgDQGcFmaJgB');
+  const requestId = /^[A-Za-z0-9_-]{8,100}$/.test(String(body?.requestId || '')) ? String(body.requestId) : '';
   if (!text || text.length > 5_000) return reply(res, 400, 'Voice text must be between 1 and 5,000 characters.');
   if (!/^[A-Za-z0-9_-]{8,80}$/.test(voiceId)) return reply(res, 400, 'Choose one of the available Zulora voices.');
 
@@ -41,7 +43,8 @@ export default async function handler(req, res) {
     const token = String((await response.json()).token || '');
     if (!token) return reply(res, 503, 'Live voice could not connect.');
 
-    const allowance = await reserveVoiceUsage(uid, text.length);
+    const requestFingerprint = createHash('sha256').update(text).digest('hex');
+    const allowance = await reserveVoiceUsage(uid, text.length, requestId, requestFingerprint);
     if (!allowance.allowed) return res.status(429).json({ error: 'The voice character allowance is used for now.', usage: allowance });
     return res.status(200).json({ token });
   } catch (error) {
