@@ -5,6 +5,7 @@ import googleOAuthHandler from '../server/handlers/google-oauth.js';
 import limitsHandler from '../server/handlers/limits.js';
 import mediaDownloadHandler from '../server/handlers/media-download.js';
 import paymentUtrHandler from '../server/handlers/payments/utr.js';
+import telegramHandler from '../server/handlers/telegram.js';
 import videoHandler from '../server/handlers/video.js';
 import voiceHandler from '../server/handlers/voice.js';
 import voiceTokenHandler from '../server/handlers/voice-token.js';
@@ -30,6 +31,8 @@ const ROUTES = Object.freeze({
   'media/image': aiHandler,
   'media/video': videoHandler,
   'payments/utr': paymentUtrHandler,
+  telegram: telegramHandler,
+  'telegram-webhook': telegramHandler,
   video: videoHandler,
   voice: voiceHandler,
   'voice-token': voiceTokenHandler,
