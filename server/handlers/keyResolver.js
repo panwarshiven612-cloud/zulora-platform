@@ -1,6 +1,6 @@
 const namesFor = name => name.startsWith('VITE_') ? [name] : [name, `VITE_${name}`];
 
-export function readServerEnv(name, { allowViteAlias = true } = {}) {
+export function readServerEnv(name, { allowViteAlias = false } = {}) {
   const names = allowViteAlias ? namesFor(name) : [name];
   for (const candidate of names) {
     const value = String(process.env[candidate] || '').trim();

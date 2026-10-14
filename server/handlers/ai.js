@@ -1,8 +1,8 @@
 import { createHash, createPublicKey, createSign, verify as verifySignature } from 'node:crypto';
-import { GEMINI_KEYS, apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
+import { apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from '../../src/services/systemPrompt.js';
 import { AI_STUDIO_SYSTEM_PROMPT } from '../../src/services/aiStudioPrompt.js';
-import { GEMINI_FLASH_MODEL_ID, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from '../../src/services/aiModels.js';
+import { GEMINI_FLASH_MODEL_ID, GEMINI_MODEL_FALLBACKS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from '../../src/services/aiModels.js';
 import { buildImagePrompt } from '../../src/services/imageGen.js';
 import { refineVideoPrompt } from '../../src/services/videoPrompt.js';
 import { webSearch } from '../../src/services/webSearch.js';
@@ -735,9 +735,10 @@ async function tryGemini(messages, options = {}) {
       ? parts.map(part => ({ inlineData: { mimeType: part.mimeType, data: part.data } })) : [])]
   }));
   if (!contents.length) contents.push({ role: 'user', parts: [{ text: 'Hello' }] });
-  const keys = options.recheckCoolingKeys
-    ? GEMINI_KEYS.slice(0, 3).map((key, index) => ({ key, index }))
-    : apiKeyPool.candidates('gemini', { preferBest: Boolean(options.preferBestKey) });
+  const keys = apiKeyPool.candidates('gemini', {
+    preferBest: Boolean(options.preferBestKey),
+    includeCooling: Boolean(options.includeCoolingKeys)
+  });
   for (const { key, index } of keys) {
     const startedAt = Date.now();
     try {
@@ -793,14 +794,31 @@ async function tryGemini(messages, options = {}) {
 }
 
 async function tryGeminiWithModelFallback(messages, options = {}) {
-  const preferredModel = options.model || 'gemini-2.5-flash';
-  const result = await tryGemini(messages, {
-    ...options,
-    model: preferredModel
-  });
-  if (result) return result;
-  if (preferredModel === GEMINI_PRO_MODEL_ID || preferredModel === 'gemini-2.5-pro') return null;
-  return tryGemini(messages, { ...options, model: GEMINI_PRO_MODEL_ID, recheckCoolingKeys: true });
+  const preferredModel = options.model || GEMINI_FLASH_MODEL_ID;
+  const modelOrder = [preferredModel, ...GEMINI_MODEL_FALLBACKS.filter(model => model !== preferredModel)];
+  for (const [modelIndex, model] of modelOrder.entries()) {
+    const result = await tryGemini(messages, {
+      ...options,
+      model,
+      includeCoolingKeys: modelIndex > 0
+    });
+    if (result) return result;
+  }
+  return null;
+}
+
+export async function generateTextWithWaterfall(prompt, systemPrompt = '') {
+  const messages = [
+    ...(systemPrompt ? [{ role: 'system', content: String(systemPrompt) }] : []),
+    { role: 'user', content: String(prompt || '') }
+  ];
+  const gemini = await tryGeminiWithModelFallback(messages, { maxTokens: 1024 });
+  if (gemini?.text) return gemini.text;
+  for (const provider of ['groq', 'cerebras', 'openrouter']) {
+    const result = await tryOpenAiProvider(provider, messages, { maxTokens: 1024 });
+    if (result?.text) return result.text;
+  }
+  throw new Error('AI response is temporarily unavailable.');
 }
 
 function normalizeModelPreference(value) {
@@ -872,7 +890,7 @@ async function generateChat(body, streamOptions = {}) {
   for (const provider of order) {
     try {
       const result = provider === 'gemini'
-        ? await tryGemini(messages, { attachments: body.attachments, enableWebSearch: false, model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: body.guestDemo ? 2_048 : 16_384, ...streamOptions })
+        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: false, model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: body.guestDemo ? 2_048 : 16_384, ...streamOptions })
         : await tryOpenAiProvider(provider, messages, {
           attachments: body.attachments,
           vision,

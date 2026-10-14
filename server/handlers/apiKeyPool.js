@@ -1,6 +1,6 @@
 import { readFirstServerKey, readServerKeys } from './keyResolver.js';
 
-// Legacy VITE_* aliases are resolved only inside the server function.
+// Read API credentials from server-side environment variables only.
 const readKeys = (...names) => readServerKeys(...names);
 const readFirstKey = (...names) => readFirstServerKey(...names);
 
@@ -34,22 +34,22 @@ const failures = Object.fromEntries(Object.keys(providers).map(name => [name, ne
 const performance = Object.fromEntries(Object.keys(providers).map(name => [name, new Map()]));
 
 export const providerKeys = Object.freeze({
-  pollinations: readFirstKey('POLLINATIONS_API_KEY', 'POLLINATIONS_KEY', 'VITE_POLLINATIONS_API_KEY', 'VITE_POLLINATIONS_KEY'),
+  pollinations: readFirstKey('POLLINATIONS_API_KEY', 'POLLINATIONS_KEY'),
   huggingface: readFirstKey('HF_API_KEY', 'HUGGINGFACE_API_KEY'),
-  fal: readFirstKey('FAL_API_KEY', 'FAL_KEY', 'VITE_FAL_API_KEY', 'VITE_FAL_KEY'),
+  fal: readFirstKey('FAL_API_KEY', 'FAL_KEY'),
   cloudflareAccountId: readFirstKey('CLOUDFLARE_ACCOUNT_ID'),
   cloudflareToken: readFirstKey('CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_TOKEN'),
-  replicate: readFirstKey('REPLICATE_API_TOKEN', 'REPLICATE_API_KEY', 'VITE_REPLICATE_API_TOKEN', 'VITE_REPLICATE_KEY')
+  replicate: readFirstKey('REPLICATE_API_TOKEN', 'REPLICATE_API_KEY')
 });
 
 export const apiKeyPool = {
-  candidates(provider, { preferBest = false } = {}) {
+  candidates(provider, { preferBest = false, includeCooling = false } = {}) {
     // Read provider keys per request so runtime environment updates are respected.
     const keys = providerKeysFor(provider);
     const now = Date.now();
     const start = cursors[provider] || 0;
     const candidates = keys.map((key, index) => ({ key, index }))
-      .filter(({ key, index }) => key && (failures[provider].get(index)?.until || 0) <= now)
+      .filter(({ key, index }) => key && (includeCooling || (failures[provider].get(index)?.until || 0) <= now))
       .sort((a, b) => ((a.index - start + keys.length) % keys.length) - ((b.index - start + keys.length) % keys.length));
     if (preferBest) candidates.sort((a, b) => {
       const score = ({ index }) => {

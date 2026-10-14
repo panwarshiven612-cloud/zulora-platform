@@ -9,7 +9,10 @@
  * Webhook URL: https://zulora.in/api/telegram
  */
 
+import { randomBytes } from 'node:crypto';
 import { readServerEnv } from './keyResolver.js';
+import { firestoreAccessToken, generateTextWithWaterfall, verifyRequestUser } from './ai.js';
+import { openGoogleSession, sealGoogleSession } from './googleOAuthStore.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -18,9 +21,7 @@ const PROJECT_ID = () =>
   readServerEnv('VITE_FIREBASE_PROJECT_ID') ||
   'zulora-al';
 
-const BOT_TOKEN = () =>
-  readServerEnv('TELEGRAM_BOT_TOKEN') ||
-  '8777678845:AAFMNVnvHUHdcF1ULvZtpwdhZ8PBKrcHW7k';
+const BOT_TOKEN = () => readServerEnv('TELEGRAM_BOT_TOKEN', { allowViteAlias: false });
 
 const TG_API = () => `https://api.telegram.org/bot${BOT_TOKEN()}`;
 
@@ -60,6 +61,9 @@ async function firestoreToken() {
   const manual = readServerEnv('FIREBASE_ADMIN_TOKEN') || readServerEnv('GOOGLE_ACCESS_TOKEN');
   if (manual) return manual;
 
+  const serviceToken = await firestoreAccessToken().catch(() => '');
+  if (serviceToken) return serviceToken;
+
   throw new Error('No Firestore access token available. Set FIREBASE_ADMIN_TOKEN env var.');
 }
 
@@ -92,7 +96,8 @@ async function firestoreQuery(collection, field, value) {
   const doc = results?.[0]?.document;
   if (!doc) return null;
   // Flatten Firestore typed fields to plain JS values
-  return flattenFields(doc.fields || {});
+  const documentId = String(doc.name || '').split('/').at(-1) || '';
+  return { ...flattenFields(doc.fields || {}), documentId, ...(collection === 'users' ? { uid: documentId } : {}) };
 }
 
 async function firestoreGetDoc(path) {
@@ -108,7 +113,8 @@ async function firestoreGetDoc(path) {
 async function firestoreSetDoc(path, data) {
   const token = await firestoreToken();
   const fields = toFirestoreFields(data);
-  const r = await fetchWithTimeout(`${firestoreRoot()}/${path}`, {
+  const updateMask = Object.keys(fields).map(field => `updateMask.fieldPaths=${encodeURIComponent(field)}`).join('&');
+  const r = await fetchWithTimeout(`${firestoreRoot()}/${path}?${updateMask}`, {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ fields })
@@ -120,6 +126,7 @@ function flattenFields(fields) {
   const out = {};
   for (const [key, val] of Object.entries(fields)) {
     if ('stringValue' in val) out[key] = val.stringValue;
+    else if ('timestampValue' in val) out[key] = Date.parse(val.timestampValue);
     else if ('integerValue' in val) out[key] = Number(val.integerValue);
     else if ('booleanValue' in val) out[key] = val.booleanValue;
     else if ('mapValue' in val) out[key] = flattenFields(val.mapValue.fields || {});
@@ -173,12 +180,13 @@ async function tgSendTyping(chatId) {
 // ─── Intent Classifier ────────────────────────────────────────────────────────
 
 const INTENTS = [
-  { name: 'verify',        re: /^\/start\s+([A-Z0-9]{6,12})/i },
+  { name: 'verify',        re: /^\/(?:start|verify)\s+([A-Z0-9]{6,12})\b/i },
   { name: 'start',         re: /^\/start\s*$/i },
   { name: 'help',          re: /^\/(help|commands)/i },
-  { name: 'gmail',         re: /\b(email|inbox|gmail|mail|unread|messages?)\b/i },
-  { name: 'image',         re: /\b(generate|create|make|draw|image|photo|picture|art)\b/i },
+  { name: 'gmail',         re: /\b(analy[sz]e|summari[sz]e|emails?|inbox|gmail|mail|unread|messages?)\b/i },
   { name: 'calendar',      re: /\b(schedule|meeting|event|calendar|appointment|book)\b/i },
+  { name: 'sheets',        re: /\b(?:google\s+)?(?:sheet|spreadsheet|sheets)\b/i },
+  { name: 'image',         re: /\b(generate|create|make|draw|image|photo|picture|art)\b/i },
   { name: 'ai',            re: /./ } // catch-all
 ];
 
@@ -193,25 +201,7 @@ function classifyIntent(text) {
 // ─── Tool Executors ───────────────────────────────────────────────────────────
 
 async function callGemini(prompt, systemPrompt = '') {
-  const geminiKey = readServerEnv('GEMINI_API_KEY') || readServerEnv('VITE_GEMINI_API_KEY');
-  if (!geminiKey) return 'Zulora AI: No Gemini key configured on the server.';
-
-  const model = readServerEnv('GEMINI_FLASH_MODEL') || 'gemini-2.0-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
-  const contents = [{ role: 'user', parts: [{ text: prompt }] }];
-  const body = {
-    contents,
-    ...(systemPrompt ? { systemInstruction: { parts: [{ text: systemPrompt }] } } : {}),
-    generationConfig: { maxOutputTokens: 1024 }
-  };
-  const r = await fetchWithTimeout(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  }, 20_000);
-  if (!r.ok) return `AI error: HTTP ${r.status}`;
-  const data = await r.json();
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from AI.';
+  return generateTextWithWaterfall(prompt, systemPrompt);
 }
 
 async function readGmailInbox(accessToken, maxResults = 5) {
@@ -261,27 +251,111 @@ async function createCalendarEvent(accessToken, title, startTime, endTime) {
   return data.htmlLink || 'Event created';
 }
 
+async function createGoogleSheet(accessToken, title) {
+  const response = await fetchWithTimeout('https://sheets.googleapis.com/v4/spreadsheets', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ properties: { title } })
+  });
+  if (!response.ok) return null;
+  const sheet = await response.json();
+  return sheet.spreadsheetUrl || (sheet.spreadsheetId
+    ? `https://docs.google.com/spreadsheets/d/${encodeURIComponent(sheet.spreadsheetId)}/edit`
+    : null);
+}
+
+async function loadTelegramGoogleAccessToken(uid) {
+  const paths = [
+    `users/${encodeURIComponent(uid)}/connectors/googleOAuth`,
+    `users/${encodeURIComponent(uid)}/private/googleOAuth`
+  ];
+  let session = null;
+  for (const path of paths) {
+    const stored = await firestoreGetDoc(path);
+    if (!stored) continue;
+    const encrypted = stored.encryptedSession || stored.encrypted;
+    if (encrypted) {
+      try { session = openGoogleSession(uid, encrypted); }
+      catch (error) { console.warn('[TelegramBot] Stored Google session could not be opened:', error.message); }
+    }
+    if (!session) session = stored;
+    break;
+  }
+  if (!session) return null;
+
+  const accessToken = session.accessToken || session.access_token || '';
+  const expiryValue = session.expiresAt || session.expiry_date || 0;
+  const numericExpiry = Number(expiryValue);
+  const expiresAt = Number.isFinite(numericExpiry) ? numericExpiry : Date.parse(expiryValue);
+  if (accessToken && (!expiresAt || expiresAt > Date.now() + 60_000)) return accessToken;
+
+  const refreshToken = session.refreshToken || session.refresh_token || '';
+  const clientId = readServerEnv('GOOGLE_CLIENT_ID', { allowViteAlias: false });
+  const clientSecret = readServerEnv('GOOGLE_CLIENT_SECRET', { allowViteAlias: false });
+  if (!refreshToken || !clientId || !clientSecret) return null;
+
+  const refreshResponse = await fetchWithTimeout('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token', refresh_token: refreshToken,
+      client_id: clientId, client_secret: clientSecret
+    })
+  });
+  if (!refreshResponse.ok) return null;
+  const refreshedToken = await refreshResponse.json();
+  const refreshedSession = {
+    ...session,
+    uid,
+    accessToken: refreshedToken.access_token,
+    refreshToken: refreshedToken.refresh_token || refreshToken,
+    expiresAt: Date.now() + Math.max(60, Number(refreshedToken.expires_in) || 3600) * 1000,
+    scopes: session.scopes || String(refreshedToken.scope || '').split(/\s+/).filter(Boolean)
+  };
+  try {
+    await firestoreSetDoc(`users/${encodeURIComponent(uid)}/connectors/googleOAuth`, {
+      encryptedSession: sealGoogleSession(uid, refreshedSession)
+    });
+  } catch (error) {
+    console.warn('[TelegramBot] Refreshed Google session could not be saved:', error.message);
+  }
+  return refreshedSession.accessToken || null;
+}
+
 // ─── Verification Code Store (in-memory, 10min TTL) ──────────────────────────
 
-const verifyCodes = new Map(); // code -> { uid, expires }
+const verifyCodes = new Map(); // Fast path for warm serverless instances; Firestore is authoritative.
 
-export function generateVerifyCode(uid) {
-  const code = Math.random().toString(36).slice(2, 8).toUpperCase();
-  verifyCodes.set(code, { uid, expires: Date.now() + 10 * 60_000 });
+export async function generateVerifyCode(uid) {
+  const code = randomBytes(6).toString('hex').toUpperCase();
+  const expiresAtMs = Date.now() + 10 * 60_000;
+  verifyCodes.set(code, { uid, expiresAtMs });
+  if (!await firestoreSetDoc(`telegram_codes/${code}`, { code, uid, expiresAtMs, used: false })) {
+    verifyCodes.delete(code);
+    throw new Error('Could not save the Telegram verification code.');
+  }
   return code;
 }
 
 async function linkTelegramAccount(code, chatId, userId, username) {
-  const entry = verifyCodes.get(code);
-  if (!entry || entry.expires < Date.now()) return false;
+  let entry = verifyCodes.get(code);
+  if (!entry || entry.expiresAtMs < Date.now()) {
+    entry = await firestoreGetDoc(`telegram_codes/${encodeURIComponent(code)}`);
+    if (!entry?.uid) entry = await firestoreQuery('telegram_codes', 'code', code);
+  }
+  const expiryValue = entry?.expiresAtMs || entry?.expiresAt || entry?.expires || 0;
+  const numericExpiry = Number(expiryValue);
+  const expiry = Number.isFinite(numericExpiry) ? numericExpiry : Date.parse(expiryValue);
+  if (!entry?.uid || entry.used || !expiry || expiry < Date.now()) return false;
   verifyCodes.delete(code);
-  // Write telegram fields to users/{uid} in Firestore
-  await firestoreSetDoc(`users/${entry.uid}`, {
+  const linked = await firestoreSetDoc(`users/${encodeURIComponent(entry.uid)}`, {
     telegram_chat_id: String(chatId),
     telegram_user_id: String(userId),
     telegram_username: username || '',
     telegram_linked_at: new Date().toISOString()
   });
+  if (!linked) throw new Error('Could not save the Telegram account link.');
+  await firestoreSetDoc(`telegram_codes/${encodeURIComponent(code)}`, { used: true, usedAtMs: Date.now() });
   return true;
 }
 
@@ -297,20 +371,23 @@ export default async function handler(req, res) {
 
   const action = body?.action;
 
-  // generate_code — create a 6-char verification code tied to the user's UID
-  if (req.method === 'POST' && action === 'generate_code') {
+  // generate_code — create a one-time verification code tied to the signed-in UID
+  if (req.method === 'POST' && ['generate_code', 'check_linked'].includes(action)) {
     const uid = body?.uid;
     if (!uid) return res.status(400).json({ error: 'uid required' });
-    const code = generateVerifyCode(uid);
-    return res.status(200).json({ ok: true, code });
-  }
-
-  // check_linked — check if the user's Firebase account is now paired with Telegram
-  if (req.method === 'POST' && action === 'check_linked') {
-    const uid = body?.uid;
-    if (!uid) return res.status(400).json({ linked: false });
+    const authenticatedUid = await verifyRequestUser(req).catch(() => null);
+    if (!authenticatedUid || authenticatedUid !== uid) return res.status(401).json({ error: 'Sign in to manage Telegram linking.' });
+    if (action === 'generate_code') {
+      try {
+        const code = await generateVerifyCode(uid);
+        return res.status(200).json({ ok: true, code });
+      } catch (error) {
+        console.warn('[TelegramBot] Verification code could not be stored:', error.message);
+        return res.status(503).json({ error: 'Could not create a Telegram verification code. Please try again.' });
+      }
+    }
     try {
-      const userData = await firestoreGetDoc(`users/${uid}`);
+      const userData = await firestoreGetDoc(`users/${encodeURIComponent(uid)}`);
       if (userData?.telegram_chat_id) {
         return res.status(200).json({
           linked: true,
@@ -350,7 +427,7 @@ export default async function handler(req, res) {
       const linked = await linkTelegramAccount(code, chatId, userId, username);
       if (linked) {
         await tgSendMessage(chatId,
-          `✅ *Zulora AI Connected!*\n\nHello ${username}! Your Telegram account is now linked to Zulora AI.\n\nYou can now:\n• Say _"Summarize my emails"_\n• Say _"Generate image of a sunset"_\n• Say _"Schedule a meeting tomorrow"_\n• Ask anything — I'm your AI assistant!`
+        `✅ *Zulora AI Connected!*\n\nHello ${username}! Your Telegram account is now linked to Zulora AI.\n\nYou can now:\n• Say _"Summarize my emails"_\n• Say _"Create a Google Sheet"_\n• Say _"Schedule a meeting tomorrow"_\n• Ask anything — I'm your AI assistant!`
         );
       } else {
         await tgSendMessage(chatId,
@@ -363,7 +440,7 @@ export default async function handler(req, res) {
     // ── /start with no code — welcome message ────────────────────────────────
     if (intent === 'start') {
       await tgSendMessage(chatId,
-        `👋 *Welcome to Zulora AI Bot!*\n\nI'm your personal AI assistant powered by Zulora AI.\n\n*To get started:*\n1. Visit [zulora.in/dashboard](https://zulora.in/dashboard)\n2. Go to *Connectors → Telegram*\n3. Click *Connect* to get your verification code\n4. Send it here as: \`/start YOUR_CODE\`\n\n*Commands:*\n• _"Summarize my emails"_\n• _"Generate image of [description]"_\n• _"Schedule meeting [details]"_\n• Any question — I'll answer it!`
+        `👋 *Welcome to Zulora AI Bot!*\n\nI'm your personal AI assistant powered by Zulora AI.\n\n*To get started:*\n1. Visit [zulora.in/dashboard](https://zulora.in/dashboard)\n2. Go to *Connectors → Telegram*\n3. Click *Connect* to get your verification code\n4. Send it here as: \`/start YOUR_CODE\`\n\n*Commands:*\n• _"Summarize my emails"_\n• _"Create a Google Sheet"_\n• _"Generate image of [description]"_\n• _"Schedule meeting [details]"_\n• Any question — I'll answer it!`
       );
       return;
     }
@@ -371,7 +448,7 @@ export default async function handler(req, res) {
     // ── /help ─────────────────────────────────────────────────────────────────
     if (intent === 'help') {
       await tgSendMessage(chatId,
-        `🤖 *Zulora AI Bot — Commands*\n\n📧 *Email:* "Summarize my inbox" / "Show unread emails"\n🗓 *Calendar:* "Schedule a meeting tomorrow at 3pm"\n🖼 *Image:* "Generate image of a mountain at sunset"\n💬 *AI Chat:* Just ask anything naturally!\n\n_Link your account at [zulora.in](https://zulora.in) → Connectors → Telegram_`
+        `🤖 *Zulora AI Bot — Commands*\n\n📧 *Email:* "Summarize my inbox" / "Show unread emails"\n📊 *Sheets:* "Create a Google Sheet for expenses"\n🗓 *Calendar:* "Schedule a meeting tomorrow at 3pm"\n🖼 *Image:* "Generate image of a mountain at sunset"\n💬 *AI Chat:* Just ask anything naturally!\n\n_Link your account at [zulora.in](https://zulora.in) → Connectors → Telegram_`
       );
       return;
     }
@@ -385,8 +462,7 @@ export default async function handler(req, res) {
         userProfile = await firestoreQuery('users', 'telegram_user_id', String(userId));
       }
       if (userProfile?.uid) {
-        const connectors = await firestoreGetDoc(`users/${userProfile.uid}/connectors/googleOAuth`);
-        googleAccessToken = connectors?.accessToken || null;
+        googleAccessToken = await loadTelegramGoogleAccessToken(userProfile.uid);
       }
     } catch (e) {
       console.warn('[TelegramBot] Profile lookup failed:', e.message);
@@ -417,7 +493,7 @@ export default async function handler(req, res) {
         `Summarize these email subjects briefly and clearly:\n${emails}`,
         'You are a concise email assistant. Summarize in 3-5 bullet points. Use plain language.'
       );
-      await tgSendMessage(chatId, `📧 *Your Recent Inbox:*\n\n${emails}\n\n📝 *Summary:*\n${summary}`);
+      await tgSendMessage(chatId, emails ? `📧 *Your Recent Inbox:*\n\n${emails}\n\n📝 *Summary:*\n${summary}` : 'Your inbox has no unread messages.');
       return;
     }
 
@@ -460,6 +536,22 @@ export default async function handler(req, res) {
       return;
     }
 
+    if (intent === 'sheets') {
+      if (!isLinked || !googleAccessToken) {
+        await tgSendMessage(chatId, `📊 Connect Google Sheets at [zulora.in/dashboard](https://zulora.in/dashboard) → Connectors first.`);
+        return;
+      }
+      const requestedTitle = text
+        .replace(/^\/(?:start|verify)\s+[A-Z0-9]{6,12}\s*/i, '')
+        .replace(/^(?:please\s+)?(?:create|make|build)\s+(?:me\s+)?(?:a\s+)?(?:new\s+)?(?:google\s+)?(?:sheet|spreadsheet)(?:\s+(?:named|called|for|about))?\s*/i, '')
+        .trim();
+      const title = (requestedTitle || 'Zulora Sheet').slice(0, 120);
+      const link = await createGoogleSheet(googleAccessToken, title);
+      if (link) await tgSendMessage(chatId, `✅ *Google Sheet created*\n\n${title}\n${link}`);
+      else await tgSendMessage(chatId, 'Could not create the Google Sheet. Please reconnect Google Sheets at zulora.in/dashboard and try again.');
+      return;
+    }
+
     // ── General AI fallback ───────────────────────────────────────────────────
     const systemPrompt = isLinked && userProfile?.displayName
       ? `You are Zulora AI, a helpful assistant. The user's name is ${userProfile.displayName}. Be concise and friendly. Use Markdown for formatting.`
@@ -470,7 +562,7 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error('[TelegramBot] Handler error:', err);
-    await tgSendMessage(chatId, `⚠️ Something went wrong. Please try again in a moment.\n\n_Error: ${err.message?.slice(0, 100)}_`).catch(() => {});
+    await tgSendMessage(chatId, '⚠️ Something went wrong. Please try again in a moment.').catch(() => {});
   }
 }
 

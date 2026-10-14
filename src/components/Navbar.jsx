@@ -44,13 +44,13 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
     tier === 'pro'   ? 'from-amber-500 to-orange-500'  : 'from-slate-400 to-slate-500';
 
   return (
-    <header className="sticky top-0 z-40 isolate glass-pearl dark:glass-dark border-b border-white/60 dark:border-slate-800/60 shadow-sm">
-      <div className="flex items-center h-14 px-3 md:px-5 gap-2">
+    <header className="sticky top-0 z-[80] isolate glass-pearl dark:glass-dark border-b border-white/60 dark:border-slate-800/60 shadow-sm">
+      <div className="flex h-14 items-center gap-1.5 px-2.5 sm:gap-2 sm:px-3 md:px-5">
 
         {/* Mobile Menu Button */}
         <button
           onClick={onOpenMobileSidebar}
-          className="md:hidden w-8 h-8 rounded-lg flex items-center justify-center text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors flex-shrink-0"
+          className="md:hidden flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800/60"
           aria-label="Open sidebar"
         >
           <Menu className="w-4.5 h-4.5" />

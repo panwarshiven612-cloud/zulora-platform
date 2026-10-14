@@ -588,12 +588,12 @@ export const Sidebar = ({
 
       {/* Mobile Drawer Overlay */}
       {isMobileOpen && (
-        <div className="fixed inset-0 z-[70] flex md:hidden">
+        <div className="fixed inset-x-0 bottom-0 top-14 z-[70] flex md:hidden">
           <div 
-            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" 
+            className="fixed inset-x-0 bottom-0 top-14 bg-slate-900/60 backdrop-blur-sm transition-opacity"
             onClick={onCloseMobile}
           />
-          <div className="relative z-10 h-dvh max-h-dvh w-[min(20rem,88vw)] max-w-[calc(100vw-1rem)] shadow-2xl animate-slide-right">
+          <div className="relative z-10 h-full max-h-full w-[min(20rem,88vw)] max-w-[calc(100vw-1rem)] shadow-2xl animate-slide-right">
             {sidebarContent}
           </div>
         </div>

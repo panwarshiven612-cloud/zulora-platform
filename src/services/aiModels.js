@@ -1,37 +1,26 @@
 export const GEMINI_MODELS = Object.freeze([
-  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', tier: 'stable', speed: 'fast' },
-  { id: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash', tier: 'stable', speed: 'balanced' },
-  { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash', tier: 'stable', speed: 'balanced' },
-  { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', tier: 'stable', speed: 'fast' },
-  { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite', tier: 'stable', speed: 'fastest' },
-  { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite', tier: 'stable', speed: 'fastest' },
-  { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro', tier: 'preview', speed: 'reasoning' },
-  { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash', tier: 'preview', speed: 'fast' },
   { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', tier: 'stable', speed: 'fast' },
-  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite', tier: 'stable', speed: 'fastest' },
-  { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', tier: 'stable', speed: 'reasoning' }
+  { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', tier: 'stable', speed: 'reasoning' },
+  { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', tier: 'stable', speed: 'fast' },
+  { id: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro', tier: 'stable', speed: 'reasoning' }
 ]);
 
-export const GEMINI_FLASH_MODEL_ID = 'gemini-3.5-flash';
-export const GEMINI_FAST_MODEL_ID = 'gemini-3.5-flash-lite';
-export const GEMINI_BEST_MODEL_ID = 'gemini-3.8-flash';
-export const GEMINI_PRO_MODEL_ID = 'gemini-3.1-pro-preview';
+export const GEMINI_FLASH_MODEL_ID = 'gemini-2.5-flash';
+export const GEMINI_FAST_MODEL_ID = 'gemini-2.0-flash';
+export const GEMINI_BEST_MODEL_ID = 'gemini-2.5-pro';
+export const GEMINI_PRO_MODEL_ID = 'gemini-2.5-pro';
 export const GEMINI_PRO_MODEL_FALLBACKS = Object.freeze([
-  GEMINI_PRO_MODEL_ID,
-  'gemini-2.5-pro'
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-1.5-pro'
 ]);
 
 export const GEMINI_MODEL_FALLBACKS = Object.freeze([
-  ...GEMINI_PRO_MODEL_FALLBACKS,
-  'gemini-3.8-flash',
-  'gemini-3.7-flash',
-  'gemini-3.6-flash',
-  'gemini-3.5-flash',
-  'gemini-3.5-flash-lite',
-  'gemini-3.1-flash-lite',
   'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
-  'gemini-3-flash-preview'
+  'gemini-2.5-pro',
+  'gemini-2.0-flash',
+  'gemini-1.5-pro'
 ]);
 
 const GEMINI_MODEL_IDS = new Set(GEMINI_MODELS.map(model => model.id));

@@ -299,16 +299,17 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
     };
     try {
       const context = conversation.slice(-6).map(turn => ({ role: turn.role, content: turn.text }));
-      const generateVoiceReply = () => apiRouter.generateChat(voicePrompt, context, {
+      const generateVoiceReply = ({ stream = true } = {}) => apiRouter.generateChat(voicePrompt, context, {
         model: 'auto', currentUser,
-        onToken: token => {
-          if (!activeRef.current || !token) return;
-          streamedReply += token;
-          speechBuffer += token;
-          setAiResponse(streamedReply);
-          queueCompletedSentences();
-        },
-        onReset: () => {
+        ...(stream ? {
+          onToken: token => {
+            if (!activeRef.current || !token) return;
+            streamedReply += token;
+            speechBuffer += token;
+            setAiResponse(streamedReply);
+            queueCompletedSentences();
+          },
+          onReset: () => {
           speechBuffer = '';
           streamedReply = '';
           queuedSegments = 0;
@@ -316,7 +317,8 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
           if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
           if (audioUrlRef.current) { URL.revokeObjectURL(audioUrlRef.current); audioUrlRef.current = ''; }
           voicePlayingRef.current = false;
-        }
+          }
+        } : {})
       });
       let result;
       try {
@@ -332,8 +334,22 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
         if (audioUrlRef.current) { URL.revokeObjectURL(audioUrlRef.current); audioUrlRef.current = ''; }
         setAiResponse('');
         setStatus('thinking');
-        await new Promise(resolve => window.setTimeout(resolve, 220));
-        result = await generateVoiceReply();
+        await new Promise(resolve => window.setTimeout(resolve, 180));
+        try {
+          result = await generateVoiceReply();
+        } catch (retryError) {
+          if (!activeRef.current || [401, 403].includes(retryError?.status)) throw retryError;
+          speechBuffer = '';
+          streamedReply = '';
+          queuedSegments = 0;
+          voiceQueueRef.current = [];
+          voicePlayingRef.current = false;
+          if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+          if (audioUrlRef.current) { URL.revokeObjectURL(audioUrlRef.current); audioUrlRef.current = ''; }
+          setAiResponse('');
+          setStatus('thinking');
+          result = await generateVoiceReply({ stream: false });
+        }
       }
       if (!activeRef.current) return;
       const reply = result?.text?.trim() || 'I am here. What would you like to talk about?';
@@ -353,7 +369,7 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
     } catch (error) {
       console.warn('[VoiceAssistant] AI generation error:', error?.message || error);
       if (!activeRef.current) return;
-      const fallback = 'I heard you, but the connection interrupted. Please try once more.';
+      const fallback = 'I’m having trouble reaching Zulora right now. Please try again shortly.';
       setAiResponse(fallback);
       await speakText(fallback);
     }
