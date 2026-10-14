@@ -11,8 +11,8 @@ const MODEL_OPTIONS = [
   },
   {
     ...MODEL_TIERS.flash,
-    label: 'Zulora Flash 3.5',
-    description: 'Everyday chat and search · Gemini 3.5 Flash with Pro and Groq backup routes.',
+    label: 'Zulora Flash 2.5',
+    description: 'Everyday chat and search · Gemini 2.5 Flash with Pro and provider backup routes.',
     icon: Zap,
   },
   {

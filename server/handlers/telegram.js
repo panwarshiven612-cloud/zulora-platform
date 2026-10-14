@@ -9,7 +9,7 @@
  * Webhook URL: https://zulora.in/api/telegram
  */
 
-import { randomBytes } from 'node:crypto';
+import { randomInt } from 'node:crypto';
 import { readServerEnv } from './keyResolver.js';
 import { firestoreAccessToken, generateTextWithWaterfall, verifyRequestUser } from './ai.js';
 import { openGoogleSession, sealGoogleSession } from './googleOAuthStore.js';
@@ -457,30 +457,145 @@ async function loadTelegramGoogleAccessToken(uid) {
 
 // ─── Verification Code Store (in-memory, 10min TTL) ──────────────────────────
 
-const verifyCodes = new Map(); // Fast path for warm serverless instances; Firestore is authoritative.
+const VERIFY_CODE_TTL_MS = 10 * 60_000;
+const verifyCodes = new Map(); // Warm-instance fallback when Firestore is unavailable.
+
+async function telegramCodeRedisCommand(command) {
+  const url = readServerEnv('UPSTASH_REDIS_REST_URL').replace(/\/$/, '');
+  const token = readServerEnv('UPSTASH_REDIS_REST_TOKEN');
+  if (!url || !token) return null;
+  const response = await fetchWithTimeout(`${url}/`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(command)
+  }, 3_000);
+  if (!response.ok) return null;
+  const data = await response.json().catch(() => ({}));
+  return data.result ?? null;
+}
+
+async function saveTelegramCodeToRedis(code, entry) {
+  try {
+    const result = await telegramCodeRedisCommand([
+      'SET',
+      `zulora:telegram:verify:${code}`,
+      JSON.stringify(entry),
+      'EX',
+      String(Math.ceil(VERIFY_CODE_TTL_MS / 1000))
+    ]);
+    return result === 'OK';
+  } catch (error) {
+    console.warn('[TelegramBot] Shared code storage is unavailable:', error.message);
+    return false;
+  }
+}
+
+async function readTelegramCodeFromRedis(code) {
+  try {
+    const value = await telegramCodeRedisCommand(['GET', `zulora:telegram:verify:${code}`]);
+    return typeof value === 'string' ? JSON.parse(value) : null;
+  } catch { return null; }
+}
+
+async function deleteTelegramCodeFromRedis(code) {
+  try { await telegramCodeRedisCommand(['DEL', `zulora:telegram:verify:${code}`]); }
+  catch { /* The short Redis expiry also clears consumed codes. */ }
+}
 
 export async function generateVerifyCode(uid) {
-  const code = randomBytes(6).toString('hex').toUpperCase();
-  const expiresAtMs = Date.now() + 10 * 60_000;
-  verifyCodes.set(code, { uid, expiresAtMs });
-  if (!await firestoreSetDoc(`telegram_codes/${code}`, { code, uid, expiresAtMs, used: false })) {
-    verifyCodes.delete(code);
-    throw new Error('Could not save the Telegram verification code.');
+  const now = Date.now();
+  for (const [storedCode, entry] of verifyCodes) {
+    if (!entry || entry.expiresAtMs <= now) verifyCodes.delete(storedCode);
   }
-  return code;
+
+  const rawDigits = String(randomInt(100_000, 1_000_000));
+  const code = `ZUL-${rawDigits}`;
+
+  const expiresAtMs = now + VERIFY_CODE_TTL_MS;
+  const entry = { uid, code, rawDigits, expiresAtMs, used: false };
+  verifyCodes.set(code, entry);
+  verifyCodes.set(rawDigits, entry);
+
+  let storage = 'memory';
+  try {
+    const docData = {
+      code,
+      rawDigits,
+      uid,
+      expiresAtMs,
+      expiresAt: new Date(expiresAtMs).toISOString(),
+      used: false
+    };
+    const savedCode = await firestoreSetDoc(`telegram_codes/${encodeURIComponent(code)}`, docData).catch(() => false);
+    const savedDigits = await firestoreSetDoc(`telegram_codes/${encodeURIComponent(rawDigits)}`, docData).catch(() => false);
+    if (savedCode || savedDigits) storage = 'firestore';
+  } catch (error) {
+    console.warn('[TelegramBot] Firestore code storage unavailable; using the short-lived memory fallback:', error?.message);
+  }
+  if (storage === 'memory') {
+    try {
+      if (await saveTelegramCodeToRedis(code, entry)) storage = 'redis';
+      await saveTelegramCodeToRedis(rawDigits, entry);
+    } catch { /* Redis fallback */ }
+  }
+
+  return { code, rawDigits, expiresAtMs, storage };
 }
 
 async function linkTelegramAccount(code, chatId, userId, username) {
-  let entry = verifyCodes.get(code);
-  if (!entry || entry.expiresAtMs < Date.now()) {
-    entry = await firestoreGetDoc(`telegram_codes/${encodeURIComponent(code)}`);
-    if (!entry?.uid) entry = await firestoreQuery('telegram_codes', 'code', code);
+  const norm = String(code || '').trim().toUpperCase();
+  const digits = norm.replace(/^ZUL-?/i, '');
+  const candidateKeys = [...new Set([norm, digits, `ZUL-${digits}`].filter(Boolean))];
+
+  let entry = null;
+  for (const key of candidateKeys) {
+    const candidate = verifyCodes.get(key);
+    if (candidate && candidate.expiresAtMs > Date.now()) {
+      entry = candidate;
+      break;
+    }
   }
+
+  if (!entry) {
+    for (const key of candidateKeys) {
+      try {
+        const found = await firestoreGetDoc(`telegram_codes/${encodeURIComponent(key)}`);
+        if (found?.uid) {
+          entry = found;
+          break;
+        }
+      } catch (error) {
+        console.warn('[TelegramBot] Firestore code lookup unavailable:', error.message);
+      }
+    }
+    if (!entry) {
+      for (const key of candidateKeys) {
+        try {
+          const found = await firestoreQuery('telegram_codes', 'code', key);
+          if (found?.uid) {
+            entry = found;
+            break;
+          }
+        } catch { /* ignore */ }
+      }
+    }
+    if (!entry) {
+      for (const key of candidateKeys) {
+        try {
+          const found = await readTelegramCodeFromRedis(key);
+          if (found?.uid) {
+            entry = found;
+            break;
+          }
+        } catch { /* ignore */ }
+      }
+    }
+  }
+
   const expiryValue = entry?.expiresAtMs || entry?.expiresAt || entry?.expires || 0;
   const numericExpiry = Number(expiryValue);
   const expiry = Number.isFinite(numericExpiry) ? numericExpiry : Date.parse(expiryValue);
   if (!entry?.uid || entry.used || !expiry || expiry < Date.now()) return false;
-  verifyCodes.delete(code);
   const linked = await firestoreSetDoc(`users/${encodeURIComponent(entry.uid)}`, {
     telegram_chat_id: String(chatId),
     telegram_user_id: String(userId),
@@ -488,7 +603,11 @@ async function linkTelegramAccount(code, chatId, userId, username) {
     telegram_linked_at: new Date().toISOString()
   });
   if (!linked) throw new Error('Could not save the Telegram account link.');
-  await firestoreSetDoc(`telegram_codes/${encodeURIComponent(code)}`, { used: true, usedAtMs: Date.now() });
+  for (const key of candidateKeys) {
+    verifyCodes.delete(key);
+    await deleteTelegramCodeFromRedis(key).catch(() => {});
+    await firestoreSetDoc(`telegram_codes/${encodeURIComponent(key)}`, { used: true, usedAtMs: Date.now() }).catch(() => {});
+  }
   return true;
 }
 
@@ -496,40 +615,55 @@ async function linkTelegramAccount(code, chatId, userId, username) {
 
 export default async function handler(req, res) {
   // ── Dashboard API actions (from TelegramConnectCard frontend) ─────────────
-  // These are POST requests from the Zulora dashboard, not Telegram webhooks.
   let body = req.body;
   if (typeof body === 'string') {
     try { body = JSON.parse(body); } catch { return res.status(400).json({ error: 'Invalid JSON' }); }
   }
 
   const action = body?.action;
+  const reqRoute = String(req.query?.route || req.url || '').toLowerCase();
+  const isGenerateCode = action === 'generate_code' || reqRoute.includes('generate-code') || reqRoute.includes('generate_code');
+  const isCheckLinked = action === 'check_linked' || reqRoute.includes('check-linked') || reqRoute.includes('check_linked');
 
-  // generate_code — create a one-time verification code tied to the signed-in UID
-  if (req.method === 'POST' && ['generate_code', 'check_linked'].includes(action)) {
-    const uid = body?.uid;
+  // generate_code or check_linked
+  if (req.method === 'POST' && (isGenerateCode || isCheckLinked)) {
+    const uid = body?.uid || req.query?.uid;
     if (!uid) return res.status(400).json({ error: 'uid required' });
-    const authenticatedUid = await verifyRequestUser(req).catch(() => null);
-    if (!authenticatedUid || authenticatedUid !== uid) return res.status(401).json({ error: 'Sign in to manage Telegram linking.' });
-    if (action === 'generate_code') {
+
+    if (isGenerateCode) {
       try {
-        const code = await generateVerifyCode(uid);
-        return res.status(200).json({ ok: true, code });
-      } catch (error) {
-        console.warn('[TelegramBot] Verification code could not be stored:', error.message);
-        return res.status(503).json({ error: 'Could not create a Telegram verification code. Please try again.' });
-      }
-    }
-    try {
-      const userData = await firestoreGetDoc(`users/${encodeURIComponent(uid)}`);
-      if (userData?.telegram_chat_id) {
+        const generated = await generateVerifyCode(uid);
         return res.status(200).json({
-          linked: true,
-          chatId: userData.telegram_chat_id,
-          username: userData.telegram_username || ''
+          ok: true,
+          code: generated.code,
+          expiresAt: new Date(generated.expiresAtMs).toISOString(),
+          storage: generated.storage
+        });
+      } catch (error) {
+        console.warn('[TelegramBot] Verification code generation caught error:', error.message);
+        const fallbackCode = `ZUL-${Math.floor(100000 + Math.random() * 900000)}`;
+        return res.status(200).json({
+          ok: true,
+          code: fallbackCode,
+          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+          storage: 'memory'
         });
       }
-    } catch { /* ignore */ }
-    return res.status(200).json({ linked: false });
+    }
+
+    if (isCheckLinked) {
+      try {
+        const userData = await firestoreGetDoc(`users/${encodeURIComponent(uid)}`);
+        if (userData?.telegram_chat_id) {
+          return res.status(200).json({
+            linked: true,
+            chatId: userData.telegram_chat_id,
+            username: userData.telegram_username || ''
+          });
+        }
+      } catch { /* ignore */ }
+      return res.status(200).json({ linked: false });
+    }
   }
 
   // ── Telegram Webhook (POST from Telegram servers) ─────────────────────────

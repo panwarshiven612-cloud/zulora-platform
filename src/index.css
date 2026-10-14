@@ -632,6 +632,37 @@
   animation: countUp 0.5s ease-out forwards;
 }
 
+/* Single-row mobile chat input bar styling */
+.chat-input-single-row {
+  display: flex;
+  align-items: flex-end;
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 480px) {
+  .chat-composer-container {
+    padding: 0;
+  }
+  
+  .chat-input-single-row {
+    gap: 0.375rem;
+    padding: 0.375rem 0.5rem;
+  }
+
+  .chat-live-voice-btn {
+    display: flex !important;
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
+}
+
+@media (max-width: 380px) {
+  .chat-input-single-row {
+    gap: 0.25rem;
+  }
+}
+
 /* ============================================================
    RESPONSIVE UTILITIES
    ============================================================ */

@@ -66,6 +66,7 @@ import { imageFileToDataUrl, readFileAsDataUrl } from '../services/imageUtils';
 import { checkExtensionConnected, executeCommand } from '../services/browserAgentEngine';
 import CodeArtifactRunner from './CodeArtifactRunner';
 import ModelSelector from './ModelSelector';
+import ChatInput from './chat/ChatInput';
 import ConnectorsModal from './ConnectorsModal';
 import GuestGateModal from './GuestGateModal';
 import { guestGate } from '../services/guestGate';
@@ -113,7 +114,7 @@ const isImageEditIntent = (prompt, hasImageAttachment) => hasImageAttachment && 
 const isVideoGenIntent = prompt => VIDEO_GEN_REGEX.test(String(prompt || ''));
 const safeChatError = error => {
   const message = String(error?.message || 'The response could not be completed. Please try again.');
-  return /(?:Gemini|Groq|Cerebras|OpenRouter|Mistral|ElevenLabs|provider|HTTP\s*\d{3}|\b(?:401|403|408|425|429|500|503)\b|API key|rate.?limit|timeout|timed out|network|fetch failed|overloaded)/i.test(message)
+  return /(?:Gemini|Groq|Cerebras|OpenRouter|Mistral|ElevenLabs|provider|HTTP\s*\d{3}|\b(?:401|403|408|425|429|500|503)\b|API key|rate.?limit|timeout|timed out|network|fetch failed|overloaded|generation failed)/i.test(message)
     ? 'The response could not be completed. Please try again.'
     : message;
 };
@@ -1321,7 +1322,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           if (isRequestCurrent()) onUpdateSession?.({ id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: modelPreference, modelPreference, pending: false });
           return;
         } catch (imgErr) {
-          pushThinkingStep('Image generation failed', 'error', imgErr.message);
+          pushThinkingStep('Image could not be generated', 'error', imgErr.message);
           // fall through to LLM
         }
       }
@@ -1373,7 +1374,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           if (isRequestCurrent()) onUpdateSession?.({ id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: modelPreference, modelPreference, pending: false });
           return;
         } catch (vidErr) {
-          pushThinkingStep('Video generation failed', 'error', vidErr.message);
+          pushThinkingStep('Video could not be generated', 'error', vidErr.message);
         }
       }
 
@@ -1577,7 +1578,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       const errorMsg = {
         id: assistantId,
         role: 'assistant',
-        content: `⚠️ **Generation failed**: ${userError}`,
+        content: `⚠️ **This response could not be completed**: ${userError}`,
         timestamp: Date.now(),
         model: 'Error',
         thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps.map(step => step.status === 'running' ? { ...step, status: 'done' } : step), { label: 'Request completed with warnings', status: 'done', detail: userError }] : undefined,
@@ -1663,201 +1664,35 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       )}
 
       {/* ─── Input Area ─── */}
-      <div className={`shrink-0 border-t border-slate-200/70 dark:border-slate-800/70 bg-white/80 dark:bg-[#070b14]/90 backdrop-blur-xl px-2.5 sm:px-4 md:px-6 pt-3 sm:py-4 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-4 ${showModelMenu ? 'relative z-[60]' : ''}`}>
+      <div className="shrink-0 border-t border-slate-200/70 bg-white/80 px-2.5 pt-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] backdrop-blur-xl dark:border-slate-800/70 dark:bg-[#070b14]/90 sm:px-4 sm:py-4 sm:pb-4 md:px-6">
 
         {/* Input Box */}
-        <div
-          onDrop={handleDrop}
-          onDragOver={event => { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; }}
-          className="glass-pearl dark:glass-dark rounded-2xl border border-slate-200/70 dark:border-slate-700/60 overflow-visible transition-all duration-200 focus-within:border-sky-400/50 dark:focus-within:border-sky-500/40 focus-within:shadow-[0_0_0_3px_rgba(14,165,233,0.1)]"
-        >
-
-          {attachments.length > 0 && (
-            <div className="flex flex-wrap gap-2 px-3 pt-3" aria-label="Attached files">
-              {driveUploadStatus && <div role="status" className="basis-full rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-2 text-[11px] text-sky-800 dark:border-sky-900/60 dark:bg-sky-950/40 dark:text-sky-300">{driveUploadStatus}</div>}
-              {attachments.map((file, i) => {
-                const previewUrl = attachmentPreviewUrls.get(file);
-                return (
-                  <div key={`${file.name}-${file.lastModified}-${i}`} className="group relative flex h-14 max-w-[16rem] items-center gap-2 overflow-hidden rounded-xl border border-sky-200/60 bg-sky-50/80 pr-16 text-xs text-sky-800 dark:border-sky-800/50 dark:bg-sky-950/30 dark:text-sky-300">
-                    {previewUrl ? (
-                      <img src={previewUrl} alt={`Preview of ${file.name}`} className="h-14 w-14 shrink-0 object-cover" />
-                    ) : attachmentMimeType(file).startsWith('video/') && attachmentPreviewUrls.get(file) ? (
-                      <video src={attachmentPreviewUrls.get(file)} muted playsInline preload="metadata" aria-label={`Preview of ${file.name}`} className="h-14 w-14 shrink-0 bg-black object-cover" />
-                    ) : (
-                      <span className="grid h-14 w-14 shrink-0 place-items-center bg-sky-100 dark:bg-sky-900/50"><Paperclip className="h-4 w-4" /></span>
-                    )}
-                    <span className="max-w-[7rem] truncate">{file.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleUploadAttachment(file, { promptConnect: true })}
-                      disabled={Boolean(driveUploadingFile)}
-                      aria-label={`Upload ${file.name} to Zulora Drive`}
-                      title="Upload to Zulora Drive"
-                      className="absolute right-8 top-1 grid h-6 w-6 place-items-center rounded-full bg-sky-700/90 text-white transition hover:bg-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-400 disabled:opacity-60"
-                    >
-                      {driveUploadingFile === file.name ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <CloudUpload className="h-3.5 w-3.5" />}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => removeAttachment(i)}
-                      aria-label={`Remove ${file.name}`}
-                      title="Remove attachment"
-                      className="absolute right-1 top-1 grid h-6 w-6 place-items-center rounded-full bg-slate-900/70 text-white transition hover:bg-red-500 focus:outline-none focus:ring-2 focus:ring-sky-400"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Text Area */}
-          <textarea
-            ref={textareaRef}
-            value={inputPrompt}
-            onChange={e => setInputPrompt(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            placeholder="Ask Zulora AI anything... (Shift+Enter for new line)"
-            rows={1}
-            className="w-full bg-transparent px-4 pt-3.5 pb-2 text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-600 resize-none outline-none leading-relaxed"
-            style={{ maxHeight: '180px' }}
-          />
-
-          {/* Toolbar */}
-          <div className="flex items-center justify-between px-2 sm:px-3 pb-3 gap-1.5 sm:gap-2 min-w-0">
-            {/* Left Tools */}
-            <div className="flex items-center gap-1 min-w-0">
-              {/* Model Selector */}
-              <ModelSelector
-                modelPreference={modelPreference}
-                onModelChange={handleModelPreferenceChange}
-                isOpen={showModelMenu}
-                onToggle={event => {
-                  event.stopPropagation();
-                  setShowModelMenu(value => !value);
-                }}
-                onClose={() => setShowModelMenu(false)}
-              />
-
-              {/* Web Search Toggle */}
-              <button
-                onClick={() => setEnableWebSearch(v => !v)}
-                aria-pressed={enableWebSearch}
-                title="Search & Research with source links"
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-all ${
-                  enableWebSearch
-                    ? 'bg-sky-50 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 border-sky-200/60 dark:border-sky-800/50'
-                    : 'text-slate-500 dark:text-slate-500 border-slate-200/60 dark:border-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-800/60'
-                }`}
-              >
-                <Globe className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Search &amp; Research</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setShowConnectorsModal(true)}
-                className="flex min-h-9 items-center gap-1.5 rounded-lg border border-sky-200/70 bg-sky-50/70 px-2.5 py-1.5 text-xs font-semibold text-sky-700 transition hover:border-sky-300 hover:bg-sky-100 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-300 dark:hover:bg-sky-950/60"
-                title="Connect Gmail, Sheets, Calendar, Forms, or Zulora Drive"
-                aria-label="Open Connectors"
-              >
-                <Link className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Connectors</span>
-              </button>
-
-              {/* Attach */}
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="p-1.5 rounded-lg text-slate-500 dark:text-slate-500 hover:text-sky-500 hover:bg-sky-50 dark:hover:bg-sky-950/30 border border-slate-200/60 dark:border-slate-700/50 transition-all"
-                title="Attach file"
-                aria-label="Attach file"
-              >
-                <Paperclip className="w-3.5 h-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => cameraInputRef.current?.click()}
-                className="p-1.5 rounded-lg text-slate-500 dark:text-slate-500 hover:text-sky-500 hover:bg-sky-50 dark:hover:bg-sky-950/30 border border-slate-200/60 dark:border-slate-700/50 transition-all"
-                title="Take or choose a photo"
-                aria-label="Take or choose a photo"
-              >
-                <Camera className="w-3.5 h-3.5" />
-              </button>
-              <input ref={fileInputRef} type="file" multiple className="hidden" style={{ display: 'none' }} onChange={handleFileSelect} accept="image/*,video/*,.pdf,.txt,.doc,.docx,.csv,.md,.json" />
-              <input ref={cameraInputRef} type="file" className="hidden" style={{ display: 'none' }} onChange={handleFileSelect} accept="image/*,video/*" />
-
-              {/* Mic */}
-              <button
-                onClick={toggleListening}
-                className={`p-1.5 rounded-lg border transition-all ${
-                  isListening
-                    ? 'bg-red-50 dark:bg-red-950/30 text-red-500 border-red-200/60 dark:border-red-800/50 animate-pulse'
-                    : 'text-slate-500 dark:text-slate-500 hover:text-sky-500 hover:bg-sky-50 dark:hover:bg-sky-950/30 border-slate-200/60 dark:border-slate-700/50'
-                }`}
-                title={isListening ? 'Stop listening' : 'Voice input'}
-              >
-                {isListening ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
-              </button>
-
-              {/* Gemini Live Voice Assistant Modal Trigger */}
-              {onOpenVoiceAssistant && (
-                <button
-                  type="button"
-                  onClick={onOpenVoiceAssistant}
-                  className="flex items-center gap-1 px-2 py-1 rounded-lg border border-sky-300/60 dark:border-sky-700/60 bg-sky-50 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 hover:bg-sky-100 hover:border-sky-400 transition-all shadow-sm"
-                  title="Open Gemini Live Voice Assistant"
-                >
-                  <Radio className="w-3.5 h-3.5 text-sky-500 animate-pulse" />
-                  <span className="hidden xs:inline sm:inline text-xs font-semibold">Live</span>
-                </button>
-              )}
-
-              {/* More Tools Toggle */}
-              <button
-                type="button"
-                onClick={() => setShowMoreTools(v => !v)}
-                aria-expanded={showMoreTools}
-                title="More Options"
-                aria-label="More options"
-                aria-controls="chat-more-options"
-                className={`flex shrink-0 items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition-all ${showMoreTools ? 'bg-violet-50 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 border-violet-200/60 dark:border-violet-800/50' : 'text-slate-500 dark:text-slate-500 border-slate-200/60 dark:border-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-800/60'}`}
-              >
-                <MoreHorizontal className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">More</span>
-                <ChevronDown className={`h-3 w-3 transition-transform duration-200 ${showMoreTools ? 'rotate-180' : ''}`} />
-              </button>
-            </div>
-
-            {/* Right: Send Button */}
-            <button
-              onClick={() => sendMessage()}
-              disabled={!inputPrompt.trim() && !attachments.length}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-semibold transition-all duration-200 ${
-                (inputPrompt.trim() || attachments.length > 0)
-                  ? 'azure-gradient-btn text-white shadow-md'
-                  : 'bg-slate-100 dark:bg-slate-800/60 text-slate-400 cursor-not-allowed'
-              }`}
-            >
-              <Send className="w-4 h-4" />
-              <span className="hidden sm:inline">Send</span>
-            </button>
-          </div>
-
-          {showMoreTools && (
-            <div id="chat-more-options" className="mx-2 mb-2 flex flex-wrap gap-1.5 border-t border-slate-200/60 pt-2 dark:border-slate-700/50" role="group" aria-label="More chat options">
-              <a href="https://drive.zulora.in" target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 rounded-lg border border-slate-200/70 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-600 transition-all hover:border-amber-200/70 hover:bg-amber-50 hover:text-amber-600 dark:border-slate-700/50 dark:bg-slate-800/50 dark:text-slate-400 dark:hover:border-amber-800/50 dark:hover:bg-amber-950/30 dark:hover:text-amber-400" title="Open Zulora Drive">
-                <span role="img" aria-label="drive">&#128193;</span>
-                <span>Zulora Drive</span>
-              </a>
-              <span className="flex items-center gap-1.5 rounded-lg border border-emerald-200/60 bg-emerald-50/60 px-2.5 py-1.5 text-xs font-medium text-emerald-700 select-none dark:border-emerald-800/50 dark:bg-emerald-950/20 dark:text-emerald-400" title="Parallel agent execution active">
-                <span role="img" aria-label="agents">&#129302;</span>
-                <span>Multi-Agent: ON</span>
-              </span>
-            </div>
-          )}
-        </div>
+        <ChatInput
+          inputPrompt={inputPrompt}
+          setInputPrompt={setInputPrompt}
+          onSendMessage={sendMessage}
+          attachments={attachments}
+          onRemoveAttachment={removeAttachment}
+          modelPreference={modelPreference}
+          onModelChange={handleModelPreferenceChange}
+          showModelMenu={showModelMenu}
+          onToggleModelMenu={event => {
+            event.stopPropagation();
+            setShowModelMenu(value => !value);
+          }}
+          onCloseModelMenu={() => setShowModelMenu(false)}
+          isListening={isListening}
+          onToggleListening={toggleListening}
+          onOpenVoiceAssistant={onOpenVoiceAssistant}
+          fileInputRef={fileInputRef}
+          cameraInputRef={cameraInputRef}
+          onFileSelect={handleFileSelect}
+          showMoreTools={showMoreTools}
+          onToggleMoreTools={() => setShowMoreTools(value => !value)}
+          enableWebSearch={enableWebSearch}
+          onToggleWebSearch={() => setEnableWebSearch(value => !value)}
+          onOpenConnectors={() => setShowConnectorsModal(true)}
+        />
 
         {!attachments.length && (driveUploadingFile || driveUploadStatus) && <p role="status" className="mt-2 text-center text-[11px] text-sky-700 dark:text-sky-300">
           {driveUploadingFile ? `Syncing ${driveUploadingFile} to Zulora Drive…` : driveUploadStatus}
