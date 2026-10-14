@@ -1300,3 +1300,70 @@ export const firestoreService = {
 };
 
 export default firestoreService;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MODULE 5: User Preferences Persistence
+// Stores user settings in Firestore users/{uid}/preferences/data
+// with localStorage cache so prefs load instantly on next visit.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const PREFS_LOCAL_KEY = uid => `zulora_prefs_${uid}`;
+
+/**
+ * Save user preferences to Firestore + localStorage cache.
+ * @param {string} uid
+ * @param {object} prefs  e.g. { model, voiceId, theme, customInstructions }
+ */
+export async function saveUserPreferences(uid, prefs = {}) {
+  if (!uid) return;
+  const payload = { ...prefs, updatedAt: new Date().toISOString() };
+  try { localStorage.setItem(PREFS_LOCAL_KEY(uid), JSON.stringify(payload)); } catch {}
+  try {
+    const { doc, setDoc } = await import('firebase/firestore');
+    const { db } = await import('./firebase');
+    const prefsRef = doc(db, 'users', uid, 'preferences', 'data');
+    await setDoc(prefsRef, payload, { merge: true });
+  } catch (err) {
+    console.warn('[firestoreService] saveUserPreferences error:', err.message);
+  }
+}
+
+/**
+ * Retrieve user preferences (localStorage first, then Firestore).
+ * @param {string} uid
+ * @returns {Promise<object>}
+ */
+export async function getUserPreferences(uid) {
+  if (!uid) return {};
+  try {
+    const raw = localStorage.getItem(PREFS_LOCAL_KEY(uid));
+    if (raw) {
+      const cached = JSON.parse(raw);
+      // Background refresh
+      (async () => {
+        try {
+          const { doc, getDoc } = await import('firebase/firestore');
+          const { db } = await import('./firebase');
+          const snap = await getDoc(doc(db, 'users', uid, 'preferences', 'data'));
+          if (snap.exists()) {
+            try { localStorage.setItem(PREFS_LOCAL_KEY(uid), JSON.stringify(snap.data())); } catch {}
+          }
+        } catch {}
+      })();
+      return cached;
+    }
+  } catch {}
+  try {
+    const { doc, getDoc } = await import('firebase/firestore');
+    const { db } = await import('./firebase');
+    const snap = await getDoc(doc(db, 'users', uid, 'preferences', 'data'));
+    if (snap.exists()) {
+      const data = snap.data();
+      try { localStorage.setItem(PREFS_LOCAL_KEY(uid), JSON.stringify(data)); } catch {}
+      return data;
+    }
+  } catch (err) {
+    console.warn('[firestoreService] getUserPreferences error:', err.message);
+  }
+  return {};
+}
