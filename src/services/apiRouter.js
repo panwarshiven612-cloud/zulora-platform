@@ -75,7 +75,79 @@ export const MODEL_TIERS = {
     label: 'Auto (Smart Route)',
     shortLabel: 'Auto',
     description: 'Automatically selects a fast model or coding model',
-    badge: 'âœ¦',
+    badge: '✦',
+    color: 'text-sky-500',
+    geminiModel: 'gemini-3.8-flash',
+    groqModel: GROQ_MODELS.primary,
+    maxTokens: 8192,
+    tier: 'free',
+  },
+  'gemini-3.8-flash': {
+    id: 'gemini-3.8-flash',
+    label: 'Gemini 3.8 Flash',
+    shortLabel: '3.8 Flash',
+    description: 'Next-gen multimodal speed with sub-second response times',
+    badge: '⚡',
+    color: 'text-amber-500',
+    geminiModel: 'gemini-3.8-flash',
+    groqModel: GROQ_MODELS.primary,
+    maxTokens: 8192,
+    tier: 'free',
+  },
+  'gemini-3.5-flash-lite': {
+    id: 'gemini-3.5-flash-lite',
+    label: 'Gemini 3.5 Flash-Lite',
+    shortLabel: '3.5 Lite',
+    description: 'Lightweight, highly optimized engine for everyday queries',
+    badge: '⚡',
+    color: 'text-emerald-500',
+    geminiModel: 'gemini-3.5-flash-lite',
+    groqModel: GROQ_MODELS.primary,
+    maxTokens: 8192,
+    tier: 'free',
+  },
+  'gemini-3.6-flash': {
+    id: 'gemini-3.6-flash',
+    label: 'Gemini 3.6 Flash',
+    shortLabel: '3.6 Flash',
+    description: 'High throughput with strong reasoning across text and images',
+    badge: '⚡',
+    color: 'text-sky-400',
+    geminiModel: 'gemini-3.6-flash',
+    groqModel: GROQ_MODELS.primary,
+    maxTokens: 8192,
+    tier: 'free',
+  },
+  'gemini-3.1-flash-lite': {
+    id: 'gemini-3.1-flash-lite',
+    label: 'Gemini 3.1 Flash-Lite',
+    shortLabel: '3.1 Lite',
+    description: 'Rapid real-time token streaming and responsive search',
+    badge: '⚡',
+    color: 'text-teal-500',
+    geminiModel: 'gemini-3.1-flash-lite',
+    groqModel: GROQ_MODELS.primary,
+    maxTokens: 8192,
+    tier: 'free',
+  },
+  'gemini-2.5-pro': {
+    id: 'gemini-2.5-pro',
+    label: 'Gemini 2.5 Pro',
+    shortLabel: '2.5 Pro',
+    description: 'Advanced reasoning, full-stack code synthesis & complex problem solving',
+    badge: '🧠',
+    color: 'text-purple-500',
+    geminiModel: GEMINI_PRO_MODEL_ID,
+    groqModel: GROQ_MODELS.primary,
+    maxTokens: 16384,
+    tier: 'pro',
+  },
+  'gemini-2.5-flash': {
+    id: 'gemini-2.5-flash',
+    label: 'Gemini 2.5 Flash',
+    shortLabel: '2.5 Flash',
+    description: 'Stable everyday Gemini model',
+    badge: '⚡',
     color: 'text-sky-500',
     geminiModel: GEMINI_FLASH_MODEL,
     groqModel: GROQ_MODELS.primary,
@@ -87,11 +159,11 @@ export const MODEL_TIERS = {
     label: 'Zulora Flash 2.5',
     shortLabel: 'Flash 2.5',
     description: 'Gemini 2.5 Flash with Gemini Pro and provider backup routes',
-    badge: 'âš¡',
+    badge: '⚡',
     color: 'text-sky-500',
     geminiModel: GEMINI_FLASH_MODEL,
     groqModel: GROQ_MODELS.primary,
-    maxTokens: 4096,
+    maxTokens: 8192,
     tier: 'free',
   },
   groq: {
@@ -99,10 +171,34 @@ export const MODEL_TIERS = {
     label: 'Zulora Turbo Speed',
     shortLabel: 'Turbo Speed',
     description: 'Fast Groq LPU responses with Gemini backup routes',
-    badge: 'âš¡',
+    badge: '⚡',
     color: 'text-orange-500',
-    geminiModel: GEMINI_FLASH_MODEL,
+    geminiModel: 'gemini-3.8-flash',
     groqModel: GROQ_MODELS.primary,
+    maxTokens: 8192,
+    tier: 'free',
+  },
+  cerebras: {
+    id: 'cerebras',
+    label: 'Cerebras Ultra Speed',
+    shortLabel: 'Cerebras',
+    description: 'Wafer-scale accelerated inference via Cerebras',
+    badge: '⚡',
+    color: 'text-rose-500',
+    geminiModel: 'gemini-3.8-flash',
+    groqModel: 'llama3.1-70b',
+    maxTokens: 8192,
+    tier: 'free',
+  },
+  openrouter: {
+    id: 'openrouter',
+    label: 'OpenRouter Multi-Provider',
+    shortLabel: 'OpenRouter',
+    description: 'Global redundant open-source model routing',
+    badge: '✦',
+    color: 'text-indigo-500',
+    geminiModel: 'gemini-3.8-flash',
+    groqModel: 'meta-llama/llama-3.3-70b-instruct',
     maxTokens: 8192,
     tier: 'free',
   },
@@ -111,11 +207,11 @@ export const MODEL_TIERS = {
     label: 'Zulora 3.1 Pro Ultra',
     shortLabel: 'Pro Ultra',
     description: 'Extended reasoning & complex analysis',
-    badge: 'ðŸ§ ',
+    badge: '🧠',
     color: 'text-amber-500',
     geminiModel: GEMINI_PRO_MODEL_ID,
     groqModel: GROQ_MODELS.primary,
-    maxTokens: 8192,
+    maxTokens: 16384,
     tier: 'pro',
   },
 };
@@ -283,13 +379,17 @@ const normalizeModelPreference = value => {
   const modelId = normalizeGeminiModelId(raw);
   if (modelId) return modelId;
   const selected = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
-  if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra') || /zulora 3\.1 pro(?: ultra)?/.test(selected) || ['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'think';
+  if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra') || /zulora 3\.1 pro(?: ultra)?/.test(selected) || ['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'gemini-2.5-pro';
   if (selected === 'llama' || (selected.includes('llama') && /(?:70b|3\.3)/.test(selected))) return 'groq';
   if (selected === 'groq' || selected.includes('groq') || selected.includes('turbo')) return 'groq';
-  if (selected === 'flash' || selected.includes('gemini flash') || selected.includes('zulora flash')) return 'flash';
-  if (selected === 'gemini' || (/^gemini\s+\d/.test(selected) && selected.includes('flash'))) return 'gemini';
-  if (selected === 'pro' || selected === 'pro 314' || selected === 'zulora pro 3.14') return 'think';
-  return 'auto';
+  if (selected.includes('cerebras')) return 'cerebras';
+  if (selected.includes('openrouter')) return 'openrouter';
+  if (selected.includes('mistral')) return 'mistral';
+  if (selected === 'flash' || selected.includes('gemini flash') || selected.includes('zulora flash')) return 'gemini-3.8-flash';
+  if (selected === 'gemini') return 'gemini-3.8-flash';
+  if (selected === 'pro' || selected === 'pro 314' || selected === 'zulora pro 3.14') return 'gemini-2.5-pro';
+  if (selected === 'auto' || !selected) return 'auto';
+  return raw;
 };
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -965,13 +1065,13 @@ export const apiRouter = {
     const vision = (options.attachments || []).some(item => String(item.mimeType || '').startsWith('image/'));
     const coding = isCodingPrompt(prompt);
     const complex = isComplexPrompt(prompt);
-    const flagship = requestedTier === 'think';
     const directGeminiModel = String(requestedTier).startsWith('gemini-');
+    const flagship = requestedTier === 'think' || requestedTier === 'gemini-2.5-pro';
     const geminiSelected = requestedTier === 'gemini';
-    const intentGeminiModel = coding || complex || flagship ? GEMINI_PRO_MODEL_ID : GEMINI_FLASH_MODEL;
+    const intentGeminiModel = directGeminiModel ? requestedTier : coding || complex || flagship ? GEMINI_PRO_MODEL_ID : 'gemini-3.8-flash';
     const tier = vision
-      ? directGeminiModel ? requestedTier : (geminiSelected ? 'gemini' : requestedTier === 'think' || requestedTier === 'pro' ? requestedTier : 'flash')
-      : requestedTier === 'auto' ? (coding ? 'think' : complex ? 'pro' : 'flash') : requestedTier;
+      ? directGeminiModel ? requestedTier : (geminiSelected ? 'gemini' : requestedTier === 'think' || requestedTier === 'pro' ? 'gemini-2.5-pro' : 'gemini-3.8-flash')
+      : requestedTier === 'auto' ? (coding ? 'gemini-2.5-pro' : complex ? 'gemini-2.5-pro' : 'gemini-3.8-flash') : requestedTier;
     const highTierCodeRequest = coding && (flagship || requestedTier === 'pro' || (directGeminiModel && /pro/i.test(requestedTier)));
     options = { ...options, coding, flagship: highTierCodeRequest, tier, preferBestKey: flagship || highTierCodeRequest, streamState: options.streamState || { sent: false } };
     const errors = [];
@@ -989,7 +1089,7 @@ export const apiRouter = {
     const messages = [...buildHistory(contextMessages), { role: 'user', content: prompt }];
     const geminiModel = options.computerAgent && options.computerVision
       ? GEMINI_FLASH_MODEL
-      : directGeminiModel ? requestedTier : geminiSelected ? intentGeminiModel : flagship ? MODEL_TIERS.think.geminiModel : (MODEL_TIERS[tier]?.geminiModel || MODEL_TIERS.flash.geminiModel);
+      : directGeminiModel ? requestedTier : geminiSelected ? intentGeminiModel : flagship ? GEMINI_PRO_MODEL_ID : (MODEL_TIERS[tier]?.geminiModel || 'gemini-3.8-flash');
 
     await ensureGenerationAllowance('chat', options.currentUser, {
       modelPreference: requestedTier,

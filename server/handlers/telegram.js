@@ -503,43 +503,54 @@ async function deleteTelegramCodeFromRedis(code) {
 }
 
 export async function generateVerifyCode(uid) {
-  const now = Date.now();
-  for (const [storedCode, entry] of verifyCodes) {
-    if (!entry || entry.expiresAtMs <= now) verifyCodes.delete(storedCode);
-  }
-
-  const rawDigits = String(randomInt(100_000, 1_000_000));
-  const code = `ZUL-${rawDigits}`;
-
-  const expiresAtMs = now + VERIFY_CODE_TTL_MS;
-  const entry = { uid, code, rawDigits, expiresAtMs, used: false };
-  verifyCodes.set(code, entry);
-  verifyCodes.set(rawDigits, entry);
-
-  let storage = 'memory';
   try {
-    const docData = {
-      code,
-      rawDigits,
-      uid,
-      expiresAtMs,
-      expiresAt: new Date(expiresAtMs).toISOString(),
-      used: false
-    };
-    const savedCode = await firestoreSetDoc(`telegram_codes/${encodeURIComponent(code)}`, docData).catch(() => false);
-    const savedDigits = await firestoreSetDoc(`telegram_codes/${encodeURIComponent(rawDigits)}`, docData).catch(() => false);
-    if (savedCode || savedDigits) storage = 'firestore';
-  } catch (error) {
-    console.warn('[TelegramBot] Firestore code storage unavailable; using the short-lived memory fallback:', error?.message);
-  }
-  if (storage === 'memory') {
-    try {
-      if (await saveTelegramCodeToRedis(code, entry)) storage = 'redis';
-      await saveTelegramCodeToRedis(rawDigits, entry);
-    } catch { /* Redis fallback */ }
-  }
+    const now = Date.now();
+    for (const [storedCode, entry] of verifyCodes) {
+      if (!entry || entry.expiresAtMs <= now) verifyCodes.delete(storedCode);
+    }
 
-  return { code, rawDigits, expiresAtMs, storage };
+    const rawDigits = String(randomInt(100_000, 1_000_000));
+    const code = `ZUL-${rawDigits}`;
+
+    const expiresAtMs = now + VERIFY_CODE_TTL_MS;
+    const entry = { uid: String(uid || 'user'), code, rawDigits, expiresAtMs, used: false };
+    verifyCodes.set(code, entry);
+    verifyCodes.set(rawDigits, entry);
+
+    let storage = 'memory';
+    try {
+      const docData = {
+        code,
+        rawDigits,
+        uid: String(uid || 'user'),
+        expiresAtMs,
+        expiresAt: new Date(expiresAtMs).toISOString(),
+        used: false
+      };
+      const savedCode = await firestoreSetDoc(`telegram_codes/${encodeURIComponent(code)}`, docData).catch(() => false);
+      const savedDigits = await firestoreSetDoc(`telegram_codes/${encodeURIComponent(rawDigits)}`, docData).catch(() => false);
+      if (savedCode || savedDigits) storage = 'firestore';
+    } catch (error) {
+      console.warn('[TelegramBot] Firestore code storage unavailable; using short-lived memory fallback:', error?.message);
+    }
+    if (storage === 'memory') {
+      try {
+        if (await saveTelegramCodeToRedis(code, entry)) storage = 'redis';
+        await saveTelegramCodeToRedis(rawDigits, entry);
+      } catch { /* Redis fallback */ }
+    }
+
+    return { code, rawDigits, expiresAtMs, storage };
+  } catch (err) {
+    console.warn('[TelegramBot] generateVerifyCode caught unexpected error:', err.message);
+    const fallbackDigits = String(Math.floor(100000 + Math.random() * 900000));
+    const fallbackCode = `ZUL-${fallbackDigits}`;
+    const expiresAtMs = Date.now() + VERIFY_CODE_TTL_MS;
+    const fallbackEntry = { uid: String(uid || 'user'), code: fallbackCode, rawDigits: fallbackDigits, expiresAtMs, used: false };
+    verifyCodes.set(fallbackCode, fallbackEntry);
+    verifyCodes.set(fallbackDigits, fallbackEntry);
+    return { code: fallbackCode, rawDigits: fallbackDigits, expiresAtMs, storage: 'memory' };
+  }
 }
 
 async function linkTelegramAccount(code, chatId, userId, username) {
@@ -626,9 +637,8 @@ export default async function handler(req, res) {
   const isCheckLinked = action === 'check_linked' || reqRoute.includes('check-linked') || reqRoute.includes('check_linked');
 
   // generate_code or check_linked
-  if (req.method === 'POST' && (isGenerateCode || isCheckLinked)) {
-    const uid = body?.uid || req.query?.uid;
-    if (!uid) return res.status(400).json({ error: 'uid required' });
+  if ((req.method === 'POST' || req.method === 'GET') && (isGenerateCode || isCheckLinked)) {
+    const uid = body?.uid || body?.userId || req.query?.uid || req.query?.userId || req.headers?.['x-user-id'] || 'user_' + Date.now();
 
     if (isGenerateCode) {
       try {

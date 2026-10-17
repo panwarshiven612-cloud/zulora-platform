@@ -9,9 +9,9 @@ import {
   Globe, 
   Link, 
   MoreHorizontal, 
-  ChevronDown, 
   X,
-  FileText
+  FileText,
+  FolderOpen
 } from 'lucide-react';
 import ModelSelector from '../ModelSelector';
 
@@ -45,7 +45,7 @@ export default function ChatInput({
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    const nextHeight = Math.min(Math.max(el.scrollHeight, 38), 160);
+    const nextHeight = Math.min(Math.max(el.scrollHeight, 38), 140);
     el.style.height = `${nextHeight}px`;
   }, [inputPrompt]);
 
@@ -76,7 +76,7 @@ export default function ChatInput({
   const hasContent = inputPrompt.trim().length > 0 || attachments.length > 0;
 
   return (
-    <div className="chat-composer-container relative w-full max-w-4xl mx-auto rounded-2xl sm:rounded-3xl border border-slate-200/90 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 shadow-xl backdrop-blur-2xl transition-all">
+    <div className="chat-composer-container relative w-full max-w-4xl mx-auto rounded-2xl sm:rounded-3xl border border-slate-200/90 dark:border-slate-800 bg-white/95 dark:bg-[#0c1222]/95 shadow-xl backdrop-blur-2xl transition-all">
       {/* Attachment Chips Tray */}
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-2 p-2.5 border-b border-slate-100 dark:border-slate-800/80">
@@ -110,10 +110,10 @@ export default function ChatInput({
         </div>
       )}
 
-      {/* Responsive Single-Row Flex Toolbar */}
-      <div className="chat-input-single-row flex items-end gap-1 sm:gap-2 p-1.5 sm:p-2 w-full min-w-0">
-        {/* Left: Model Selector & More Tools */}
-        <div className="chat-composer-left flex shrink-0 items-center gap-1 z-20">
+      {/* Main Single-Row Flex Toolbar */}
+      <div className="chat-input-single-row flex items-center gap-1.5 sm:gap-2 p-1.5 sm:p-2 w-full min-w-0">
+        {/* Left: Model Selector Dropdown ONLY */}
+        <div className="chat-composer-left shrink-0 z-20">
           <ModelSelector
             modelPreference={modelPreference}
             onModelChange={onModelChange}
@@ -121,22 +121,9 @@ export default function ChatInput({
             onToggle={onToggleModelMenu}
             onClose={onCloseModelMenu}
           />
-          <button
-            type="button"
-            onClick={onToggleMoreTools}
-            aria-expanded={showMoreTools}
-            title="More tools (Web search, Connectors, Attachments)"
-            className={`h-9 w-9 shrink-0 flex items-center justify-center rounded-xl border transition-colors ${
-              showMoreTools 
-                ? 'border-violet-300 bg-violet-50 text-violet-600 dark:border-violet-700 dark:bg-violet-950/40 dark:text-violet-400' 
-                : 'border-slate-200/70 dark:border-slate-700/60 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
-            }`}
-          >
-            <MoreHorizontal className="h-4 w-4" />
-          </button>
         </div>
 
-        {/* Center: Clean Textarea with auto-growing height */}
+        {/* Center: Auto-Growing Textarea */}
         <div className="chat-composer-center flex-1 min-w-0 relative z-10 flex items-center">
           <textarea
             ref={textareaRef}
@@ -147,11 +134,11 @@ export default function ChatInput({
             placeholder="Ask Zulora AI anything..."
             rows={1}
             aria-label="Message Zulora AI"
-            className="w-full resize-none bg-transparent px-2 sm:px-2.5 py-2 text-sm leading-relaxed text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none overflow-y-auto max-h-[160px]"
+            className="w-full resize-none bg-transparent px-2 sm:px-3 py-2 text-sm leading-relaxed text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none overflow-y-auto max-h-[140px]"
           />
         </div>
 
-        {/* Right: Voice / Send button group with zero overlap */}
+        {/* Right: Compact Action Buttons (Live, Mic, Send, More '...' toggle) */}
         <div className="chat-composer-right flex shrink-0 items-center gap-1 sm:gap-1.5 z-20">
           {onOpenVoiceAssistant && (
             <button
@@ -173,7 +160,7 @@ export default function ChatInput({
             className={`h-9 w-9 shrink-0 flex items-center justify-center rounded-xl border transition-all ${
               isListening
                 ? 'animate-pulse border-red-300 bg-red-50 text-red-500 dark:border-red-800 dark:bg-red-950/40'
-                : 'border-slate-200/70 dark:border-slate-700/60 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                : 'border-slate-200/80 dark:border-slate-700/60 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60'
             }`}
           >
             {isListening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
@@ -188,66 +175,90 @@ export default function ChatInput({
             className={`h-9 w-9 sm:w-auto sm:px-3.5 shrink-0 flex items-center justify-center gap-1.5 rounded-xl font-semibold text-xs sm:text-sm transition-all duration-200 ${
               hasContent
                 ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-md shadow-sky-500/25 hover:from-sky-600 hover:to-blue-700 active:scale-95'
-                : 'cursor-not-allowed bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-600'
+                : 'cursor-not-allowed bg-slate-100 dark:bg-slate-800/50 text-slate-400 dark:text-slate-600'
             }`}
           >
             <Send className="h-4 w-4 shrink-0" />
             <span className="hidden sm:inline">Send</span>
           </button>
+
+          {/* Expandable Tray Toggle Button ('...' on the right) */}
+          <button
+            type="button"
+            onClick={onToggleMoreTools}
+            aria-expanded={showMoreTools}
+            title={showMoreTools ? 'Close tools tray' : 'Open secondary tools (Search, Connectors, Attachments, Drive)'}
+            className={`h-9 w-9 shrink-0 flex items-center justify-center rounded-xl border transition-all ${
+              showMoreTools 
+                ? 'border-sky-400 bg-sky-50 text-sky-600 dark:border-sky-600 dark:bg-sky-950/50 dark:text-sky-300 shadow-xs' 
+                : 'border-slate-200/80 dark:border-slate-700/60 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60'
+            }`}
+          >
+            <MoreHorizontal className="h-4 w-4" />
+          </button>
         </div>
       </div>
 
-      {/* Expanded Tools Drawer */}
+      {/* Expandable Secondary Tool Tray (Drawer below main row) */}
       {showMoreTools && (
-        <div className="flex flex-wrap items-center gap-2 p-2 sm:p-2.5 border-t border-slate-100 dark:border-slate-800/80 bg-slate-50/60 dark:bg-slate-900/60 rounded-b-2xl sm:rounded-b-3xl">
-          <button
-            type="button"
-            onClick={onToggleWebSearch}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
-              enableWebSearch
-                ? 'border-sky-300 bg-sky-50 text-sky-600 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-400'
-                : 'border-slate-200/70 dark:border-slate-700/60 text-slate-600 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-800'
-            }`}
-          >
-            <Globe className="w-3.5 h-3.5" />
-            <span>Search &amp; Research</span>
-          </button>
+        <div className="expandable-tool-tray border-t border-slate-100 dark:border-slate-800/80 bg-slate-50/90 dark:bg-[#070b14]/90 p-2 sm:p-2.5 rounded-b-2xl sm:rounded-b-3xl animate-scale-in">
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+            {/* 1. Search & Research */}
+            <button
+              type="button"
+              onClick={onToggleWebSearch}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all ${
+                enableWebSearch
+                  ? 'border-sky-400 bg-sky-100/80 text-sky-700 dark:border-sky-600 dark:bg-sky-950/60 dark:text-sky-300 shadow-xs'
+                  : 'border-slate-200/80 dark:border-slate-700/60 bg-white/80 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-800'
+              }`}
+            >
+              <Globe className={`w-3.5 h-3.5 ${enableWebSearch ? 'text-sky-500' : 'text-slate-400'}`} />
+              <span>Search &amp; Research</span>
+              {enableWebSearch && <span className="w-1.5 h-1.5 rounded-full bg-sky-500" />}
+            </button>
 
-          <button
-            type="button"
-            onClick={onOpenConnectors}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-sky-200/70 bg-sky-50/70 text-sky-700 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-300 text-xs font-semibold hover:bg-sky-100 transition-colors"
-          >
-            <Link className="w-3.5 h-3.5" />
-            <span>Connectors</span>
-          </button>
+            {/* 2. Connectors */}
+            <button
+              type="button"
+              onClick={onOpenConnectors}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-sky-200/80 bg-sky-50/70 text-sky-700 dark:border-sky-800/60 dark:bg-sky-950/30 dark:text-sky-300 text-xs font-semibold hover:bg-sky-100/80 transition-all shadow-xs"
+            >
+              <Link className="w-3.5 h-3.5 text-sky-500" />
+              <span>Connectors</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => fileInputRef?.current?.click()}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200/70 dark:border-slate-700/60 text-slate-600 dark:text-slate-400 text-xs font-medium hover:bg-white dark:hover:bg-slate-800 transition-colors"
-          >
-            <Paperclip className="w-3.5 h-3.5" />
-            <span>Attach File</span>
-          </button>
+            {/* 3. Attach File */}
+            <button
+              type="button"
+              onClick={() => fileInputRef?.current?.click()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200/80 dark:border-slate-700/60 bg-white/80 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300 text-xs font-medium hover:bg-white dark:hover:bg-slate-800 transition-all"
+            >
+              <Paperclip className="w-3.5 h-3.5 text-slate-400" />
+              <span>Attach File</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => cameraInputRef?.current?.click()}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200/70 dark:border-slate-700/60 text-slate-600 dark:text-slate-400 text-xs font-medium hover:bg-white dark:hover:bg-slate-800 transition-colors"
-          >
-            <Camera className="w-3.5 h-3.5" />
-            <span>Photo</span>
-          </button>
+            {/* 4. Photo */}
+            <button
+              type="button"
+              onClick={() => cameraInputRef?.current?.click()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200/80 dark:border-slate-700/60 bg-white/80 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300 text-xs font-medium hover:bg-white dark:hover:bg-slate-800 transition-all"
+            >
+              <Camera className="w-3.5 h-3.5 text-slate-400" />
+              <span>Photo</span>
+            </button>
 
-          <a 
-            href="https://drive.zulora.in" 
-            target="_blank" 
-            rel="noopener noreferrer" 
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-amber-200/70 bg-amber-50/70 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300 text-xs font-medium hover:bg-amber-100 transition-colors"
-          >
-            <span>📁 Zulora Drive</span>
-          </a>
+            {/* 5. Zulora Drive */}
+            <a 
+              href="https://drive.zulora.in" 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-amber-200/80 bg-amber-50/70 text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300 text-xs font-medium hover:bg-amber-100/80 transition-all shadow-xs"
+            >
+              <FolderOpen className="w-3.5 h-3.5 text-amber-500" />
+              <span>Zulora Drive</span>
+            </a>
+          </div>
         </div>
       )}
 
@@ -272,4 +283,3 @@ export default function ChatInput({
     </div>
   );
 }
-
