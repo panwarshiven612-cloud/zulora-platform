@@ -1180,6 +1180,7 @@ export const apiRouter = {
           userVault: options.userVault || null,
           activeConnectorProviders,
           studioMode: Boolean(options.studioMode),
+          model: requestedTier,
           modelPreference: requestedTier,
           enableWebSearch: Boolean(options.webSearch),
           searchResults: webCitations,

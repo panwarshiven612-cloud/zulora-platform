@@ -635,7 +635,12 @@ async function readProviderEventStream(response, readToken, onToken, streamState
     const data = frame.split(/\r?\n/).filter(line => line.startsWith('data:'))
       .map(line => line.slice(5).trim()).join('\n');
     if (!data || data === '[DONE]') return;
-    const event = JSON.parse(data);
+    let event;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      return; // Skip malformed or partial SSE line without killing the stream
+    }
     if (event.usageMetadata || event.usage) onUsage?.(event.usageMetadata || event.usage);
     const groundingMetadata = event.candidates?.[0]?.groundingMetadata;
     if (groundingMetadata) onGrounding?.(groundingMetadata);
@@ -653,7 +658,8 @@ async function readProviderEventStream(response, readToken, onToken, streamState
       return await Promise.race([
         reader.read(),
         new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error('The model stream stalled. Switching to a fallback model.')), 10_000);
+          const timeoutMs = streamState.sent ? 15_000 : 25_000;
+          timer = setTimeout(() => reject(new Error('The model stream stalled. Switching to a fallback model.')), timeoutMs);
         })
       ]);
     } catch (error) {
@@ -1476,13 +1482,15 @@ export default async function handler(req, res) {
   if (!body || typeof body !== 'object') return safeError(res, 400, 'Invalid request.');
   const usageOnly = body.action === 'usage';
   const allowanceOnly = body.action === 'allowance';
-  const streamChat = body.action === 'chat-stream';
-  const streamGuestChat = body.action === 'guest-chat-stream';
+  const isChatRoute = req.query?.route === 'chat' || req.url?.includes('/chat');
+  const wantsStream = body.stream !== false && (Boolean(body.stream) || req.headers.accept?.includes('text/event-stream') || isChatRoute || req.headers['x-stream'] === 'true');
+  const streamChat = body.action === 'chat-stream' || ((body.action === 'chat' || isChatRoute) && wantsStream);
+  const streamGuestChat = body.action === 'guest-chat-stream' || (body.action === 'guest-chat' && wantsStream);
   const streamVideo = body.action === 'video-stream';
   const quotaOnly = usageOnly || allowanceOnly;
   const type = quotaOnly
     ? (['chat', 'image', 'video'].includes(body.usageType) ? body.usageType : null)
-    : (body.action === 'chat' || streamChat || streamGuestChat) ? 'chat' : body.action === 'image' ? 'image' : (body.action === 'video' || streamVideo) ? 'video' : null;
+    : (body.action === 'chat' || streamChat || streamGuestChat || isChatRoute) ? 'chat' : body.action === 'image' ? 'image' : (body.action === 'video' || streamVideo) ? 'video' : null;
   if (!type) return safeError(res, 400, 'Unsupported generation action.');
   let uid;
   if (streamGuestChat) {

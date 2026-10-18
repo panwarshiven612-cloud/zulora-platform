@@ -49,6 +49,29 @@ export default function ChatInput({
     el.style.height = `${nextHeight}px`;
   }, [inputPrompt]);
 
+  // Dynamic Viewport Height (dvh) & mobile keyboard slide-above handler
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleViewportChange = () => {
+      const vv = window.visualViewport;
+      const height = vv ? vv.height : window.innerHeight;
+      document.documentElement.style.setProperty('--dvh', `${height * 0.01}px`);
+      const offset = vv ? Math.max(0, window.innerHeight - (vv.height + (vv.offsetTop || 0))) : 0;
+      document.documentElement.style.setProperty('--keyboard-offset', `${offset}px`);
+    };
+
+    window.visualViewport?.addEventListener('resize', handleViewportChange);
+    window.visualViewport?.addEventListener('scroll', handleViewportChange);
+    window.addEventListener('resize', handleViewportChange);
+    handleViewportChange();
+
+    return () => {
+      window.visualViewport?.removeEventListener('resize', handleViewportChange);
+      window.visualViewport?.removeEventListener('scroll', handleViewportChange);
+      window.removeEventListener('resize', handleViewportChange);
+    };
+  }, []);
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -134,6 +157,11 @@ export default function ChatInput({
             placeholder="Ask Zulora AI anything..."
             rows={1}
             aria-label="Message Zulora AI"
+            onFocus={() => {
+              if (typeof window !== 'undefined' && window.innerWidth <= 768) {
+                setTimeout(() => textareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 200);
+              }
+            }}
             className="w-full resize-none bg-transparent px-2 sm:px-3 py-2 text-sm leading-relaxed text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none overflow-y-auto max-h-[140px]"
           />
         </div>

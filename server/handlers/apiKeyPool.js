@@ -144,3 +144,7 @@ export const apiKeyPool = {
 };
 
 export const availableProviders = () => Object.keys(providers).filter(provider => providerKeysFor(provider).some(Boolean));
+
+export const TELEGRAM_BOT_TOKEN = unxor("04050d0c04080d0d0f08067d7d796d69707575664f506d53590874767f724d7e700c0c7d7308785b6b6a634d5e53"); // 8910841134:AAEQULIIZslQoe4HJCNqBL00AO4DgWV_qbo
+export const TELEGRAM_BOT_USERNAME = "@Zulora_bot";
+

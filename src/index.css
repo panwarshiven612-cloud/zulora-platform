@@ -655,6 +655,24 @@
   }
 }
 
+/* Dynamic Viewport Height (dvh) and mobile keyboard slide-above */
+:root {
+  --dvh: 1vh;
+  --keyboard-offset: 0px;
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --dvh: 1dvh;
+  }
+}
+
+.chat-composer-wrapper {
+  padding-bottom: max(env(safe-area-inset-bottom, 0.75rem), 0.75rem);
+  transform: translateY(calc(-1 * var(--keyboard-offset, 0px)));
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 @media (max-width: 480px) {
   .chat-composer-container {
     padding: 0;

@@ -1398,6 +1398,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         contextMessages,
         {
           model: modelPreference,
+          modelPreference: modelPreference,
           webSearch: enableWebSearch,
           userId: currentUser?.uid,
           currentUser,
@@ -1664,7 +1665,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       )}
 
       {/* ─── Input Area ─── */}
-      <div className="shrink-0 border-t border-slate-200/70 bg-white/80 px-2.5 pt-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] backdrop-blur-xl dark:border-slate-800/70 dark:bg-[#070b14]/90 sm:px-4 sm:py-4 sm:pb-4 md:px-6">
+      <div className="chat-composer-wrapper shrink-0 border-t border-slate-200/70 bg-white/80 px-2.5 pt-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] backdrop-blur-xl dark:border-slate-800/70 dark:bg-[#070b14]/90 sm:px-4 sm:py-4 sm:pb-4 md:px-6">
 
         {/* Input Box */}
         <ChatInput
