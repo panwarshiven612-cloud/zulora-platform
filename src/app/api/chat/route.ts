@@ -23,12 +23,15 @@ function normalizeRequestedModel(modelName: string = 'auto'): RouteModelConfig {
     return { provider: 'gemini', model: 'gemini-2.5-flash', isAuto: false };
   }
 
-  // Tier 2: Thinking & Reasoning Models
-  if (raw === 'gemini-2.5-pro' || raw === '2.5-pro' || raw === 'pro' || raw === 'think') {
+  // Tier 2: Thinking & Reasoning Models (Zulora 3.1 Pro Ultra)
+  if (raw === 'pro_ultra' || raw === 'zulora-3.1-pro-ultra' || raw.includes('pro ultra') || raw === 'gemini-2.5-pro' || raw === '2.5-pro' || raw === 'pro' || raw === 'think') {
     return { provider: 'gemini', model: 'gemini-2.5-pro', isAuto: false };
   }
   if (raw === 'gemini-3.6-flash' || raw === '3.6-flash' || raw === '3.6 flash') {
     return { provider: 'gemini', model: 'gemini-3.6-flash', isAuto: false };
+  }
+  if (raw === 'gemini') {
+    return { provider: 'gemini', model: 'gemini-3.8-flash', isAuto: false };
   }
 
   // Tier 3: Third-Party LPUs

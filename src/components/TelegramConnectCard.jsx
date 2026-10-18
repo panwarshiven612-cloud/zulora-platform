@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { MessageCircle, Link, CheckCircle, Copy, ExternalLink, RefreshCw, AlertCircle } from 'lucide-react';
 import { clearTelegramVerificationCode, readTelegramVerificationCode, storeTelegramVerificationCode } from '../services/telegramCodeVault';
 
-const BOT_NAME = 'ZuloraAIBot'; // Update this if you have a custom @BotName
+const BOT_NAME = 'Zulora_bot'; // Verified username: https://t.me/Zulora_bot
 
 /**
  * TelegramConnectCard

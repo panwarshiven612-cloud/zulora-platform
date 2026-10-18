@@ -11,7 +11,7 @@ import {
   X,
   FileText
 } from 'lucide-react';
-import ModelSelector from '../ModelSelector';
+import ModelSelector from './ModelSelector';
 
 export default function ChatInput({
   inputPrompt = '',

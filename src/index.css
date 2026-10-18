@@ -317,6 +317,13 @@
   color: #94a3b8;
 }
 
+.prose-chat {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
 .prose-chat code {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.85em;
@@ -325,6 +332,7 @@
   padding: 0.15em 0.4em;
   border-radius: 4px;
   color: #0284c7;
+  max-width: 100%;
 }
 
 .dark .prose-chat code {
@@ -336,7 +344,9 @@
 .prose-chat pre {
   margin: 0.75em 0;
   border-radius: 10px;
-  overflow: hidden;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
   font-size: 0.85rem;
 }
 
@@ -346,13 +356,24 @@
   padding: 0;
   color: inherit;
   font-size: inherit;
+  white-space: pre;
 }
 
 .prose-chat table {
   width: 100%;
+  max-width: 100%;
   border-collapse: collapse;
   margin: 0.75em 0;
   font-size: 0.875rem;
+}
+
+.table-responsive-wrapper {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0.75rem 0;
+  border-radius: 0.5rem;
 }
 
 .prose-chat th {

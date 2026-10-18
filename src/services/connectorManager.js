@@ -1127,9 +1127,17 @@ export const connectorManager = {
     const spreadsheet = await this.createSpreadsheet({ title });
     const spreadsheetId = spreadsheet?.spreadsheetId;
     if (!spreadsheetId) throw new Error('Google Sheets did not return the new spreadsheet ID.');
-    let appendResult;
+    
+    // Chunk spreadsheet row updates in batches of 50 to prevent payload timeouts on large datasets
+    const CHUNK_SIZE = 50;
+    let lastResult = null;
+    let totalUpdated = 0;
     try {
-      appendResult = await this.appendSheetRow({ spreadsheet_id: spreadsheetId, range: 'Sheet1!A1', values: rows });
+      for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+        const chunk = rows.slice(i, i + CHUNK_SIZE);
+        lastResult = await this.appendSheetRow({ spreadsheet_id: spreadsheetId, range: 'Sheet1!A1', values: chunk });
+        totalUpdated += Number(lastResult?.updates?.updatedRows || chunk.length);
+      }
     } catch (error) {
       throw new Error(`Google Sheets values.append failed after spreadsheet creation. The sheet was not confirmed as populated, so no link is being returned. ${error.message}`);
     }
@@ -1140,7 +1148,7 @@ export const connectorManager = {
         title: spreadsheet.properties?.title || String(title || '').trim(),
         url: spreadsheet.spreadsheetUrl || `https://docs.google.com/spreadsheets/d/${spreadsheetId}`
       },
-      appended: appendResult.updates,
+      appended: { ...(lastResult?.updates || {}), updatedRows: totalUpdated },
       populated: true
     };
   },

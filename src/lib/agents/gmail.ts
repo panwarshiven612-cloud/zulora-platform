@@ -36,7 +36,7 @@ export function markdownToEmailHtml(markdown: string): string {
 
   // Tables
   html = html.replace(/((?:\|[^\n]+\|\r?\n)+)/g, (match) => {
-    const lines = match.trim().split(/\r?\n/).filter(l => !/^\|[-:\s|]+\|$/.test(l));
+    const lines = match.trim().split(/\r?\n/).filter(l => !/^\|[\s\-:|]+\|$/.test(l));
     if (!lines.length) return '';
     const rows = lines.map((line, idx) => {
       const cells = line.split('|').slice(1, -1).map(c => c.trim());

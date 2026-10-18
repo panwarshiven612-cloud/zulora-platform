@@ -241,7 +241,7 @@ CodeBlock.displayName = 'CodeBlock';
    ============================================================ */
 const MarkdownContent = memo(({ content }) => {
   return (
-    <div className="prose-chat">
+    <div className="prose-chat min-w-0 max-w-full overflow-x-auto">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -281,7 +281,7 @@ const MarkdownContent = memo(({ content }) => {
           },
           table({ children }) {
             return (
-              <div className="my-3 max-w-full overflow-x-auto scroll-smooth">
+              <div className="table-responsive-wrapper my-3 w-full max-w-full min-w-0 overflow-x-auto scroll-smooth rounded-xl border border-slate-200/60 dark:border-slate-800">
                 <table className="min-w-max w-full border-collapse text-sm">
                   {children}
                 </table>
@@ -400,7 +400,7 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
       </div>
 
       {/* Content */}
-      <div className={`flex flex-col max-w-[80%] sm:max-w-[75%] gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
+      <div className={`flex flex-col min-w-0 max-w-[92%] sm:max-w-[80%] gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
         {/* Header */}
         <div className={`flex items-center gap-2 px-1 ${isUser ? 'flex-row-reverse' : ''}`}>
           <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">
@@ -424,7 +424,7 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
 
         {/* Bubble */}
         <div
-          className={`relative rounded-2xl px-4 py-3 shadow-sm transition-all duration-200
+          className={`relative min-w-0 max-w-full overflow-hidden rounded-2xl px-4 py-3 shadow-sm transition-all duration-200
             ${isUser
               ? 'bg-gradient-to-br from-sky-500 to-sky-600 text-white rounded-tr-sm'
               : 'glass-pearl dark:glass-dark border border-white/60 dark:border-slate-700/60 rounded-tl-sm text-slate-800 dark:text-slate-200'
