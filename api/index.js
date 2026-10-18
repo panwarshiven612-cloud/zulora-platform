@@ -7,6 +7,7 @@ import mediaDownloadHandler from '../server/handlers/media-download.js';
 import paymentUtrHandler from '../server/handlers/payments/utr.js';
 import telegramHandler from '../server/handlers/telegram.js';
 import videoHandler from '../server/handlers/video.js';
+import videoRenderHandler from '../server/handlers/video-render.js';
 import voiceHandler from '../server/handlers/voice.js';
 import voiceTokenHandler from '../server/handlers/voice-token.js';
 import voicesHandler from '../server/handlers/voices.js';
@@ -38,6 +39,10 @@ const ROUTES = Object.freeze({
   'telegram/check_linked': telegramHandler,
   'telegram-webhook': telegramHandler,
   video: videoHandler,
+  'video-render': videoRenderHandler,
+  'video-render/generate': videoRenderHandler,
+  'video-render/status': videoRenderHandler,
+  'video-render/download': videoRenderHandler,
   voice: voiceHandler,
   'voice-token': voiceTokenHandler,
   voices: voicesHandler

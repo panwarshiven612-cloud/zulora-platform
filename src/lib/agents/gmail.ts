@@ -12,6 +12,9 @@ export interface DynamicEmailOptions {
   subject: string;
   body: string;
   formattingInstructions?: string;
+  tone?: string;
+  templateStructure?: string;
+  rawTextOnly?: boolean;
   isDraft?: boolean;
 }
 
@@ -87,23 +90,42 @@ export function markdownToEmailHtml(markdown: string): string {
 export async function generateDynamicHtmlEmail(
   subject: string,
   body: string,
-  instructions?: string
+  instructions?: string,
+  options?: { tone?: string; templateStructure?: string; rawTextOnly?: boolean }
 ): Promise<string> {
-  const needsAiFormatting = Boolean(instructions && instructions.trim().length > 5);
+  // If user requests raw unformatted email
+  if (options?.rawTextOnly || /\b(?:raw|unformatted|plain\s*text|no\s*format|no\s*html)\b/i.test(instructions || '')) {
+    const escaped = body
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+    return `<div style="white-space:pre-wrap;font-family:inherit;font-size:14px;color:#1e293b;line-height:1.6;">${escaped}</div>`;
+  }
+
+  const specParts = [
+    options?.tone ? `Tone of voice: ${options.tone}` : '',
+    options?.templateStructure ? `Structure & layout style: ${options.templateStructure}` : '',
+    instructions ? `Formatting instructions: ${instructions}` : ''
+  ].filter(Boolean).join('\n');
+
+  const needsAiFormatting = Boolean(specParts.trim().length > 0);
 
   if (needsAiFormatting) {
     const prompt = `You are an expert email layout designer.
-Convert the following email draft into rich, modern, responsive email-safe HTML matching these exact formatting instructions:
-"${instructions}"
+Convert the following email draft into rich, modern, responsive email-safe HTML matching these exact custom specifications:
+${specParts}
 
 Subject: ${subject}
 Content:
 ${body}
 
 CRITICAL RULES:
-1. Strictly follow all user formatting requests (e.g. table, bullet list, header styling, tone, signature).
-2. Do NOT use static templates. Output clean inline CSS compatible with Gmail.
-3. Return ONLY the HTML markup for the body container. No markdown code fences.`;
+1. Strictly follow all user custom tone, template structure, and formatting requests.
+2. Never enforce rigid default templates; let the user's instructions dictate the layout completely.
+3. Output clean inline CSS compatible with Gmail.
+4. Return ONLY the HTML markup for the body container. No markdown code fences.`;
 
     for (const key of GEMINI_KEYS) {
       if (!key) continue;
@@ -135,7 +157,7 @@ CRITICAL RULES:
  * Main dynamic Gmail agent executor
  */
 export async function executeDynamicEmail(options: DynamicEmailOptions): Promise<DynamicEmailResult> {
-  const { to, subject, body, formattingInstructions, isDraft = false } = options;
+  const { to, subject, body, formattingInstructions, tone, templateStructure, rawTextOnly, isDraft = false } = options;
 
   if (!to || !to.trim()) {
     return {
@@ -150,7 +172,11 @@ export async function executeDynamicEmail(options: DynamicEmailOptions): Promise
   }
 
   try {
-    const htmlContent = await generateDynamicHtmlEmail(subject, body, formattingInstructions);
+    const htmlContent = await generateDynamicHtmlEmail(subject, body, formattingInstructions, {
+      tone,
+      templateStructure,
+      rawTextOnly
+    });
 
     if (isDraft) {
       const res = await connectorManager.createGmailDraft({

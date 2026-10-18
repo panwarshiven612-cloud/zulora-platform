@@ -12,7 +12,8 @@ import {
   Sparkles,
   RefreshCw,
   Camera,
-  Layers
+  Layers,
+  Clapperboard
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { aiRouter } from '../services/aiRouter';
@@ -20,6 +21,7 @@ import { firestoreService, getTokenUsagePercent } from '../services/firestoreSer
 import { downloadMedia } from '../services/downloadService';
 import { driveAuth } from '../config/firebaseDrive';
 import { uploadGeneratedAssetToDrive } from '../services/zuloraDriveService';
+import HtmlVideoStudio from './HtmlVideoStudio';
 
 const CAMERA_ANGLES = [
   'Cinematic Pan',
@@ -32,6 +34,7 @@ const CAMERA_ANGLES = [
 
 export const VideoGenerator = () => {
   const { currentUser, tier, usage, checkUsage, recordUsage, setIsUsageModalOpen } = useAuth();
+  const [videoStudioTab, setVideoStudioTab] = useState('ai'); // 'ai' | 'html'
   const usagePercent = getTokenUsagePercent(usage, tier);
 
   const [prompt, setPrompt] = useState('');
@@ -150,6 +153,40 @@ export const VideoGenerator = () => {
 
   return (
     <div className="flex-1 min-h-0 flex flex-col h-full overflow-y-auto px-3 py-4 sm:px-8 sm:py-6 max-w-7xl mx-auto w-full space-y-5 sm:space-y-8">
+      {/* Studio Mode Selector Tab Bar */}
+      <div className="flex items-center gap-1.5 p-1 bg-slate-100 dark:bg-slate-800/60 rounded-2xl max-w-xs border border-slate-200/80 dark:border-slate-700/60">
+        <button
+          type="button"
+          onClick={() => setVideoStudioTab('ai')}
+          className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
+            videoStudioTab === 'ai'
+              ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-sm'
+              : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+          }`}
+        >
+          <VideoIcon className="w-3.5 h-3.5" />
+          <span>AI Motion</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setVideoStudioTab('html')}
+          className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
+            videoStudioTab === 'html'
+              ? 'bg-white dark:bg-slate-700 text-violet-600 dark:text-violet-400 shadow-sm'
+              : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+          }`}
+        >
+          <Clapperboard className="w-3.5 h-3.5" />
+          <span>HTML Studio</span>
+          <span className="px-1 py-0.5 rounded bg-violet-500 text-white text-[9px] font-extrabold uppercase leading-none">NEW</span>
+        </button>
+      </div>
+
+      {videoStudioTab === 'html' ? (
+        <HtmlVideoStudio currentUser={currentUser} />
+      ) : (
+        <>
+
       
       {/* Header Banner */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-6 rounded-3xl glass-pearl dark:glass-dark border border-slate-200/90 dark:border-slate-800 shadow-glass">
@@ -441,7 +478,8 @@ export const VideoGenerator = () => {
           </div>
         )}
       </div>
-
+        </>
+      )}
     </div>
   );
 };

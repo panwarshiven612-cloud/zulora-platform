@@ -198,7 +198,7 @@ async function tgSendTyping(chatId) {
 // ─── Intent Classifier ────────────────────────────────────────────────────────
 
 const INTENTS = [
-  { name: 'verify',        re: /^\/(?:start|verify)\s+([A-Z0-9]{6,12})\b/i },
+  { name: 'verify',        re: /^(?:\/(?:start|verify)\s+((?:ZUL-)?[A-Z0-9]{6,12})\b|(ZUL-[A-Z0-9]{6,12})\b)/i },
   { name: 'start',         re: /^\/start\s*$/i },
   { name: 'help',          re: /^\/(?:help|commands)\b/i },
   { name: 'analyze_cmd',   re: /^\/(?:analyze|analyse)(?:\s+([\s\S]*))?$/i },
@@ -620,6 +620,7 @@ async function linkTelegramAccount(code, chatId, userId, username) {
     telegram_chat_id: String(chatId),
     telegram_user_id: String(userId),
     telegram_username: username || '',
+    telegram_linked: true,
     telegram_linked_at: new Date().toISOString()
   });
   if (!linked) throw new Error('Could not save the Telegram account link.');
@@ -709,11 +710,11 @@ export default async function handler(req, res) {
 
     // ── /start VERIFY_CODE — pair Telegram with Firebase account ─────────────
     if (intent === 'verify') {
-      const code = match[1].toUpperCase();
+      const code = (match[1] || match[2] || '').toUpperCase();
       const linked = await linkTelegramAccount(code, chatId, userId, username);
       if (linked) {
         await tgSendMessage(chatId,
-        `✅ *Zulora AI Connected!*\n\nHello ${username}! Your Telegram account is now linked to Zulora AI.\n\nYou can now:\n• Say _"Summarize my emails"_\n• Say _"Create a Google Sheet"_\n• Say _"Schedule a meeting tomorrow"_\n• Ask anything — I'm your AI assistant!`
+          `✅ *Account Linked Successfully!*\n\nHello ${escapeMarkdown(username)}! You can now control Zulora AI directly from this chat.\n\n*Try these commands:*\n• _"Summarize my inbox"_ — Gmail summary\n• _"Create a Google Sheet about sales"_ — Sheets\n• _"Schedule a meeting tomorrow at 3pm"_ — Calendar\n• _"/image sunset over mountains"_ — AI image\n• Ask me anything — I'm your AI assistant! 🤖`
         );
       } else {
         await tgSendMessage(chatId,

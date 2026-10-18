@@ -246,7 +246,7 @@ export async function extractAndPopulateSheetFromVision(options: SheetExtraction
       spreadsheet: populated.spreadsheet,
       rows,
       rowCount: rows.length,
-      confirmation: `Created and populated [${populated.spreadsheet.title}](${populated.spreadsheet.url}) with ${rows.length} rows of actual data.`
+      confirmation: `Created and populated [${populated.spreadsheet.title}](${populated.spreadsheet.url}) with ${rows.length} rows of actual data. 📊 **Direct link:** ${populated.spreadsheet.url}`
     };
   } catch (error: any) {
     return {

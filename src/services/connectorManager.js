@@ -1146,7 +1146,7 @@ export const connectorManager = {
       spreadsheet: {
         id: spreadsheetId,
         title: spreadsheet.properties?.title || String(title || '').trim(),
-        url: spreadsheet.spreadsheetUrl || `https://docs.google.com/spreadsheets/d/${spreadsheetId}`
+        url: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`
       },
       appended: { ...(lastResult?.updates || {}), updatedRows: totalUpdated },
       populated: true
