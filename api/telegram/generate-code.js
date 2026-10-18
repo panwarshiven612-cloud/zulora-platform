@@ -7,3 +7,4 @@ export default async function handler(req, res) {
   req.query = { ...req.query, route: 'telegram/generate-code' };
   return telegramHandler(req, res);
 }
+
