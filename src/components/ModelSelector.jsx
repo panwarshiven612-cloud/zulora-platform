@@ -35,6 +35,15 @@ export const MODEL_TIER_GROUPS = [
         icon: Rocket,
         color: 'text-teal-500',
         badge: 'Stream'
+      },
+      {
+        id: 'gemini-2.5-flash',
+        label: 'Gemini 2.5 Flash',
+        shortLabel: '2.5 Flash',
+        description: 'Ultra-fast stable model for lightweight queries and quick answers.',
+        icon: Zap,
+        color: 'text-amber-500',
+        badge: 'Light'
       }
     ]
   },

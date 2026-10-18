@@ -145,17 +145,34 @@ const GOOGLE_FUNCTIONS = Object.freeze({
 
 export function getGoogleConnectorFunctionDeclarations(activeProviders = connectorManager.getActiveGoogleProviders(), prompt = '') {
   const providers = new Set(activeProviders);
-  const workspaceWorkflow = isWorkspaceMetricsWorkflowRequest(prompt)
+  const cleanPrompt = String(prompt || '').trim();
+  const workspaceWorkflow = isWorkspaceMetricsWorkflowRequest(cleanPrompt)
     && ['drive', 'sheets', 'gmail'].every(provider => providers.has(provider));
+
+  // Restrict multi-agent loop: Only execute tools if explicitly requested in the CURRENT message prompt.
+  // Do NOT carry over tool execution instructions from previous turns.
+  const isExplicitGmail = /\b(?:gmail|inbox|e-?mails?|mail messages?)\b/i.test(cleanPrompt)
+    && /\b(?:send|read|review|summari[sz]e|draft|compose|search|check|show|list|find|retrieve|fetch|latest|recent|analy[sz]e|how\s+many|tell\s+me|what(?:'s|\s+is)\s+in)\b/i.test(cleanPrompt);
+  const isExplicitCalendar = /\b(?:calendar|events?|meetings?|appointments?)\b/i.test(cleanPrompt)
+    && /\b(?:schedule|book|create|list|show|check|find|delete|remove|cancel|upcoming|analy[sz]e|tell\s+me|what(?:'s|\s+is)\s+on)\b/i.test(cleanPrompt);
+  const isExplicitSheets = /\b(?:spreadsheet|google\s*sheets?)\b/i.test(cleanPrompt)
+    && /\b(?:read|append|write|update|add|create|list|show|find|search|populate)\b/i.test(cleanPrompt);
+  const isExplicitDrive = /\bdrive\b/i.test(cleanPrompt)
+    && /\b(?:folder|list|show|search|find|download|open|manage|delete|trash|inspect|create)\b/i.test(cleanPrompt);
+  const isExplicitForms = /\b(?:google\s+)?forms?\b/i.test(cleanPrompt)
+    && /\b(?:read|create|make|build|show|list|responses?)\b/i.test(cleanPrompt);
+  const isExplicitComputer = /\b(?:computer|system|browser)\b/i.test(cleanPrompt)
+    && /\b(?:scan|inspect|check)\b/i.test(cleanPrompt);
+
   const names = [
-    ...(providers.has('gmail') ? ['gmail_read_inbox', 'gmail_analyze_emails', 'gmail_send_email', 'gmail_search_messages', 'reply_and_draft'] : []),
-    ...(providers.has('calendar') ? ['calendar_list_events', 'calendar_create_event', 'schedule_events', 'delete_event'] : []),
-    ...(providers.has('sheets') ? ['sheets_create_spreadsheet', 'sheets_create_and_populate', 'sheets_append_data', 'read_range'] : []),
-    ...(providers.has('drive') ? ['drive_create_folder', 'list_drive', 'manage_files', 'download_file'] : []),
-    ...(providers.has('forms') ? ['get_form', 'read_form_responses', 'create_form'] : []),
-    ...(providers.has('computer') ? ['computer_scan_system'] : []),
-    ...(providers.has('gmail') && providers.has('sheets') ? ['workspace_export_gmail_to_sheet'] : []),
-    ...(providers.has('calendar') && providers.has('sheets') ? ['workspace_export_calendar_to_sheet'] : []),
+    ...(providers.has('gmail') && (isExplicitGmail || workspaceWorkflow) ? ['gmail_read_inbox', 'gmail_analyze_emails', 'gmail_send_email', 'gmail_search_messages', 'reply_and_draft'] : []),
+    ...(providers.has('calendar') && (isExplicitCalendar || workspaceWorkflow) ? ['calendar_list_events', 'calendar_create_event', 'schedule_events', 'delete_event'] : []),
+    ...(providers.has('sheets') && (isExplicitSheets || workspaceWorkflow) ? ['sheets_create_spreadsheet', 'sheets_create_and_populate', 'sheets_append_data', 'read_range'] : []),
+    ...(providers.has('drive') && (isExplicitDrive || workspaceWorkflow) ? ['drive_create_folder', 'list_drive', 'manage_files', 'download_file'] : []),
+    ...(providers.has('forms') && isExplicitForms ? ['get_form', 'read_form_responses', 'create_form'] : []),
+    ...(providers.has('computer') && isExplicitComputer ? ['computer_scan_system'] : []),
+    ...(providers.has('gmail') && providers.has('sheets') && (isExplicitGmail || isExplicitSheets || workspaceWorkflow) ? ['workspace_export_gmail_to_sheet'] : []),
+    ...(providers.has('calendar') && providers.has('sheets') && (isExplicitCalendar || isExplicitSheets || workspaceWorkflow) ? ['workspace_export_calendar_to_sheet'] : []),
     ...(workspaceWorkflow ? ['workspace_create_folder_sheet_email_metrics'] : [])
   ];
   if (!names.length) return [];

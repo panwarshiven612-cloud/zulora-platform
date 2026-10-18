@@ -8,10 +8,8 @@ import {
   Camera, 
   Globe, 
   Link, 
-  MoreHorizontal, 
   X,
-  FileText,
-  FolderOpen
+  FileText
 } from 'lucide-react';
 import ModelSelector from '../ModelSelector';
 
@@ -32,8 +30,6 @@ export default function ChatInput({
   fileInputRef,
   cameraInputRef,
   onFileSelect,
-  showMoreTools = false,
-  onToggleMoreTools,
   enableWebSearch = false,
   onToggleWebSearch,
   onOpenConnectors
@@ -45,7 +41,7 @@ export default function ChatInput({
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    const nextHeight = Math.min(Math.max(el.scrollHeight, 38), 140);
+    const nextHeight = Math.min(Math.max(el.scrollHeight, 40), 160);
     el.style.height = `${nextHeight}px`;
   }, [inputPrompt]);
 
@@ -133,10 +129,30 @@ export default function ChatInput({
         </div>
       )}
 
-      {/* Main Single-Row Flex Toolbar */}
-      <div className="chat-input-single-row flex items-center gap-1.5 sm:gap-2 p-1.5 sm:p-2 w-full min-w-0">
-        {/* Left: Model Selector Dropdown ONLY */}
-        <div className="chat-composer-left shrink-0 z-20">
+      {/* Main Textarea Area */}
+      <div className="w-full px-3.5 pt-3 pb-1">
+        <textarea
+          ref={textareaRef}
+          value={inputPrompt}
+          onChange={(e) => setInputPrompt(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
+          placeholder="Ask Zulora AI anything..."
+          rows={1}
+          aria-label="Message Zulora AI"
+          onFocus={() => {
+            if (typeof window !== 'undefined' && window.innerWidth <= 768) {
+              setTimeout(() => textareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 200);
+            }
+          }}
+          className="w-full resize-none bg-transparent text-sm sm:text-base leading-relaxed text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none overflow-y-auto max-h-[160px]"
+        />
+      </div>
+
+      {/* Bottom Action Row: [Auto/Model Selector], [Web Search], [Connectors], [Attachment], [Camera], [Mic], [Live Voice], [Send] */}
+      <div className="flex items-center justify-between gap-1 sm:gap-2 px-2.5 sm:px-3 pb-2.5 pt-1.5 border-t border-slate-100/70 dark:border-slate-800/60">
+        <div className="flex items-center gap-1 sm:gap-1.5 flex-wrap sm:flex-nowrap min-w-0">
+          {/* 1. Auto/Model Selector */}
           <ModelSelector
             modelPreference={modelPreference}
             onModelChange={onModelChange}
@@ -144,48 +160,62 @@ export default function ChatInput({
             onToggle={onToggleModelMenu}
             onClose={onCloseModelMenu}
           />
-        </div>
 
-        {/* Center: Auto-Growing Textarea */}
-        <div className="chat-composer-center flex-1 min-w-0 relative z-10 flex items-center">
-          <textarea
-            ref={textareaRef}
-            value={inputPrompt}
-            onChange={(e) => setInputPrompt(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            placeholder="Ask Zulora AI anything..."
-            rows={1}
-            aria-label="Message Zulora AI"
-            onFocus={() => {
-              if (typeof window !== 'undefined' && window.innerWidth <= 768) {
-                setTimeout(() => textareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 200);
-              }
-            }}
-            className="w-full resize-none bg-transparent px-2 sm:px-3 py-2 text-sm leading-relaxed text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none overflow-y-auto max-h-[140px]"
-          />
-        </div>
+          {/* 2. Web Search Icon */}
+          <button
+            type="button"
+            onClick={onToggleWebSearch}
+            title={enableWebSearch ? 'Web search active' : 'Enable web search'}
+            aria-pressed={enableWebSearch}
+            className={`h-8 w-8 sm:h-8.5 sm:w-8.5 shrink-0 flex items-center justify-center rounded-xl border transition-all ${
+              enableWebSearch
+                ? 'border-sky-400 bg-sky-100/90 text-sky-700 dark:border-sky-600 dark:bg-sky-950/70 dark:text-sky-300 shadow-xs'
+                : 'border-slate-200/80 dark:border-slate-700/60 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60'
+            }`}
+          >
+            <Globe className="h-4 w-4" />
+          </button>
 
-        {/* Right: Compact Action Buttons (Live, Mic, Send, More '...' toggle) */}
-        <div className="chat-composer-right flex shrink-0 items-center gap-1 sm:gap-1.5 z-20">
-          {onOpenVoiceAssistant && (
-            <button
-              type="button"
-              onClick={onOpenVoiceAssistant}
-              title="Open Gemini Live Voice Assistant"
-              className="chat-live-voice-btn h-9 px-2 sm:px-2.5 shrink-0 flex items-center justify-center gap-1 rounded-xl border border-sky-300/70 dark:border-sky-700/60 bg-sky-50/90 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 hover:bg-sky-100 dark:hover:bg-sky-900/40 transition-all text-xs font-semibold shadow-xs"
-            >
-              <Radio className="h-3.5 w-3.5 animate-pulse text-sky-500 shrink-0" />
-              <span className="hidden xs:inline sm:inline">Live</span>
-            </button>
-          )}
+          {/* 3. Connectors Link Icon */}
+          <button
+            type="button"
+            onClick={onOpenConnectors}
+            title="Google & Workspace Connectors"
+            aria-label="Connectors"
+            className="h-8 w-8 sm:h-8.5 sm:w-8.5 shrink-0 flex items-center justify-center rounded-xl border border-slate-200/80 dark:border-slate-700/60 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-all"
+          >
+            <Link className="h-4 w-4" />
+          </button>
 
+          {/* 4. Attachment Clip */}
+          <button
+            type="button"
+            onClick={() => fileInputRef?.current?.click()}
+            title="Attach file"
+            aria-label="Attach file"
+            className="h-8 w-8 sm:h-8.5 sm:w-8.5 shrink-0 flex items-center justify-center rounded-xl border border-slate-200/80 dark:border-slate-700/60 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-all"
+          >
+            <Paperclip className="h-4 w-4" />
+          </button>
+
+          {/* 5. Camera Icon */}
+          <button
+            type="button"
+            onClick={() => cameraInputRef?.current?.click()}
+            title="Take or upload photo"
+            aria-label="Photo"
+            className="h-8 w-8 sm:h-8.5 sm:w-8.5 shrink-0 flex items-center justify-center rounded-xl border border-slate-200/80 dark:border-slate-700/60 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-all"
+          >
+            <Camera className="h-4 w-4" />
+          </button>
+
+          {/* 6. Microphone Icon */}
           <button
             type="button"
             onClick={onToggleListening}
             aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
             title={isListening ? 'Stop listening' : 'Voice input'}
-            className={`h-9 w-9 shrink-0 flex items-center justify-center rounded-xl border transition-all ${
+            className={`h-8 w-8 sm:h-8.5 sm:w-8.5 shrink-0 flex items-center justify-center rounded-xl border transition-all ${
               isListening
                 ? 'animate-pulse border-red-300 bg-red-50 text-red-500 dark:border-red-800 dark:bg-red-950/40'
                 : 'border-slate-200/80 dark:border-slate-700/60 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60'
@@ -194,101 +224,39 @@ export default function ChatInput({
             {isListening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
           </button>
 
+          {/* 7. Live Voice Icon */}
+          {onOpenVoiceAssistant && (
+            <button
+              type="button"
+              onClick={onOpenVoiceAssistant}
+              title="Open Gemini Live Voice Assistant"
+              aria-label="Live Voice Assistant"
+              className="chat-live-voice-btn h-8 px-2 sm:h-8.5 sm:px-2.5 shrink-0 flex items-center justify-center gap-1 rounded-xl border border-sky-300/70 dark:border-sky-700/60 bg-sky-50/90 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 hover:bg-sky-100 dark:hover:bg-sky-900/40 transition-all text-xs font-semibold shadow-xs"
+            >
+              <Radio className="h-3.5 w-3.5 animate-pulse text-sky-500 shrink-0" />
+              <span className="hidden xs:inline">Live</span>
+            </button>
+          )}
+        </div>
+
+        {/* 8. Send Arrow Button */}
+        <div className="shrink-0 flex items-center">
           <button
             type="button"
             onClick={() => onSendMessage()}
             disabled={!hasContent}
             aria-label="Send message"
             title="Send message"
-            className={`h-9 w-9 sm:w-auto sm:px-3.5 shrink-0 flex items-center justify-center gap-1.5 rounded-xl font-semibold text-xs sm:text-sm transition-all duration-200 ${
+            className={`h-8 w-8 sm:h-8.5 sm:w-8.5 flex items-center justify-center rounded-xl font-semibold transition-all duration-200 ${
               hasContent
                 ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-md shadow-sky-500/25 hover:from-sky-600 hover:to-blue-700 active:scale-95'
                 : 'cursor-not-allowed bg-slate-100 dark:bg-slate-800/50 text-slate-400 dark:text-slate-600'
             }`}
           >
             <Send className="h-4 w-4 shrink-0" />
-            <span className="hidden sm:inline">Send</span>
-          </button>
-
-          {/* Expandable Tray Toggle Button ('...' on the right) */}
-          <button
-            type="button"
-            onClick={onToggleMoreTools}
-            aria-expanded={showMoreTools}
-            title={showMoreTools ? 'Close tools tray' : 'Open secondary tools (Search, Connectors, Attachments, Drive)'}
-            className={`h-9 w-9 shrink-0 flex items-center justify-center rounded-xl border transition-all ${
-              showMoreTools 
-                ? 'border-sky-400 bg-sky-50 text-sky-600 dark:border-sky-600 dark:bg-sky-950/50 dark:text-sky-300 shadow-xs' 
-                : 'border-slate-200/80 dark:border-slate-700/60 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60'
-            }`}
-          >
-            <MoreHorizontal className="h-4 w-4" />
           </button>
         </div>
       </div>
-
-      {/* Expandable Secondary Tool Tray (Drawer below main row) */}
-      {showMoreTools && (
-        <div className="expandable-tool-tray border-t border-slate-100 dark:border-slate-800/80 bg-slate-50/90 dark:bg-[#070b14]/90 p-2 sm:p-2.5 rounded-b-2xl sm:rounded-b-3xl animate-scale-in">
-          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-            {/* 1. Search & Research */}
-            <button
-              type="button"
-              onClick={onToggleWebSearch}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all ${
-                enableWebSearch
-                  ? 'border-sky-400 bg-sky-100/80 text-sky-700 dark:border-sky-600 dark:bg-sky-950/60 dark:text-sky-300 shadow-xs'
-                  : 'border-slate-200/80 dark:border-slate-700/60 bg-white/80 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-800'
-              }`}
-            >
-              <Globe className={`w-3.5 h-3.5 ${enableWebSearch ? 'text-sky-500' : 'text-slate-400'}`} />
-              <span>Search &amp; Research</span>
-              {enableWebSearch && <span className="w-1.5 h-1.5 rounded-full bg-sky-500" />}
-            </button>
-
-            {/* 2. Connectors */}
-            <button
-              type="button"
-              onClick={onOpenConnectors}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-sky-200/80 bg-sky-50/70 text-sky-700 dark:border-sky-800/60 dark:bg-sky-950/30 dark:text-sky-300 text-xs font-semibold hover:bg-sky-100/80 transition-all shadow-xs"
-            >
-              <Link className="w-3.5 h-3.5 text-sky-500" />
-              <span>Connectors</span>
-            </button>
-
-            {/* 3. Attach File */}
-            <button
-              type="button"
-              onClick={() => fileInputRef?.current?.click()}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200/80 dark:border-slate-700/60 bg-white/80 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300 text-xs font-medium hover:bg-white dark:hover:bg-slate-800 transition-all"
-            >
-              <Paperclip className="w-3.5 h-3.5 text-slate-400" />
-              <span>Attach File</span>
-            </button>
-
-            {/* 4. Photo */}
-            <button
-              type="button"
-              onClick={() => cameraInputRef?.current?.click()}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200/80 dark:border-slate-700/60 bg-white/80 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300 text-xs font-medium hover:bg-white dark:hover:bg-slate-800 transition-all"
-            >
-              <Camera className="w-3.5 h-3.5 text-slate-400" />
-              <span>Photo</span>
-            </button>
-
-            {/* 5. Zulora Drive */}
-            <a 
-              href="https://drive.zulora.in" 
-              target="_blank" 
-              rel="noopener noreferrer" 
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-amber-200/80 bg-amber-50/70 text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300 text-xs font-medium hover:bg-amber-100/80 transition-all shadow-xs"
-            >
-              <FolderOpen className="w-3.5 h-3.5 text-amber-500" />
-              <span>Zulora Drive</span>
-            </a>
-          </div>
-        </div>
-      )}
 
       {/* Hidden file inputs */}
       <input 

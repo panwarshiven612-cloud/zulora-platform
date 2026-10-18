@@ -185,32 +185,35 @@ function buildHtmlMimeMessage({ to, subject, body, senderEmail = '' }) {
   let bodyBackground = '#fffefa';
   let actionContent = '';
 
-  if (intent === 'meeting') {
-    const details = meetingRows(body, safeSubject);
-    const detailRows = details.rows.map(row => '<tr><td style="width:27%;padding:10px 12px;border-bottom:1px solid #e4ebf2;color:#52657b;font-size:12px;font-weight:700;vertical-align:top;">' + escapeHtml(row.label) + '</td><td style="padding:10px 12px;border-bottom:1px solid #e4ebf2;color:#1e2d43;font-size:14px;line-height:1.5;">' + escapeHtml(row.value) + '</td></tr>').join('');
-    const noteHtml = details.notes.length
-      ? '<div style="padding:18px 0 0;color:#25344c;font-size:15px;line-height:1.7;">' + details.notes.map(line => '<p style="margin:0 0 10px;">' + sanitizeEmailContent(line) + '</p>').join('') + '</div>'
-      : '';
-    bodyContent = '<div style="margin:0 0 14px;color:#536980;font-size:11px;font-weight:700;letter-spacing:1.3px;text-transform:uppercase;">Meeting details</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border:1px solid #e1e8f0;border-radius:10px;border-collapse:separate;border-spacing:0;background-color:#f8fafc;">' + detailRows + '</table>' + noteHtml;
-    actionContent = '<tr><td align="center" style="padding:0 22px 24px;background-color:#fffefa;text-align:center;"><div style="padding:0 0 8px;color:#536980;font-size:12px;font-weight:700;">RSVP</div>'
-      + actionButton(emailReplyLink(senderEmail, safeSubject, 'I will attend.'), 'Yes, I will attend', '#0879c9')
-      + actionButton(emailReplyLink(senderEmail, safeSubject, 'I may attend. Please share any updates.'), 'Maybe', '#e8f3fa', '#18324b')
-      + actionButton(emailReplyLink(senderEmail, safeSubject, 'I cannot attend.'), 'Decline', '#eef1f5', '#31445b')
-      + '</td></tr>';
-  } else if (intent === 'promotion') {
-    bodyBackground = '#f8fbfe';
-    banner = '<tr><td style="padding:28px 30px 8px;background-color:#10192b;background-image:linear-gradient(125deg,#10192b 0%,#19314c 60%,#07578f 100%);border-bottom:1px solid rgba(125,211,252,.35);">' + brand + '</td></tr>'
-      + '<tr><td style="padding:10px 30px 30px;background-color:#10192b;background-image:linear-gradient(125deg,#10192b 0%,#19314c 60%,#07578f 100%);color:#f8fbff;font-family:Arial,Helvetica,sans-serif;font-size:27px;font-weight:700;line-height:1.3;">' + headerTitle + '</td></tr>';
-    const ctaHref = link?.href || emailReplyLink(senderEmail, safeSubject, 'I would like to learn more about this launch.');
-    const ctaLabel = link?.label || 'Ask us about the launch';
-    if (link) bodyContent = contentHtml.replace(link.markup, '');
-    actionContent = '<tr><td align="center" style="padding:4px 22px 28px;background-color:#f8fbfe;text-align:center;">' + actionButton(ctaHref, ctaLabel, '#0879c9') + '</td></tr>';
-  } else if (intent === 'report') {
-    bodyBackground = '#f4f8fb';
-    banner = '<tr><td style="padding:24px 28px 10px;background-color:#f4f8fb;">' + brand + '</td></tr><tr><td style="padding:8px 28px 18px;background-color:#f4f8fb;color:#1e2d43;font-family:Arial,Helvetica,sans-serif;font-size:24px;font-weight:700;line-height:1.3;">' + headerTitle + '</td></tr>';
-    bodyContent = '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border:1px solid #dce7ef;border-radius:12px;background-color:#ffffff;border-collapse:separate;border-spacing:0;"><tr><td style="padding:20px 22px;color:#26384d;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.7;">' + reportBodyHtml(body, contentHtml) + '</td></tr></table>';
-  } else if (intent === 'corporate') {
-    banner = '<tr><td style="padding:25px 30px 10px;background-color:#fffefa;">' + brand + '</td></tr><tr><td style="padding:8px 30px 22px;background-color:#fffefa;color:#1e2d43;font-family:Arial,Helvetica,sans-serif;font-size:24px;font-weight:700;line-height:1.3;">' + headerTitle + '</td></tr>';
+  const hasCustomHtml = /<(?:table|div|p|ul|ol|li|h[1-6]|span|strong|em|br|hr)\b/i.test(String(body || ''));
+  if (!hasCustomHtml) {
+    if (intent === 'meeting') {
+      const details = meetingRows(body, safeSubject);
+      const detailRows = details.rows.map(row => '<tr><td style="width:27%;padding:10px 12px;border-bottom:1px solid #e4ebf2;color:#52657b;font-size:12px;font-weight:700;vertical-align:top;">' + escapeHtml(row.label) + '</td><td style="padding:10px 12px;border-bottom:1px solid #e4ebf2;color:#1e2d43;font-size:14px;line-height:1.5;">' + escapeHtml(row.value) + '</td></tr>').join('');
+      const noteHtml = details.notes.length
+        ? '<div style="padding:18px 0 0;color:#25344c;font-size:15px;line-height:1.7;">' + details.notes.map(line => '<p style="margin:0 0 10px;">' + sanitizeEmailContent(line) + '</p>').join('') + '</div>'
+        : '';
+      bodyContent = '<div style="margin:0 0 14px;color:#536980;font-size:11px;font-weight:700;letter-spacing:1.3px;text-transform:uppercase;">Meeting details</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border:1px solid #e1e8f0;border-radius:10px;border-collapse:separate;border-spacing:0;background-color:#f8fafc;">' + detailRows + '</table>' + noteHtml;
+      actionContent = '<tr><td align="center" style="padding:0 22px 24px;background-color:#fffefa;text-align:center;"><div style="padding:0 0 8px;color:#536980;font-size:12px;font-weight:700;">RSVP</div>'
+        + actionButton(emailReplyLink(senderEmail, safeSubject, 'I will attend.'), 'Yes, I will attend', '#0879c9')
+        + actionButton(emailReplyLink(senderEmail, safeSubject, 'I may attend. Please share any updates.'), 'Maybe', '#e8f3fa', '#18324b')
+        + actionButton(emailReplyLink(senderEmail, safeSubject, 'I cannot attend.'), 'Decline', '#eef1f5', '#31445b')
+        + '</td></tr>';
+    } else if (intent === 'promotion') {
+      bodyBackground = '#f8fbfe';
+      banner = '<tr><td style="padding:28px 30px 8px;background-color:#10192b;background-image:linear-gradient(125deg,#10192b 0%,#19314c 60%,#07578f 100%);border-bottom:1px solid rgba(125,211,252,.35);">' + brand + '</td></tr>'
+        + '<tr><td style="padding:10px 30px 30px;background-color:#10192b;background-image:linear-gradient(125deg,#10192b 0%,#19314c 60%,#07578f 100%);color:#f8fbff;font-family:Arial,Helvetica,sans-serif;font-size:27px;font-weight:700;line-height:1.3;">' + headerTitle + '</td></tr>';
+      const ctaHref = link?.href || emailReplyLink(senderEmail, safeSubject, 'I would like to learn more about this launch.');
+      const ctaLabel = link?.label || 'Ask us about the launch';
+      if (link) bodyContent = contentHtml.replace(link.markup, '');
+      actionContent = '<tr><td align="center" style="padding:4px 22px 28px;background-color:#f8fbfe;text-align:center;">' + actionButton(ctaHref, ctaLabel, '#0879c9') + '</td></tr>';
+    } else if (intent === 'report') {
+      bodyBackground = '#f4f8fb';
+      banner = '<tr><td style="padding:24px 28px 10px;background-color:#f4f8fb;">' + brand + '</td></tr><tr><td style="padding:8px 28px 18px;background-color:#f4f8fb;color:#1e2d43;font-family:Arial,Helvetica,sans-serif;font-size:24px;font-weight:700;line-height:1.3;">' + headerTitle + '</td></tr>';
+      bodyContent = '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border:1px solid #dce7ef;border-radius:12px;background-color:#ffffff;border-collapse:separate;border-spacing:0;"><tr><td style="padding:20px 22px;color:#26384d;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.7;">' + reportBodyHtml(body, contentHtml) + '</td></tr></table>';
+    } else if (intent === 'corporate') {
+      banner = '<tr><td style="padding:25px 30px 10px;background-color:#fffefa;">' + brand + '</td></tr><tr><td style="padding:8px 30px 22px;background-color:#fffefa;color:#1e2d43;font-family:Arial,Helvetica,sans-serif;font-size:24px;font-weight:700;line-height:1.3;">' + headerTitle + '</td></tr>';
+    }
   }
 
   const stripe = intent === 'meeting' || intent === 'corporate' ? '#14283f' : '#168bd2';

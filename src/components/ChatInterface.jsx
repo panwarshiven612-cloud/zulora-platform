@@ -1003,10 +1003,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 
     const codeGenerationRequest = isCodeGenerationPrompt(basePrompt);
     const highTierCodeRequest = codeGenerationRequest && (modelPreference === 'think' || modelPreference === 'pro' || /-pro(?:-|$)/i.test(modelPreference));
-    if (modelPreference === 'think' && !isPro && !codeGenerationRequest) {
-      setIsPricingModalOpen(true);
-      return;
-    }
     sendingRef.current = true;
     let allowance;
     try {

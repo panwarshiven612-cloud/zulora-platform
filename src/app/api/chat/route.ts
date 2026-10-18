@@ -3,48 +3,65 @@ import { GEMINI_KEYS, GROQ_KEYS, CEREBRAS_KEYS, OPENROUTER_KEYS } from '../../..
 export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
-function normalizeRequestedModel(modelName: string = 'auto'): { provider: string; model: string } {
+export interface RouteModelConfig {
+  provider: string;
+  model: string;
+  isAuto: boolean;
+}
+
+function normalizeRequestedModel(modelName: string = 'auto'): RouteModelConfig {
   const raw = String(modelName || 'auto').trim().toLowerCase();
   
   // Tier 1: Light & Low Cost
   if (raw === 'gemini-3.5-flash-lite' || raw === '3.5-lite' || raw === '3.5 lite') {
-    return { provider: 'gemini', model: 'gemini-3.5-flash-lite' };
+    return { provider: 'gemini', model: 'gemini-3.5-flash-lite', isAuto: false };
   }
   if (raw === 'gemini-3.1-flash-lite' || raw === '3.1-lite' || raw === '3.1 lite') {
-    return { provider: 'gemini', model: 'gemini-3.1-flash-lite' };
+    return { provider: 'gemini', model: 'gemini-3.1-flash-lite', isAuto: false };
+  }
+  if (raw === 'gemini-2.5-flash' || raw === '2.5-flash' || raw === '2.5 flash') {
+    return { provider: 'gemini', model: 'gemini-2.5-flash', isAuto: false };
   }
 
   // Tier 2: Thinking & Reasoning Models
   if (raw === 'gemini-2.5-pro' || raw === '2.5-pro' || raw === 'pro' || raw === 'think') {
-    return { provider: 'gemini', model: 'gemini-2.5-pro' };
+    return { provider: 'gemini', model: 'gemini-2.5-pro', isAuto: false };
   }
   if (raw === 'gemini-3.6-flash' || raw === '3.6-flash' || raw === '3.6 flash') {
-    return { provider: 'gemini', model: 'gemini-3.6-flash' };
+    return { provider: 'gemini', model: 'gemini-3.6-flash', isAuto: false };
   }
 
-  // Tier 3: Complex / Auto / Third-Party LPUs
+  // Tier 3: Third-Party LPUs
   if (raw === 'groq' || raw.includes('llama')) {
-    return { provider: 'groq', model: 'llama-3.3-70b-versatile' };
+    return { provider: 'groq', model: 'llama-3.3-70b-versatile', isAuto: false };
   }
   if (raw === 'cerebras') {
-    return { provider: 'cerebras', model: 'llama3.1-70b' };
+    return { provider: 'cerebras', model: 'llama3.1-70b', isAuto: false };
   }
   if (raw === 'openrouter') {
-    return { provider: 'openrouter', model: 'meta-llama/llama-3.3-70b-instruct' };
+    return { provider: 'openrouter', model: 'meta-llama/llama-3.3-70b-instruct', isAuto: false };
+  }
+  if (raw === 'gemini-3.8-flash' || raw === '3.8-flash' || raw === '3.8 flash') {
+    return { provider: 'gemini', model: 'gemini-3.8-flash', isAuto: false };
   }
   if (raw.startsWith('gemini-')) {
-    return { provider: 'gemini', model: raw };
+    return { provider: 'gemini', model: raw, isAuto: false };
   }
 
-  // Auto defaults to fastest flagship
-  return { provider: 'gemini', model: 'gemini-3.8-flash' };
+  // Tier 3: Complex / Auto defaults to smart waterfall starting at Gemini 3.8 Flash
+  return { provider: 'gemini', model: 'gemini-3.8-flash', isAuto: true };
+}
+
+interface StreamStats {
+  tokenCount: number;
 }
 
 async function streamFromGemini(
   messages: Array<{ role: string; content: string }>,
   model: string,
   controller: ReadableStreamDefaultController,
-  encoder: TextEncoder
+  encoder: TextEncoder,
+  stats: StreamStats
 ): Promise<boolean> {
   const contents = messages
     .filter(m => m.role !== 'system')
@@ -59,6 +76,11 @@ async function streamFromGemini(
     if (!key) continue;
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${key}`;
+      
+      // Fast connection timeout to prevent 3-4 min lag
+      const fetchController = new AbortController();
+      const timeoutId = setTimeout(() => fetchController.abort(), 7000);
+
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -69,16 +91,20 @@ async function streamFromGemini(
             temperature: 0.7,
             maxOutputTokens: model === 'gemini-2.5-pro' ? 16384 : 8192
           }
-        })
+        }),
+        signal: fetchController.signal
       });
 
+      clearTimeout(timeoutId);
+
       if (!res.ok || !res.body) {
-        continue; // Try next key
+        continue; // Try next key immediately on error / rate-limit
       }
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let receivedAnyChunk = false;
 
       while (true) {
         const { value, done } = await reader.read();
@@ -96,18 +122,27 @@ async function streamFromGemini(
               const data = JSON.parse(jsonStr);
               const textChunk = data.candidates?.[0]?.content?.parts?.[0]?.text;
               if (textChunk) {
-                // Send standard SSE data packet
-                controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ token: textChunk })}\n\n`));
+                receivedAnyChunk = true;
+                // Word-by-word streaming for real-time live display
+                const words = textChunk.split(/(\s+)/);
+                for (const word of words) {
+                  if (!word) continue;
+                  stats.tokenCount += 1;
+                  controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ token: word, tokenCount: stats.tokenCount })}\n\n`));
+                }
               }
             } catch {
-              // skip unparseable lines
+              // skip unparseable fragments
             }
           }
         }
       }
-      return true;
+
+      if (receivedAnyChunk) {
+        return true;
+      }
     } catch {
-      // try next key
+      // try next key on connection error or timeout
     }
   }
   return false;
@@ -119,9 +154,13 @@ async function streamFromOpenAiCompatible(
   model: string,
   messages: Array<{ role: string; content: string }>,
   controller: ReadableStreamDefaultController,
-  encoder: TextEncoder
+  encoder: TextEncoder,
+  stats: StreamStats
 ): Promise<boolean> {
   try {
+    const fetchController = new AbortController();
+    const timeoutId = setTimeout(() => fetchController.abort(), 7000);
+
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -134,14 +173,18 @@ async function streamFromOpenAiCompatible(
         stream: true,
         temperature: 0.7,
         max_tokens: 8192
-      })
+      }),
+      signal: fetchController.signal
     });
+
+    clearTimeout(timeoutId);
 
     if (!res.ok || !res.body) return false;
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let receivedAnyToken = false;
 
     while (true) {
       const { value, done } = await reader.read();
@@ -159,13 +202,19 @@ async function streamFromOpenAiCompatible(
             const parsed = JSON.parse(payload);
             const token = parsed.choices?.[0]?.delta?.content;
             if (token) {
-              controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ token })}\n\n`));
+              receivedAnyToken = true;
+              const words = token.split(/(\s+)/);
+              for (const word of words) {
+                if (!word) continue;
+                stats.tokenCount += 1;
+                controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ token: word, tokenCount: stats.tokenCount })}\n\n`));
+              }
             }
           } catch {}
         }
       }
     }
-    return true;
+    return receivedAnyToken;
   } catch {
     return false;
   }
@@ -182,13 +231,25 @@ export async function POST(req: Request) {
     });
   }
 
-  const messages = Array.isArray(body.messages) ? body.messages : [{ role: 'user', content: String(body.prompt || '') }];
+  const rawMessages = Array.isArray(body.messages) ? body.messages : [{ role: 'user', content: String(body.prompt || '') }];
+  
+  // Context isolation: Ensure tool execution is never carried over from previous turns.
+  // We sanitize messages to preserve text dialogue while stripping stale tool triggers from history.
+  const messages = rawMessages.map((m: any, idx: number) => {
+    const isCurrentPrompt = idx === rawMessages.length - 1;
+    let content = String(m.content || '');
+    if (!isCurrentPrompt) {
+      // Strip potential tool invocation commands from old history messages
+      content = content.replace(/\[\s*(?:send_email|sheets_create|drive_upload)[\s\S]*?\]/gi, '');
+    }
+    return { role: m.role || 'user', content };
+  });
+
   const requestedModel = body.modelPreference || body.model || 'auto';
-  const { provider, model } = normalizeRequestedModel(requestedModel);
+  const { provider, model, isAuto } = normalizeRequestedModel(requestedModel);
   const wantsStream = body.stream !== false;
 
   if (!wantsStream) {
-    // Non-streaming fallback if explicitly requested
     for (const key of GEMINI_KEYS) {
       try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
@@ -214,39 +275,66 @@ export async function POST(req: Request) {
     });
   }
 
-  // Streaming Response via ReadableStream
+  // Real-time SSE Token Streaming with live word-by-word streaming & token tracking
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller: ReadableStreamDefaultController) {
+      const stats: StreamStats = { tokenCount: 0 };
+
       // Send initial connect notification
       controller.enqueue(encoder.encode(`event: provider\ndata: ${JSON.stringify({ provider, model })}\n\n`));
 
       let streamed = false;
 
-      // 1. Try selected provider
+      // 1. Try selected primary provider / model
       if (provider === 'gemini') {
-        streamed = await streamFromGemini(messages, model, controller, encoder);
+        streamed = await streamFromGemini(messages, model, controller, encoder, stats);
       } else if (provider === 'groq' && GROQ_KEYS[0]) {
-        streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', GROQ_KEYS[0], model, messages, controller, encoder);
+        streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', GROQ_KEYS[0], model, messages, controller, encoder, stats);
       } else if (provider === 'cerebras' && CEREBRAS_KEYS[0]) {
-        streamed = await streamFromOpenAiCompatible('https://api.cerebras.ai/v1/chat/completions', CEREBRAS_KEYS[0], model, messages, controller, encoder);
+        streamed = await streamFromOpenAiCompatible('https://api.cerebras.ai/v1/chat/completions', CEREBRAS_KEYS[0], model, messages, controller, encoder, stats);
       } else if (provider === 'openrouter' && OPENROUTER_KEYS[0]) {
-        streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', OPENROUTER_KEYS[0], model, messages, controller, encoder);
+        streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', OPENROUTER_KEYS[0], model, messages, controller, encoder, stats);
       }
 
-      // 2. Fallback to Gemini pool if primary provider failed
-      if (!streamed && provider !== 'gemini') {
-        controller.enqueue(encoder.encode(`event: provider\ndata: ${JSON.stringify({ provider: 'Google Gemini (Fallback)', model: 'gemini-3.8-flash' })}\n\n`));
-        streamed = await streamFromGemini(messages, 'gemini-3.8-flash', controller, encoder);
-      }
-
-      // 3. Fallback to Gemini 3.5 Flash-Lite if still not streamed
+      // 2. Waterfall Fallback: If primary failed or in Auto mode, follow strict waterfall:
+      // Gemini 3.8 Flash -> Groq (llama-3.3-70b) -> Cerebras -> OpenRouter -> Mistral
       if (!streamed) {
-        streamed = await streamFromGemini(messages, 'gemini-3.5-flash-lite', controller, encoder);
+        controller.enqueue(encoder.encode(`event: reset\ndata: {}\n\n`));
+        
+        // Waterfall Step 1: Gemini 3.8 Flash
+        if (model !== 'gemini-3.8-flash') {
+          controller.enqueue(encoder.encode(`event: provider\ndata: ${JSON.stringify({ provider: 'Google Gemini (Waterfall)', model: 'gemini-3.8-flash' })}\n\n`));
+          streamed = await streamFromGemini(messages, 'gemini-3.8-flash', controller, encoder, stats);
+        }
+
+        // Waterfall Step 2: Groq Llama 3.3 70B
+        if (!streamed && GROQ_KEYS[0]) {
+          controller.enqueue(encoder.encode(`event: provider\ndata: ${JSON.stringify({ provider: 'Groq LPU (Waterfall)', model: 'llama-3.3-70b-versatile' })}\n\n`));
+          streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', GROQ_KEYS[0], 'llama-3.3-70b-versatile', messages, controller, encoder, stats);
+        }
+
+        // Waterfall Step 3: Cerebras Llama 3.1 70B
+        if (!streamed && CEREBRAS_KEYS[0]) {
+          controller.enqueue(encoder.encode(`event: provider\ndata: ${JSON.stringify({ provider: 'Cerebras (Waterfall)', model: 'llama3.1-70b' })}\n\n`));
+          streamed = await streamFromOpenAiCompatible('https://api.cerebras.ai/v1/chat/completions', CEREBRAS_KEYS[0], 'llama3.1-70b', messages, controller, encoder, stats);
+        }
+
+        // Waterfall Step 4: OpenRouter
+        if (!streamed && OPENROUTER_KEYS[0]) {
+          controller.enqueue(encoder.encode(`event: provider\ndata: ${JSON.stringify({ provider: 'OpenRouter (Waterfall)', model: 'meta-llama/llama-3.3-70b-instruct' })}\n\n`));
+          streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', OPENROUTER_KEYS[0], 'meta-llama/llama-3.3-70b-instruct', messages, controller, encoder, stats);
+        }
+
+        // Waterfall Step 5: Gemini 3.5 Flash-Lite
+        if (!streamed) {
+          controller.enqueue(encoder.encode(`event: provider\ndata: ${JSON.stringify({ provider: 'Gemini 3.5 Flash-Lite (Fallback)', model: 'gemini-3.5-flash-lite' })}\n\n`));
+          streamed = await streamFromGemini(messages, 'gemini-3.5-flash-lite', controller, encoder, stats);
+        }
       }
 
-      // Signal completion
-      controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ done: true, model, provider })}\n\n`));
+      // Signal completion with token count
+      controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ done: true, model, provider, tokenCount: stats.tokenCount })}\n\n`));
       controller.close();
     }
   });
@@ -262,4 +350,3 @@ export async function POST(req: Request) {
     }
   });
 }
-
