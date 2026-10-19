@@ -658,7 +658,7 @@ async function readProviderEventStream(response, readToken, onToken, streamState
       return await Promise.race([
         reader.read(),
         new Promise((_, reject) => {
-          const timeoutMs = streamState.sent ? 15_000 : 25_000;
+          const timeoutMs = streamState.sent ? 12_000 : 4_000;
           timer = setTimeout(() => reject(new Error('The model stream stalled. Switching to a fallback model.')), timeoutMs);
         })
       ]);

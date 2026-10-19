@@ -155,7 +155,7 @@ export const VideoGenerator = () => {
   return (
     <div className="flex-1 min-h-0 flex flex-col h-full overflow-y-auto px-3 py-4 sm:px-8 sm:py-6 max-w-7xl mx-auto w-full space-y-5 sm:space-y-8">
       {/* Studio Mode Selector Tab Bar */}
-      <div className="flex items-center gap-1.5 p-1 bg-slate-100 dark:bg-slate-800/60 rounded-2xl max-w-md border border-slate-200/80 dark:border-slate-700/60">
+      <div className="flex items-center gap-1.5 p-1 bg-slate-100 dark:bg-slate-800/60 rounded-2xl max-w-xs border border-slate-200/80 dark:border-slate-700/60">
         <button
           type="button"
           onClick={() => setVideoStudioTab('ai')}
@@ -181,24 +181,9 @@ export const VideoGenerator = () => {
           <span>HTML Studio</span>
           <span className="px-1 py-0.5 rounded bg-violet-500 text-white text-[9px] font-extrabold uppercase leading-none">NEW</span>
         </button>
-        <button
-          type="button"
-          onClick={() => setVideoStudioTab('kinetic')}
-          className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-            videoStudioTab === 'kinetic'
-              ? 'bg-white dark:bg-slate-700 text-sky-600 dark:text-sky-400 shadow-sm'
-              : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-          }`}
-        >
-          <Sparkles className="w-3.5 h-3.5" />
-          <span>Kinetic Captions</span>
-          <span className="px-1 py-0.5 rounded bg-sky-500 text-white text-[9px] font-extrabold uppercase leading-none">HOT</span>
-        </button>
       </div>
 
-      {videoStudioTab === 'kinetic' ? (
-        <VideoEditorAgent />
-      ) : videoStudioTab === 'html' ? (
+      {videoStudioTab === 'html' ? (
         <HtmlVideoStudio currentUser={currentUser} />
       ) : (
         <>

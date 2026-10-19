@@ -198,7 +198,7 @@ async function tgSendTyping(chatId) {
 // ─── Intent Classifier ────────────────────────────────────────────────────────
 
 const INTENTS = [
-  { name: 'verify',        re: /^(?:\/(?:start|verify)\s+((?:ZUL-)?[A-Z0-9]{6,12})\b|(ZUL-[A-Z0-9]{6,12})\b)/i },
+  { name: 'verify',        re: /^(?:\/(?:start|verify)(?:[\s=]+|\s*)((?:ZUL-?)?[A-Z0-9]{5,16})\b|(ZUL-?[A-Z0-9]{5,16})\b)/i },
   { name: 'start',         re: /^\/start\s*$/i },
   { name: 'help',          re: /^\/(?:help|commands)\b/i },
   { name: 'analyze_cmd',   re: /^\/(?:analyze|analyse)(?:\s+([\s\S]*))?$/i },

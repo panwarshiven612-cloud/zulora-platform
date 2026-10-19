@@ -72,10 +72,16 @@ export default function ModelSelector({
   onToggle,
   onClose
 }: ModelSelectorProps) {
-  const [selectedModelId, setSelectedModel] = useState<string>(modelPreference || 'auto');
+  const [selectedModelId, setSelectedModel] = useState<string>(() => {
+    try {
+      return localStorage.getItem('zulora_chat_model_preference') || modelPreference || 'auto';
+    } catch {
+      return modelPreference || 'auto';
+    }
+  });
 
   useEffect(() => {
-    if (modelPreference) {
+    if (modelPreference && modelPreference !== 'auto') {
       setSelectedModel(modelPreference);
     }
   }, [modelPreference]);

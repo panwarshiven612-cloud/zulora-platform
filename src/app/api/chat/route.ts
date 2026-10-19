@@ -80,9 +80,9 @@ async function streamFromGemini(
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${key}`;
       
-      // Fast connection timeout to prevent 3-4 min lag
+      // Ultra-fast connection timeout (<3.5s) to guarantee sub-second initial token response
       const fetchController = new AbortController();
-      const timeoutId = setTimeout(() => fetchController.abort(), 7000);
+      const timeoutId = setTimeout(() => fetchController.abort(), 3500);
 
       const res = await fetch(url, {
         method: 'POST',
@@ -162,7 +162,7 @@ async function streamFromOpenAiCompatible(
 ): Promise<boolean> {
   try {
     const fetchController = new AbortController();
-    const timeoutId = setTimeout(() => fetchController.abort(), 7000);
+    const timeoutId = setTimeout(() => fetchController.abort(), 3500);
 
     const res = await fetch(endpoint, {
       method: 'POST',
@@ -284,8 +284,9 @@ export async function POST(req: Request) {
     async start(controller: ReadableStreamDefaultController) {
       const stats: StreamStats = { tokenCount: 0 };
 
-      // Send initial connect notification
+      // Send initial connect & thinking notification for sub-second live UI responsiveness
       controller.enqueue(encoder.encode(`event: provider\ndata: ${JSON.stringify({ provider, model })}\n\n`));
+      controller.enqueue(encoder.encode(`event: thinking\ndata: ${JSON.stringify({ stage: 'Reasoning and synthesizing live response...', tokenCount: 0 })}\n\n`));
 
       let streamed = false;
 

@@ -323,12 +323,12 @@ export default function HtmlVideoStudio({ currentUser }) {
               className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-xs font-semibold hover:border-violet-500 hover:text-violet-600 transition"
             >
               <Upload className="w-3.5 h-3.5" />
-              {logo ? '✓ Logo attached' : 'Upload Brand Logo / Clip'}
+              {logo ? '✓ Media attached' : 'Upload Image / Video from Gallery'}
             </button>
             <input
               ref={logoInputRef}
               type="file"
-              accept="image/*"
+              accept="image/*,video/*"
               className="hidden"
               onChange={handleLogoUpload}
             />
