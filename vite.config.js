@@ -6,10 +6,14 @@ export default defineConfig({
   server: {
     port: 3000,
     open: true,
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
   },
   build: {
     // Raise the warning threshold slightly — we'll also split chunks
-    chunkSizeWarningLimit: 700,
+    chunkSizeWarningLimit: 900,
     rollupOptions: {
       output: {
         manualChunks: {

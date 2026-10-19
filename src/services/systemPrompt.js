@@ -11,11 +11,21 @@ const COMPLETE_CODE_GUIDANCE = ` For software work, provide complete code withou
 
 const INTERACTIVE_UI_GUIDANCE = ` For web interface requests, use advanced motion or canvas effects only when they fit the requested design. When asked, implement cursor-reactive Three.js tubes with resize and teardown handling; continuous horizontal sentence tracks with GSAP ScrollTrigger rather than slide decks; portfolio image reveals with an inertial organic cursor mask and inverted foreground text; and fluid canvases with a real ping-pong WebGL solver, pointer/touch forces, resize handling, and reduced-motion fallbacks. Respect the user's existing framework and dependencies, keep content readable above effects, and dispose listeners, animation frames, observers, and GPU resources on unmount.`;
 
+const VIDEO_EDITING_AGENT_DIRECTIVE = `
+
+VIDEO EDITING TOOLS DIRECTIVE:
+You have access to video editing tools. When a user uploads a video and requests captions, motion graphics, subtitles, or any video edit, you MUST invoke the video editing pipeline — NEVER say "I can't edit video files", "I don't have access to your video", or "I can only suggest scripts". You have live tools.
+Available pipeline: probe_video → transcribe_video → generateCaptionStoryboard → generateCaptionOverlayHtml → compositeVideoWithCaptions → runFullVideoPipeline.
+Always show incremental progress to the user: Probing → Transcribing → Planning → Designing → Rendering → Encoding → Done.
+Output the final MP4 as a playable <video> element with a Download button in the chat. Save the output automatically to Zulora Drive.
+For Hinglish speech, always output captions in Roman script (not Devanagari) unless the user specifies otherwise.
+For incremental edits (e.g. "make captions bigger"), re-run only the Design and Render steps — do NOT re-transcribe.`;
+
 export const FLAGSHIP_SYSTEM_PROMPT = `\n\nUse careful, extended multi-step reasoning and verify that all requested requirements are fully satisfied. Utilize full model context and deep thinking capability. Return complete working implementations.`;
 
 export function buildSystemPrompt(contextMemory = [], now = new Date(), userBrain = {}, userVault = {}) {
   const parts = [
-    `${CORE_SYSTEM_PROMPT}${WORKSPACE_OPERATION_RULES}${COMPLETE_CODE_GUIDANCE}${INTERACTIVE_UI_GUIDANCE}`,
+    `${CORE_SYSTEM_PROMPT}${WORKSPACE_OPERATION_RULES}${COMPLETE_CODE_GUIDANCE}${INTERACTIVE_UI_GUIDANCE}${VIDEO_EDITING_AGENT_DIRECTIVE}`,
     `Current date: ${now.toISOString().slice(0, 10)} (UTC).`
   ];
   const memory = Array.isArray(contextMemory)

@@ -71,6 +71,7 @@ import ConnectorsModal from './ConnectorsModal';
 import GuestGateModal from './GuestGateModal';
 import { guestGate } from '../services/guestGate';
 import { backgroundTaskManager } from '../services/backgroundTaskManager';
+import { runFullVideoPipeline } from '../services/videoEditAgent';
 
 /* ============================================================
    CONSTANTS
@@ -78,8 +79,8 @@ import { backgroundTaskManager } from '../services/backgroundTaskManager';
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 const CHAT_MODEL_PREFERENCE_KEY = 'zulora_chat_model_preference';
 const readStoredModelPreference = key => {
-  try { return localStorage.getItem(key) || 'auto'; }
-  catch { return 'auto'; }
+  try { return localStorage.getItem(key) || ''; }
+  catch { return ''; }
 };
 const ATTACHMENT_MIME_BY_EXTENSION = {
   bmp: 'image/bmp', gif: 'image/gif', jpeg: 'image/jpeg', jpg: 'image/jpeg', png: 'image/png', svg: 'image/svg+xml', webp: 'image/webp',
@@ -473,14 +474,26 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
               </details>}
               <MarkdownContent content={message.content} />
               {message.generatedVideoUrl && (
-                <div className="mt-3 overflow-hidden rounded-xl border border-slate-200/80 bg-black dark:border-slate-800 shadow-md">
-                  <video
-                    src={message.generatedVideoUrl}
-                    controls
-                    autoPlay
-                    loop
-                    className="max-h-96 w-full rounded-xl object-contain"
-                  />
+                <div className="mt-3 space-y-2">
+                  <div className="overflow-hidden rounded-xl border border-slate-200/80 bg-black dark:border-slate-800 shadow-md">
+                    <video
+                      src={message.generatedVideoUrl}
+                      controls
+                      autoPlay
+                      loop
+                      className="max-h-96 w-full rounded-xl object-contain"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={message.generatedVideoUrl}
+                      download="zulora_video.mp4"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-600 text-white text-xs font-semibold shadow-xs transition"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      Download MP4 (1080x1920)
+                    </a>
+                  </div>
                 </div>
               )}
               {message.needsReconnect && <button type="button" onClick={onReconnect} className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-amber-200/70 bg-amber-50/95 px-3 py-1.5 text-xs font-semibold text-amber-800 shadow-sm hover:bg-amber-100">
@@ -663,15 +676,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   useEffect(() => {
     skipModelPreferenceWriteRef.current = true;
     const sessionModel = activeSession?.modelPreference || activeSession?.model;
+    const stored = readStoredModelPreference(modelPreferenceKey) || readStoredModelPreference('zulora_chat_model_preference') || 'auto';
     if (sessionModel && sessionModel !== 'auto') {
       setModelPreference(sessionModel);
     } else {
-      const stored = readStoredModelPreference(modelPreferenceKey) || readStoredModelPreference('zulora_chat_model_preference');
-      if (stored && stored !== 'auto') {
-        setModelPreference(stored);
-      } else if (sessionModel) {
-        setModelPreference(sessionModel);
-      }
+      setModelPreference(stored);
     }
   }, [activeSession?.id, activeSession?.model, activeSession?.modelPreference, modelPreferenceKey]);
 
@@ -1318,14 +1327,55 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         ? connectorTask
         : driveTask?.handled && !driveTask.useLLM ? driveTask : null;
 
-      // MODULE 2: In-chat image/video generation intercept
+      // MODULE 2: In-chat image/video generation & editing intercept
       const hasImageAttach = attachmentPayloads.some(p => p.mimeType?.startsWith('image/'));
-      const imageGenRequest = !directTask && (isImageGenIntent(basePrompt) || isImageEditIntent(basePrompt, hasImageAttach));
-      const videoGenRequest = !directTask && !imageGenRequest && isVideoGenIntent(basePrompt);
+      const videoAttachFile = attachments.find(file => attachmentMimeType(file).startsWith('video/'));
+      const hasVideoAttach = Boolean(videoAttachFile) || attachmentPayloads.some(p => p.mimeType?.startsWith('video/'));
+      const isVideoCaptionQuery = /\b(?:captions?|subtitles?|kinetic|motion graphics?|transcribe video|edit video|add text to video)\b/i.test(basePrompt);
+      const videoEditRequest = !directTask && (hasVideoAttach && (isVideoCaptionQuery || true));
+      const imageGenRequest = !directTask && !videoEditRequest && (isImageGenIntent(basePrompt) || isImageEditIntent(basePrompt, hasImageAttach));
+      const videoGenRequest = !directTask && !imageGenRequest && !videoEditRequest && isVideoGenIntent(basePrompt);
 
-      if (guestMode && !currentUser?.uid && (imageGenRequest || videoGenRequest)) {
+      if (guestMode && !currentUser?.uid && (imageGenRequest || videoGenRequest || videoEditRequest)) {
         setShowGuestUpgrade(true);
         return;
+      }
+
+      if (videoEditRequest && videoAttachFile) {
+        pushThinkingStep('Probing video specifications (ffprobe)', 'running');
+        try {
+          const editedVideo = await runFullVideoPipeline(videoAttachFile, basePrompt, p => {
+            pushThinkingStep(`${p.stage}: ${p.message || ''}`, p.stage === 'Done' ? 'done' : 'running', `${p.percent}%`);
+          }, currentUser);
+
+          const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+          setQueryTime(elapsed);
+          pushThinkingStep('Video editing complete! Saved to Drive', 'done', '100%');
+
+          const aiMsg = {
+            id: assistantId,
+            role: 'assistant',
+            content: `Here is your edited video with synced kinetic captions and motion graphics! 🎬\n\n* **Canvas:** 1080x1920 (9:16 Vertical Reel)\n* **Audio/Speech:** Synced Hinglish Roman script captions\n* **Status:** Saved to Zulora Drive & Media Library\n\nYou can play it directly, download using the button below, or ask to tweak fonts, colors, or pacing!`,
+            timestamp: Date.now(),
+            model: 'Zulora Video Studio',
+            provider: 'Video Motion Engine',
+            generatedVideoUrl: editedVideo.url,
+            queryTime: elapsed,
+            thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps] : undefined
+          };
+
+          const finalMessages = [...newMessages.filter(message => message.id !== assistantId), aiMsg];
+          if (isRequestCurrent()) setMessages(previous => [...previous.filter(message => message.id !== assistantId), aiMsg]);
+          await recordUsage('video', false, 0);
+          if (currentUser?.uid) {
+            await firestoreService.saveChatSession(currentUser.uid, sessionId, { id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: modelPreference, modelPreference, pending: false }).catch(console.warn);
+          }
+          if (isRequestCurrent()) onUpdateSession?.({ id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: modelPreference, modelPreference, pending: false });
+          return;
+        } catch (editErr) {
+          pushThinkingStep('Video editing error', 'error', editErr.message);
+          // fall through to LLM
+        }
       }
 
       if (imageGenRequest) {
