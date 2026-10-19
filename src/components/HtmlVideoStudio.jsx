@@ -8,13 +8,15 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   Clapperboard, Play, Pause, Download, RefreshCw, Sparkles,
   Code2, Film, Clock, AlertCircle, CheckCircle, Upload,
-  ChevronRight, Zap, Monitor, Sliders, Palette
+  ChevronRight, Zap, Monitor, Sliders, Palette, ExternalLink,
+  Edit3, Wand2
 } from 'lucide-react';
 import {
   generateStoryboard,
   generateAnimatedHtml,
   validateHtml,
   repairHtmlWithRetry,
+  editStoryboardOrHtml,
   checkHtmlVideoDailyQuota,
   incrementHtmlVideoQuota,
   submitHtmlVideoRenderJob,
@@ -52,6 +54,9 @@ export default function HtmlVideoStudio({ currentUser }) {
   const [progress, setProgress] = useState({ phase: '', percent: 0 });
   const [error, setError] = useState('');
   const [renderUrl, setRenderUrl] = useState('');
+  const [jobId, setJobId] = useState('');
+  const [editInstruction, setEditInstruction] = useState('');
+  const [isEditing, setIsEditing] = useState(false);
   const [quota, setQuota] = useState({ allowed: true, used: 0, limit: HTML_VIDEO_DAILY_LIMIT });
   const [isPlaying, setIsPlaying] = useState(false);
   const [scrubTime, setScrubTime] = useState(0);
@@ -163,13 +168,17 @@ export default function HtmlVideoStudio({ currentUser }) {
       const result = await submitHtmlVideoRenderJob(htmlContent, {
         aspectRatio,
         fps: 30,
-        onProgress: prog => setProgress({
-          phase: prog.phase || 'Rendering video frames...',
-          percent: prog.percent || 15
-        })
+        onProgress: prog => {
+          if (prog.jobId) setJobId(prog.jobId);
+          setProgress({
+            phase: prog.phase || 'Rendering video frames...',
+            percent: prog.percent || 15
+          });
+        }
       });
 
       setRenderUrl(result.url);
+      if (result.jobId) setJobId(result.jobId);
       if (currentUser?.uid) {
         await incrementHtmlVideoQuota(currentUser.uid, db);
         const newQuota = await checkHtmlVideoDailyQuota(currentUser.uid, db);
@@ -183,6 +192,27 @@ export default function HtmlVideoStudio({ currentUser }) {
     }
   }, [htmlContent, aspectRatio, currentUser?.uid, stage]);
 
+  const handleIncrementalEdit = async (customInstruction) => {
+    const textToApply = customInstruction || editInstruction;
+    if (!textToApply.trim() || !storyboard || isEditing) return;
+    setIsEditing(true);
+    setError('');
+    try {
+      setProgress({ phase: 'Applying incremental edit to scene plan...', percent: 40 });
+      const result = await editStoryboardOrHtml(storyboard, htmlContent, textToApply, { aspectRatio });
+      setStoryboard(result.storyboard);
+      setHtmlContent(result.html);
+      setEditInstruction('');
+      setScrubTime(0);
+      setIsPlaying(false);
+      setProgress({ phase: 'Edit applied!', percent: 100 });
+    } catch (err) {
+      setError('Incremental edit failed: ' + err.message);
+    } finally {
+      setIsEditing(false);
+    }
+  };
+
   const handleReset = () => {
     setStage(STAGE.IDLE);
     setStoryboard(null);
@@ -190,6 +220,9 @@ export default function HtmlVideoStudio({ currentUser }) {
     setProgress({ phase: '', percent: 0 });
     setError('');
     setRenderUrl('');
+    setJobId('');
+    setEditInstruction('');
+    setIsEditing(false);
     setScrubTime(0);
     setIsPlaying(false);
   };
@@ -465,6 +498,68 @@ export default function HtmlVideoStudio({ currentUser }) {
         </div>
       )}
 
+      {/* Incremental Quick Edit Card (Token-saving scene & style modifier) */}
+      {storyboard && (stage === STAGE.PREVIEW || stage === STAGE.DONE || stage === STAGE.ERROR) && (
+        <div className="rounded-2xl border border-violet-200/80 dark:border-violet-900/60 bg-gradient-to-r from-violet-50/50 to-indigo-50/50 dark:from-violet-950/20 dark:to-indigo-950/20 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Edit3 className="w-4 h-4 text-violet-500" />
+              <h3 className="text-xs font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wider">
+                Incremental Quick Edit (Token-Saving)
+              </h3>
+            </div>
+            <span className="text-[10px] text-violet-600 dark:text-violet-400 font-semibold">
+              Modifies only requested scenes
+            </span>
+          </div>
+
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={editInstruction}
+              onChange={e => setEditInstruction(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleIncrementalEdit(); }}
+              placeholder='e.g., "Make scene 2 faster", "Change color palette to cyberpunk neon", "Update scene 1 text"'
+              disabled={isEditing}
+              className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3.5 py-2 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+            />
+            <button
+              type="button"
+              onClick={() => handleIncrementalEdit()}
+              disabled={!editInstruction.trim() || isEditing}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-xs font-bold transition shadow-sm"
+            >
+              {isEditing ? (
+                <div className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+              ) : (
+                <Wand2 className="w-3.5 h-3.5" />
+              )}
+              <span>{isEditing ? 'Updating…' : 'Apply Edit'}</span>
+            </button>
+          </div>
+
+          {/* Quick Edit Suggestions */}
+          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+            <span className="text-[10px] text-slate-400 font-medium">Suggestions:</span>
+            {[
+              'Make scene 2 faster & punchier',
+              'Change color palette to vibrant violet & cyan',
+              'Update hook text to "Discover Zulora AI"'
+            ].map(suggestion => (
+              <button
+                key={suggestion}
+                type="button"
+                onClick={() => handleIncrementalEdit(suggestion)}
+                disabled={isEditing}
+                className="text-[10px] px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-violet-400 hover:text-violet-600 dark:hover:text-violet-300 text-slate-600 dark:text-slate-400 transition"
+              >
+                + {suggestion}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Actions and Export Bar */}
       {(stage === STAGE.PREVIEW || stage === STAGE.DONE || stage === STAGE.ERROR) && !isBusy && (
         <div className="flex flex-wrap items-center gap-3">
@@ -488,6 +583,26 @@ export default function HtmlVideoStudio({ currentUser }) {
               <Download className="w-4 h-4" />
               Download Rendered MP4
             </a>
+          )}
+
+          {(jobId || htmlContent) && (
+            <button
+              type="button"
+              onClick={() => {
+                if (jobId) {
+                  window.open(`/api/video-render/preview/${jobId}`, '_blank');
+                } else {
+                  const blob = new Blob([htmlContent], { type: 'text/html' });
+                  const url = URL.createObjectURL(blob);
+                  window.open(url, '_blank');
+                }
+              }}
+              className="inline-flex items-center gap-1.5 px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold text-xs transition"
+              title="Open full interactive preview in a new window"
+            >
+              <ExternalLink className="w-3.5 h-3.5 text-sky-500" />
+              <span>Full Screen Preview</span>
+            </button>
           )}
 
           <button

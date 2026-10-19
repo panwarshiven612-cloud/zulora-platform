@@ -96,6 +96,11 @@ export default function ModelSelector({
     e.preventDefault();
     e.stopPropagation();
     setSelectedModel(modelId);
+    try {
+      localStorage.setItem('zulora_chat_model_preference', modelId);
+    } catch {
+      // storage unavailable
+    }
     onModelChange?.(modelId);
     onClose?.();
   };

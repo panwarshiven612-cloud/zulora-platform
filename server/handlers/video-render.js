@@ -45,14 +45,20 @@ export default async function handler(req, res) {
   let action = query.action || '';
   let id = query.id || '';
 
+  const r = req.query?.route || '';
+  const rStr = Array.isArray(r) ? r.join('/') : String(r);
+
   if (!action) {
-    if (url.includes('/status/')) {
+    if (url.includes('/status/') || rStr.includes('status/')) {
       action = 'status';
-      id = url.split('/status/')[1]?.split('?')[0];
-    } else if (url.includes('/download/')) {
+      id = id || url.split('/status/')[1]?.split('?')[0] || rStr.split('status/')[1]?.split('?')[0];
+    } else if (url.includes('/download/') || rStr.includes('download/')) {
       action = 'download';
-      id = url.split('/download/')[1]?.split('?')[0];
-    } else if (url.includes('/generate')) {
+      id = id || url.split('/download/')[1]?.split('?')[0] || rStr.split('download/')[1]?.split('?')[0];
+    } else if (url.includes('/preview/') || rStr.includes('preview/')) {
+      action = 'preview';
+      id = id || url.split('/preview/')[1]?.split('?')[0] || rStr.split('preview/')[1]?.split('?')[0];
+    } else if (url.includes('/generate') || rStr.includes('generate')) {
       action = 'generate';
     }
   }
@@ -75,7 +81,8 @@ export default async function handler(req, res) {
       createdAt: Date.now(),
       phase: 'queued',
       percent: 10,
-      htmlLength: html.length
+      htmlLength: html.length,
+      html
     };
 
     renderJobs.set(jobId, newJob);
@@ -146,15 +153,31 @@ export default async function handler(req, res) {
     return res.status(200).send(mp4Buffer);
   }
 
+  // 4. Live Preview HTML: GET /api/video-render/preview/:id
+  if (action === 'preview') {
+    if (!id) {
+      return res.status(400).json({ error: 'Missing jobId parameter' });
+    }
+
+    const job = renderJobs.get(id);
+    if (!job || !job.html) {
+      return res.status(404).send('<!DOCTYPE html><html><body><h1>Preview Not Found</h1><p>Render job not found or expired.</p></body></html>');
+    }
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(200).send(job.html);
+  }
+
   // Default response for route probe
   return res.status(200).json({
     status: 'online',
     service: 'Zulora HTML-to-Video Motion Engine',
     version: '1.0.0',
     endpoints: [
-      'POST /api/video-render',
-      'GET /api/video-render/status/:id',
-      'GET /api/video-render/download/:id'
+      'POST /api/video-render (or /api/video-render/generate)',
+      'GET  /api/video-render/status/:id',
+      'GET  /api/video-render/preview/:id',
+      'GET  /api/video-render/download/:id'
     ]
   });
 }

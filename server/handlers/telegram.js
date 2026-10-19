@@ -714,7 +714,7 @@ export default async function handler(req, res) {
       const linked = await linkTelegramAccount(code, chatId, userId, username);
       if (linked) {
         await tgSendMessage(chatId,
-          `✅ *Account Linked Successfully!*\n\nHello ${escapeMarkdown(username)}! You can now control Zulora AI directly from this chat.\n\n*Try these commands:*\n• _"Summarize my inbox"_ — Gmail summary\n• _"Create a Google Sheet about sales"_ — Sheets\n• _"Schedule a meeting tomorrow at 3pm"_ — Calendar\n• _"/image sunset over mountains"_ — AI image\n• Ask me anything — I'm your AI assistant! 🤖`
+          `✅ Account linked successfully! You can now control Zulora AI directly.\n\nHello ${escapeMarkdown(username)}! You can now control Zulora AI directly from this chat.\n\n*Try these commands:*\n• _"Summarize my inbox"_ — Gmail summary\n• _"Create a Google Sheet about sales"_ — Sheets\n• _"Schedule a meeting tomorrow at 3pm"_ — Calendar\n• _"/image sunset over mountains"_ — AI image\n• Ask me anything — I'm your AI assistant! 🤖`
         );
       } else {
         await tgSendMessage(chatId,

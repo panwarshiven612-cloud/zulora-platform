@@ -43,6 +43,7 @@ const ROUTES = Object.freeze({
   'video-render/generate': videoRenderHandler,
   'video-render/status': videoRenderHandler,
   'video-render/download': videoRenderHandler,
+  'video-render/preview': videoRenderHandler,
   voice: voiceHandler,
   'voice-token': voiceTokenHandler,
   voices: voicesHandler
@@ -67,7 +68,11 @@ function normalizeLegacyAction(req, route) {
 
 export default async function handler(req, res) {
   const route = routePath(req);
-  const target = ROUTES[route];
+  let target = ROUTES[route];
+  if (!target) {
+    if (route.startsWith('video-render/')) target = videoRenderHandler;
+    else if (route.startsWith('media/download/')) target = mediaDownloadHandler;
+  }
   if (!target) return res.status(404).json({ error: 'API route not found.' });
 
   normalizeLegacyAction(req, route);

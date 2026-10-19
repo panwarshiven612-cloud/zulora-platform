@@ -662,7 +662,17 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 
   useEffect(() => {
     skipModelPreferenceWriteRef.current = true;
-    setModelPreference(activeSession?.modelPreference || activeSession?.model || readStoredModelPreference(modelPreferenceKey));
+    const sessionModel = activeSession?.modelPreference || activeSession?.model;
+    if (sessionModel && sessionModel !== 'auto') {
+      setModelPreference(sessionModel);
+    } else {
+      const stored = readStoredModelPreference(modelPreferenceKey) || readStoredModelPreference('zulora_chat_model_preference');
+      if (stored && stored !== 'auto') {
+        setModelPreference(stored);
+      } else if (sessionModel) {
+        setModelPreference(sessionModel);
+      }
+    }
   }, [activeSession?.id, activeSession?.model, activeSession?.modelPreference, modelPreferenceKey]);
 
   useEffect(() => {
@@ -670,14 +680,18 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       skipModelPreferenceWriteRef.current = false;
       return;
     }
-    try { localStorage.setItem(modelPreferenceKey, modelPreference); }
-    catch { /* The selected model remains active for this chat session. */ }
+    try {
+      localStorage.setItem(modelPreferenceKey, modelPreference);
+      localStorage.setItem('zulora_chat_model_preference', modelPreference);
+    } catch { /* The selected model remains active for this chat session. */ }
   }, [modelPreference, modelPreferenceKey]);
 
   const handleModelPreferenceChange = useCallback(nextModel => {
     setModelPreference(nextModel);
-    try { localStorage.setItem(modelPreferenceKey, nextModel); }
-    catch { /* The selected model remains active for this chat session. */ }
+    try {
+      localStorage.setItem(modelPreferenceKey, nextModel);
+      localStorage.setItem('zulora_chat_model_preference', nextModel);
+    } catch { /* The selected model remains active for this chat session. */ }
     if (activeSession?.id) {
       onUpdateSession?.({ ...activeSession, model: nextModel, modelPreference: nextModel, updatedAt: Date.now() });
     }
@@ -1103,13 +1117,34 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     let hasLoggedFirstToken = false;
     const shouldShowThinkingBox = codeGenerationRequest || enableWebSearch || isComputerAutomationIntent(basePrompt) || isVideoGenIntent(basePrompt)
       || /\b(?:gmail|email|calendar|meeting|sheets|spreadsheet|forms|drive|multi[- ]step|multi[- ]task|multiple actions|and then|after that|step by step|complex|analy[sz]e|architecture|execute|run code)\b/i.test(basePrompt);
+    const defaultModelLabel = modelPreference === 'groq' ? 'Groq LPU'
+      : modelPreference === 'gemini' ? 'Gemini'
+      : modelPreference === 'pro_ultra' ? 'Zulora 3.1 Pro Ultra'
+      : 'Auto (Smart Route)';
+
     const publishAssistant = (streaming = true) => {
-      if (!shouldShowThinkingBox || !isRequestCurrent()) return;
+      if (!isRequestCurrent()) return;
       setMessages(previous => [
         ...previous.filter(message => message.id !== assistantId),
-        { id: assistantId, role: 'assistant', content: displayedText, timestamp: Date.now(), model: streamedProvider?.model || 'Working…', provider: streamedProvider?.provider, thinkingSteps: [...thinkingSteps], streaming }
+        {
+          id: assistantId,
+          role: 'assistant',
+          content: displayedText,
+          timestamp: Date.now(),
+          model: streamedProvider?.model || defaultModelLabel,
+          provider: streamedProvider?.provider || 'Zulora Intelligence',
+          thinkingSteps: [...thinkingSteps],
+          streaming,
+          streamMetrics: {
+            tokens: Math.ceil(displayedText.length / 4),
+            tokensPerSec: (Math.ceil(displayedText.length / 4) / Math.max(0.1, (Date.now() - startTime) / 1000)).toFixed(1)
+          }
+        }
       ]);
     };
+
+    // Immediately display assistant typing indicator with selected model
+    publishAssistant(true);
     const pushThinkingStep = (label, status = 'running', detail = '') => {
       if (!shouldShowThinkingBox || !label) return;
       const prior = thinkingSteps.at(-1);

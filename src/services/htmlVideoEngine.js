@@ -59,13 +59,15 @@ STRICT RULES:
 3. ALL animation MUST be driven by global function window.renderFrame(t) where t is time in seconds.
 4. Use GSAP paused timelines: const tl = gsap.timeline({ paused: true }); window.renderFrame = (t) => tl.seek(t);
 5. Load GSAP from: <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
-6. Expose window.DURATION = totalDuration (number).
-7. NO setTimeout, setInterval, or CSS keyframe animations. Only GSAP timeline seek.
-8. Inline ALL CSS in <style> block. Inline all JS in <script> blocks.
-9. No external network calls except GSAP CDN.
-10. Use high-impact motion: fade, slide, scale, text reveal, gradient shifts, counters, clean transitions.
-11. First 2 seconds must be a strong hook.
-12. Apply the palette colors and fonts from storyboard.
+6. Expose window.DURATION = totalDuration (number) and window.FPS = 30 (number).
+7. Expose window.__ready = true once DOM and GSAP timeline are fully initialized.
+8. Seeded pseudo-random generator: expose window.prng = function(seed) { let t = seed || 12345; return function() { t = (t * 9301 + 49297) % 233280; return t / 233280; }; };
+9. NO setTimeout, setInterval, or CSS keyframe animations. Only GSAP timeline seek.
+10. Inline ALL CSS in <style> block. Inline all JS in <script> blocks.
+11. No external network calls except GSAP CDN.
+12. Use high-impact motion: fade, slide, scale, text reveal, gradient shifts, counters, clean transitions.
+13. First 2 seconds must be a strong hook.
+14. Apply the palette colors and fonts from storyboard.
 
 Return ONLY the complete HTML file starting with <!DOCTYPE html>. No markdown code fences.`;
 
@@ -189,6 +191,8 @@ Return ONLY the complete HTML file starting with <!DOCTYPE html>.`;
   </div>
   <script>
     window.DURATION = ${storyboard.totalDuration || 10};
+    window.FPS = 30;
+    window.prng = function(s) { let t = s ? s : 12345; return function() { t = (t * 9301 + 49297) % 233280; return t / 233280; }; };
     const tl = gsap.timeline({ paused: true });
     
     // Scene 1
@@ -208,6 +212,7 @@ Return ONLY the complete HTML file starting with <!DOCTYPE html>.`;
     window.renderFrame = function(t) {
       tl.seek(t);
     };
+    window.__ready = true;
   </script>
 </body>
 </html>`;
@@ -217,7 +222,9 @@ export function validateHtml(html) {
   const errors = [];
   if (!html.includes('window.renderFrame')) errors.push('Missing window.renderFrame function');
   if (!html.includes('window.DURATION')) errors.push('Missing window.DURATION variable');
+  if (!html.includes('window.FPS')) errors.push('Missing window.FPS variable');
   if (!html.includes('gsap')) errors.push('Missing GSAP animation library reference');
+  if (!html.includes('window.__ready')) errors.push('Missing window.__ready flag');
   if (!html.includes('<!DOCTYPE') && !html.includes('<html')) errors.push('Not a valid HTML document structure');
   return { valid: errors.length === 0, errors };
 }
@@ -231,7 +238,7 @@ ${errors.join('\n')}
 Broken HTML snippet:
 ${current.slice(0, 10000)}
 
-Ensure window.renderFrame(t), window.DURATION = ${storyboard.totalDuration || 10}, and GSAP are present.
+Ensure window.renderFrame(t), window.DURATION = ${storyboard.totalDuration || 10}, window.FPS = 30, window.__ready = true, and GSAP are present.
 Return only the corrected self-contained HTML file.`;
 
     for (const key of GEMINI_KEYS) {
@@ -261,8 +268,78 @@ Return only the corrected self-contained HTML file.`;
       }
     }
   }
+
+  // Deterministic local patching for minor missing flags
+  if (!current.includes('window.FPS')) {
+    current = current.replace('window.DURATION', 'window.FPS = 30;\n    window.DURATION');
+  }
+  if (!current.includes('window.__ready')) {
+    current = current.replace('window.renderFrame', 'window.__ready = true;\n    window.renderFrame');
+  }
   return current;
 }
+
+// ─── Token-Saving Incremental Edit Loop ───────────────────────────────────────
+
+const INCREMENTAL_EDIT_SYSTEM = `You are a professional video editor and JSON storyboard engineer.
+You are given an existing JSON storyboard and a user edit request (e.g., "make scene 2 faster", "change color palette to emerald and cyan", "update scene 1 text to 'Next Generation AI'").
+Update ONLY the requested scenes or attributes without regenerating everything from scratch.
+Keep the rest of the storyboard intact to save tokens and maintain continuity.
+Return ONLY valid JSON matching the storyboard schema: { totalDuration, fps, resolution, palette, fonts, scenes }`;
+
+export async function editStoryboardOrHtml(existingStoryboard, existingHtml, instruction, options = {}) {
+  const { aspectRatio = '16:9' } = options;
+  if (!existingStoryboard || !instruction) {
+    return { storyboard: existingStoryboard, html: existingHtml };
+  }
+
+  const userPrompt = `Current Storyboard JSON:
+${JSON.stringify(existingStoryboard, null, 2)}
+
+Requested Edit: "${instruction}"
+
+Modify only what was requested. Return ONLY the updated JSON storyboard:`;
+
+  let updatedStoryboard = null;
+  for (const key of GEMINI_KEYS) {
+    if (!key) continue;
+    try {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: INCREMENTAL_EDIT_SYSTEM }] },
+          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+          generationConfig: { temperature: 0.3, maxOutputTokens: 4096, responseMimeType: 'application/json' }
+        })
+      });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const parsed = JSON.parse(raw.replace(/```json|```/gi, '').trim());
+      if (parsed.scenes?.length) {
+        updatedStoryboard = parsed;
+        break;
+      }
+    } catch {
+      // try next key
+    }
+  }
+
+  if (!updatedStoryboard) {
+    updatedStoryboard = { ...existingStoryboard };
+  }
+
+  let updatedHtml = await generateAnimatedHtml(updatedStoryboard, {}, { aspectRatio });
+  const validation = validateHtml(updatedHtml);
+  if (!validation.valid) {
+    updatedHtml = await repairHtmlWithRetry(updatedHtml, validation.errors, updatedStoryboard);
+  }
+
+  return { storyboard: updatedStoryboard, html: updatedHtml };
+}
+
+export const editStoryboard = editStoryboardOrHtml;
 
 export async function checkHtmlVideoDailyQuota(userId, db) {
   if (!userId || !db) return { allowed: true, used: 0, limit: HTML_VIDEO_DAILY_LIMIT };
@@ -352,6 +429,8 @@ export default {
   generateAnimatedHtml,
   validateHtml,
   repairHtmlWithRetry,
+  editStoryboardOrHtml,
+  editStoryboard,
   checkHtmlVideoDailyQuota,
   incrementHtmlVideoQuota,
   submitHtmlVideoRenderJob,
