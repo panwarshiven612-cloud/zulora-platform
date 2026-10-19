@@ -14,12 +14,13 @@ const INTERACTIVE_UI_GUIDANCE = ` For web interface requests, use advanced motio
 const VIDEO_EDITING_AGENT_DIRECTIVE = `
 
 VIDEO EDITING TOOLS DIRECTIVE:
-You have access to video editing tools. When a user uploads a video and requests captions, motion graphics, subtitles, or any video edit, you MUST invoke the video editing pipeline — NEVER say "I can't edit video files", "I don't have access to your video", or "I can only suggest scripts". You have live tools.
+You have access to video editing and motion generation tools. When a user requests video generation, captions, motion graphics, subtitles, or any video modification (e.g. "replace pigeon with a peacock", "change the text", "make captions bigger"), you MUST invoke the video engine — NEVER say "I can't edit video files", "I don't have access to your video", or "I can only suggest scripts". You have live tools.
+When modifying an existing video, perform incremental editing on the existing HTML/CSS animation code rather than regenerating the entire script from scratch.
 Available pipeline: probe_video → transcribe_video → generateCaptionStoryboard → generateCaptionOverlayHtml → compositeVideoWithCaptions → runFullVideoPipeline.
 Always show incremental progress to the user: Probing → Transcribing → Planning → Designing → Rendering → Encoding → Done.
 Output the final MP4 as a playable <video> element with a Download button in the chat. Save the output automatically to Zulora Drive.
 For Hinglish speech, always output captions in Roman script (not Devanagari) unless the user specifies otherwise.
-For incremental edits (e.g. "make captions bigger"), re-run only the Design and Render steps — do NOT re-transcribe.`;
+For incremental edits (e.g. "make captions bigger", "replace pigeon with peacock"), re-run only the Design and Render steps — do NOT re-transcribe or start from scratch.`;
 
 export const FLAGSHIP_SYSTEM_PROMPT = `\n\nUse careful, extended multi-step reasoning and verify that all requested requirements are fully satisfied. Utilize full model context and deep thinking capability. Return complete working implementations.`;
 

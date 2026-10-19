@@ -484,14 +484,53 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                       className="max-h-96 w-full rounded-xl object-contain"
                     />
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <a
                       href={message.generatedVideoUrl}
                       download="zulora_video.mp4"
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-600 text-white text-xs font-semibold shadow-xs transition"
                     >
                       <Download className="w-3.5 h-3.5" />
-                      Download MP4 (1080x1920)
+                      Download MP4 (1080p)
+                    </a>
+                    <a
+                      href={message.generatedVideoUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-700/60 shadow-xs transition"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      Open Full Screen
+                    </a>
+                  </div>
+                </div>
+              )}
+              {message.generatedImageUrl && !message.content?.includes(message.generatedImageUrl) && (
+                <div className="mt-3 space-y-2">
+                  <div className="overflow-hidden rounded-xl border border-slate-200/80 dark:border-slate-800 shadow-md">
+                    <img
+                      src={message.generatedImageUrl}
+                      alt="Generated"
+                      className="max-h-96 w-full rounded-xl object-contain"
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <a
+                      href={message.generatedImageUrl}
+                      download="zulora_image.png"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-600 text-white text-xs font-semibold shadow-xs transition"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      Download PNG
+                    </a>
+                    <a
+                      href={message.generatedImageUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-700/60 shadow-xs transition"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      Open Full Resolution
                     </a>
                   </div>
                 </div>
@@ -502,7 +541,7 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
               {message.streaming && (
                 <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-sky-200/50 bg-sky-50/50 px-2.5 py-1 text-[10px] font-semibold text-sky-600 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-400">
                   <span className="animate-pulse">⚡</span>
-                  <span>Generating... {message.streamMetrics ? `${message.streamMetrics.tokens} tokens written | ${message.streamMetrics.tokensPerSec} tokens/sec` : ''}</span>
+                  <span>Thinking / Generating ({message.streamMetrics ? `${message.streamMetrics.tokens} tokens · ${message.streamMetrics.tokensPerSec} tokens/sec` : 'tokens...'})</span>
                   <span aria-hidden="true" className="inline-block h-3 ml-0.5 align-middle border-r-2 border-sky-500 animate-pulse" />
                 </div>
               )}
@@ -1128,6 +1167,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       || /\b(?:gmail|email|calendar|meeting|sheets|spreadsheet|forms|drive|multi[- ]step|multi[- ]task|multiple actions|and then|after that|step by step|complex|analy[sz]e|architecture|execute|run code)\b/i.test(basePrompt);
     const defaultModelLabel = modelPreference === 'groq' ? 'Groq LPU'
       : modelPreference === 'gemini' ? 'Gemini'
+      : modelPreference === 'cerebras' ? 'Cerebras'
+      : modelPreference === 'openrouter' ? 'OpenRouter'
+      : modelPreference === 'mistral' ? 'Mistral AI'
       : modelPreference === 'pro_ultra' ? 'Zulora 3.1 Pro Ultra'
       : 'Auto (Smart Route)';
 

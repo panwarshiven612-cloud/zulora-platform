@@ -7,6 +7,7 @@
 
 import { apiRouter } from '../../services/apiRouter';
 import { uploadFileToDrive } from '../../services/zuloraDriveService';
+import { executeVideoAgent, VideoRenderOptions } from './video';
 
 export interface ImageGenerationOptions {
   prompt: string;
@@ -28,6 +29,8 @@ export interface VideoGenerationOptions {
   currentUser?: any;
   duration?: number;
   aspectRatio?: '16:9' | '9:16' | '1:1';
+  existingHtml?: string;
+  onProgress?: (progress: { phase: string; percent: number; message?: string }) => void;
 }
 
 export interface VideoGenerationResult {
@@ -35,6 +38,9 @@ export interface VideoGenerationResult {
   url: string;
   prompt: string;
   markdownCard: string;
+  jobId?: string;
+  html?: string;
+  isIncremental?: boolean;
   error?: string;
 }
 
@@ -83,12 +89,33 @@ export async function generateImageDirectly(options: ImageGenerationOptions): Pr
  * Direct motion video generation: renders high quality MP4 with direct chat download.
  */
 export async function generateVideoDirectly(options: VideoGenerationOptions): Promise<VideoGenerationResult> {
-  const { prompt, currentUser, duration = 6, aspectRatio = '16:9' } = options;
+  const { prompt, currentUser, duration = 6, aspectRatio = '16:9', existingHtml, onProgress } = options;
   if (!prompt || !prompt.trim()) {
     throw new Error('Please provide a video prompt description.');
   }
 
   const cleanPrompt = prompt.trim();
+
+  // If incremental HTML is present, run the incremental video engine
+  if (existingHtml) {
+    const res = await executeVideoAgent(cleanPrompt, {
+      existingHtml,
+      currentUser,
+      aspectRatio,
+      duration,
+      onProgress
+    });
+    return {
+      success: res.success,
+      url: res.url,
+      jobId: res.jobId,
+      html: res.html,
+      prompt: cleanPrompt,
+      isIncremental: true,
+      markdownCard: res.markdownCard
+    };
+  }
+
   const result = await apiRouter.generateVideo(cleanPrompt, {
     currentUser,
     duration,
@@ -108,7 +135,7 @@ export async function generateVideoDirectly(options: VideoGenerationOptions): Pr
       const videoFile = new File([blob], `zulora_video_${Date.now()}.mp4`, { type: 'video/mp4' });
       await uploadFileToDrive(videoFile, currentUser.uid, 'Videos');
     } catch {
-      // Background upload attempt continues without interrupting response
+      // non-blocking
     }
   }
 
@@ -129,8 +156,10 @@ export async function generateVideoDirectly(options: VideoGenerationOptions): Pr
   };
 }
 
+export * from './video';
+
 export default {
   generateImageDirectly,
-  generateVideoDirectly
+  generateVideoDirectly,
+  executeVideoAgent
 };
-

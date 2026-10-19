@@ -5,7 +5,10 @@ import {
   Brain, 
   Gauge, 
   Check, 
-  ChevronDown 
+  ChevronDown,
+  Cpu,
+  Layers,
+  Flame
 } from 'lucide-react';
 
 export interface ModelOption {
@@ -30,27 +33,54 @@ export const MODEL_OPTIONS: ModelOption[] = [
   },
   {
     id: 'gemini',
-    label: 'Gemini',
+    label: 'Gemini (Flash & Pro Pool)',
     shortLabel: 'Gemini',
     description: 'Gemini 2.5/3.1/3.5/3.8 Flash & Pro Pool',
     icon: Zap,
     color: 'text-amber-500',
-    badge: 'Fast & Pool'
+    badge: 'Fast'
   },
   {
     id: 'groq',
     label: 'Groq LPU',
     shortLabel: 'Groq LPU',
-    description: 'Ultra-fast Llama 3.3 70B inference',
+    description: 'Ultra-fast Llama 3.3 70B inference (<0.5s TTFT)',
     icon: Gauge,
     color: 'text-orange-500',
     badge: 'LPU Speed'
   },
   {
+    id: 'cerebras',
+    label: 'Cerebras Ultra Speed',
+    shortLabel: 'Cerebras',
+    description: 'Wafer-scale accelerated Llama 3.1 70B',
+    icon: Cpu,
+    color: 'text-rose-500',
+    badge: 'Wafer'
+  },
+  {
+    id: 'openrouter',
+    label: 'OpenRouter Multi-Provider',
+    shortLabel: 'OpenRouter',
+    description: 'Global redundant open-source model routing',
+    icon: Layers,
+    color: 'text-indigo-500',
+    badge: 'Global'
+  },
+  {
+    id: 'mistral',
+    label: 'Mistral AI',
+    shortLabel: 'Mistral',
+    description: 'Mistral Small & Large high-speed reasoning',
+    icon: Flame,
+    color: 'text-red-500',
+    badge: 'Mistral'
+  },
+  {
     id: 'pro_ultra',
     label: 'Zulora 3.1 Pro Ultra',
     shortLabel: '3.1 Pro Ultra',
-    description: 'Deep reasoning waterfall',
+    description: 'Deep reasoning extended thinking waterfall',
     icon: Brain,
     color: 'text-purple-500',
     badge: 'Reasoning'
@@ -81,17 +111,20 @@ export default function ModelSelector({
   });
 
   useEffect(() => {
-    if (modelPreference && modelPreference !== 'auto') {
+    if (modelPreference) {
       setSelectedModel(modelPreference);
     }
   }, [modelPreference]);
 
-  // Normalize model ID to match the 4 simplified options
+  // Normalize model ID to match available engines
   const normalizedId = (() => {
     const cur = selectedModelId || modelPreference;
     if (cur === 'pro_ultra' || cur === 'think' || cur === 'pro' || cur === 'gemini-2.5-pro') return 'pro_ultra';
     if (cur === 'gemini' || cur === 'flash' || (String(cur).startsWith('gemini-') && cur !== 'gemini-2.5-pro')) return 'gemini';
-    if (cur === 'groq' || cur === 'cerebras' || cur === 'openrouter') return 'groq';
+    if (cur === 'groq') return 'groq';
+    if (cur === 'cerebras') return 'cerebras';
+    if (cur === 'openrouter') return 'openrouter';
+    if (cur === 'mistral') return 'mistral';
     return cur || 'auto';
   })();
 
@@ -139,7 +172,7 @@ export default function ModelSelector({
               Select AI Engine
             </span>
             <span className="text-[10px] text-sky-600 dark:text-sky-400 font-medium">
-              4 Engines
+              {MODEL_OPTIONS.length} Engines
             </span>
           </div>
 
