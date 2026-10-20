@@ -1,23 +1,39 @@
-export function readFileAsDataUrl(file) {
+export function readFileAsDataUrl(file, signal) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => typeof reader.result === 'string'
-      ? resolve(reader.result)
-      : reject(new Error('Could not read the selected image.'));
-    reader.onerror = () => reject(reader.error || new Error('Could not read the selected image.'));
-    reader.onabort = () => reject(new Error('Image reading was cancelled.'));
+    const cleanup = () => signal?.removeEventListener('abort', abortRead);
+    const abortRead = () => {
+      if (reader.readyState === FileReader.LOADING) reader.abort();
+      cleanup();
+      reject(new DOMException('The operation was aborted.', 'AbortError'));
+    };
+    reader.onload = () => {
+      cleanup();
+      typeof reader.result === 'string'
+        ? resolve(reader.result)
+        : reject(new Error('Could not read the selected image.'));
+    };
+    reader.onerror = () => { cleanup(); reject(reader.error || new Error('Could not read the selected image.')); };
+    reader.onabort = () => { cleanup(); reject(signal?.aborted ? new DOMException('The operation was aborted.', 'AbortError') : new Error('Image reading was cancelled.')); };
+    if (signal?.aborted) return abortRead();
+    signal?.addEventListener('abort', abortRead, { once: true });
     reader.readAsDataURL(file);
   });
 }
 
-export async function imageFileToDataUrl(file, { maxDimension = 1280, maxBytes = 900_000 } = {}) {
+export async function imageFileToDataUrl(file, { maxDimension = 1280, maxBytes = 900_000, signal } = {}) {
   if (!file?.type?.startsWith('image/')) throw new Error('Choose an image file.');
 
-  const originalDataUrl = await readFileAsDataUrl(file);
+  const originalDataUrl = await readFileAsDataUrl(file, signal);
+  if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
   const supportedInlineImage = /^image\/(?:png|jpe?g|webp|gif)$/i.test(file.type);
   if (supportedInlineImage && file.size <= maxBytes) return originalDataUrl;
 
   const bitmap = await createImageBitmap(file);
+  if (signal?.aborted) {
+    bitmap.close?.();
+    throw new DOMException('The operation was aborted.', 'AbortError');
+  }
   const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(bitmap.width * scale));

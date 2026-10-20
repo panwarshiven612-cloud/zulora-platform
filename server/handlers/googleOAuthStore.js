@@ -44,7 +44,7 @@ function firestoreRoot() {
 const sessionDocumentPath = uid => `${firestoreRoot()}/users/${encodeURIComponent(uid)}/connectors/${SESSION_DOCUMENT_ID}`;
 
 function googleClientId() {
-  return readServerEnv('GOOGLE_CLIENT_ID') || '791256936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com';
+  return readServerEnv('GOOGLE_CLIENT_ID') || '79125936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com';
 }
 
 function googleClientSecret() {

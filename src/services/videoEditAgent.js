@@ -19,7 +19,7 @@ import { uploadFileToDrive } from './zuloraDriveService';
  * @param {File|Blob} file
  * @returns {Promise<{ width: number, height: number, fps: number, duration: number, has_audio: boolean, mimeType: string, name: string }>}
  */
-export async function probe_video(file) {
+export async function probe_video(file, signal) {
   if (!file) throw new Error('probe_video: No video file provided');
 
   return new Promise((resolve, reject) => {
@@ -29,9 +29,13 @@ export async function probe_video(file) {
     video.muted = true;
 
     const cleanup = () => {
+      signal?.removeEventListener('abort', onAbort);
       URL.revokeObjectURL(url);
       video.remove();
     };
+    const onAbort = () => { cleanup(); reject(new DOMException('The operation was aborted.', 'AbortError')); };
+    if (signal?.aborted) return onAbort();
+    signal?.addEventListener('abort', onAbort, { once: true });
 
     video.onloadedmetadata = () => {
       const width = video.videoWidth || 1080;
@@ -87,18 +91,28 @@ CRITICAL RULES:
  * @param {Function} onProgress
  * @returns {Promise<Array<{ word: string, start: number, end: number }>>}
  */
-export async function transcribe_video(file, onProgress) {
+export async function transcribe_video(file, onProgress, signal) {
   onProgress?.({ stage: 'Transcribing', percent: 10, message: 'Extracting audio & transcribing...' });
 
   // Read video into base64
   const base64Data = await new Promise((resolve, reject) => {
     const reader = new FileReader();
+    const cleanup = () => signal?.removeEventListener('abort', abortRead);
+    const abortRead = () => {
+      if (reader.readyState === FileReader.LOADING) reader.abort();
+      cleanup();
+      reject(new DOMException('The operation was aborted.', 'AbortError'));
+    };
     reader.onload = () => {
+      cleanup();
       const result = reader.result;
       const base64 = typeof result === 'string' ? result.split(',')[1] : '';
       resolve(base64);
     };
-    reader.onerror = reject;
+    reader.onerror = () => { cleanup(); reject(reader.error || new Error('Could not read the selected video.')); };
+    reader.onabort = () => { cleanup(); reject(new DOMException('The operation was aborted.', 'AbortError')); };
+    if (signal?.aborted) return abortRead();
+    signal?.addEventListener('abort', abortRead, { once: true });
     reader.readAsDataURL(file);
   });
 
@@ -107,10 +121,12 @@ export async function transcribe_video(file, onProgress) {
   const mimeType = file.type || 'video/mp4';
 
   for (const key of GEMINI_KEYS) {
+    if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
     if (!key) continue;
     try {
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${key}`, {
         method: 'POST',
+        signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           system_instruction: { parts: [{ text: TRANSCRIBE_SYSTEM_PROMPT }] },
@@ -140,6 +156,7 @@ export async function transcribe_video(file, onProgress) {
         return parsed;
       }
     } catch (err) {
+      if (signal?.aborted || err?.name === 'AbortError') throw err;
       console.warn('[transcribe_video] Provider attempt failed, retrying key...', err.message);
     }
   }
@@ -366,7 +383,7 @@ export function render_overlay(captionChunks, videoInfo = {}, styleOption = '') 
  * @param {Function} onProgress
  * @returns {Promise<{ blob: Blob, url: string, filename: string, duration: number }>}
  */
-export async function composite_video(sourceFile, overlayHtml, videoInfo, onProgress) {
+export async function composite_video(sourceFile, overlayHtml, videoInfo, onProgress, signal) {
   const width = videoInfo.width || 1080;
   const height = videoInfo.height || 1920;
   const duration = videoInfo.duration || 10;
@@ -378,23 +395,35 @@ export async function composite_video(sourceFile, overlayHtml, videoInfo, onProg
     let videoUrl = '';
     let iframeUrl = '';
     let iframe = null;
+    let videoEl = null;
+    let recorder = null;
+    const cleanupAbort = () => signal?.removeEventListener('abort', stopOnAbort);
+    const stopOnAbort = () => {
+      videoEl?.pause();
+      if (recorder && recorder.state !== 'inactive') recorder.stop();
+    };
+    signal?.addEventListener('abort', stopOnAbort, { once: true });
 
     try {
+      if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
       const canvas = document.createElement('canvas');
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext('2d');
 
       videoUrl = URL.createObjectURL(sourceFile);
-      const videoEl = document.createElement('video');
+      videoEl = document.createElement('video');
       videoEl.src = videoUrl;
       videoEl.muted = true;
       videoEl.playsInline = true;
       videoEl.crossOrigin = 'anonymous';
 
       await new Promise((res, rej) => {
-        videoEl.onloadedmetadata = () => res(true);
-        videoEl.onerror = () => rej(new Error('Failed to load source video into compositor'));
+        const cleanup = () => signal?.removeEventListener('abort', onAbort);
+        const onAbort = () => { cleanup(); rej(new DOMException('The operation was aborted.', 'AbortError')); };
+        videoEl.onloadedmetadata = () => { cleanup(); res(true); };
+        videoEl.onerror = () => { cleanup(); rej(new Error('Failed to load source video into compositor')); };
+        signal?.addEventListener('abort', onAbort, { once: true });
         videoEl.load();
       });
 
@@ -408,11 +437,19 @@ export async function composite_video(sourceFile, overlayHtml, videoInfo, onProg
       iframe.style.cssText = 'position:fixed;left:-9999px;top:-9999px;border:none;background:transparent;pointer-events:none;z-index:-1;';
       document.body.appendChild(iframe);
 
-      await new Promise(res => {
+      await new Promise((res, rej) => {
+        let pollTimer;
+        const cleanup = () => {
+          clearTimeout(pollTimer);
+          signal?.removeEventListener('abort', onAbort);
+        };
+        const onAbort = () => { cleanup(); rej(new DOMException('The operation was aborted.', 'AbortError')); };
+        signal?.addEventListener('abort', onAbort, { once: true });
         iframe.onload = () => {
           const poll = () => {
-            if (iframe?.contentWindow?.__ready) res(true);
-            else setTimeout(poll, 60);
+            if (signal?.aborted) return onAbort();
+            if (iframe?.contentWindow?.__ready) { cleanup(); res(true); }
+            else pollTimer = setTimeout(poll, 60);
           };
           poll();
         };
@@ -427,7 +464,7 @@ export async function composite_video(sourceFile, overlayHtml, videoInfo, onProg
           ? 'video/webm;codecs=h264'
           : 'video/webm;codecs=vp9';
 
-      const recorder = new MediaRecorder(stream, {
+      recorder = new MediaRecorder(stream, {
         mimeType,
         videoBitsPerSecond: 12_000_000 // 12 Mbps for crisp 1080p
       });
@@ -441,6 +478,12 @@ export async function composite_video(sourceFile, overlayHtml, videoInfo, onProg
         if (iframe && iframe.parentNode) iframe.parentNode.removeChild(iframe);
         URL.revokeObjectURL(videoUrl);
         URL.revokeObjectURL(iframeUrl);
+        cleanupAbort();
+
+        if (signal?.aborted) {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+          return;
+        }
 
         const finalBlob = new Blob(chunks, { type: mimeType });
         const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
@@ -466,6 +509,11 @@ export async function composite_video(sourceFile, overlayHtml, videoInfo, onProg
       let currentFrame = 0;
 
       const drawLoop = () => {
+        if (signal?.aborted) {
+          if (recorder.state !== 'inactive') recorder.stop();
+          videoEl.pause();
+          return;
+        }
         if (currentFrame >= totalFrames || videoEl.ended) {
           recorder.stop();
           videoEl.pause();
@@ -496,6 +544,8 @@ export async function composite_video(sourceFile, overlayHtml, videoInfo, onProg
       videoEl.onplay = () => drawLoop();
 
     } catch (err) {
+      cleanupAbort();
+      if (recorder && recorder.state !== 'inactive') recorder.stop();
       if (iframe && iframe.parentNode) iframe.parentNode.removeChild(iframe);
       if (videoUrl) URL.revokeObjectURL(videoUrl);
       if (iframeUrl) URL.revokeObjectURL(iframeUrl);
@@ -515,17 +565,22 @@ export async function composite_video(sourceFile, overlayHtml, videoInfo, onProg
  * @param {object} currentUser
  * @returns {Promise<{ url: string, blob: Blob, filename: string, driveFile?: object, transcript: Array, captions: Array }>}
  */
-export async function runFullVideoPipeline(file, userPrompt = '', onProgress, currentUser = null) {
+export async function runFullVideoPipeline(file, userPrompt = '', onProgress, currentUser = null, signal) {
   const notify = (stage, percent, message) => onProgress?.({ stage, percent, message });
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+  };
 
   // 1. Probe
+  throwIfAborted();
   notify('Probing', 5, 'Probing source video specifications...');
-  const videoInfo = await probe_video(file);
+  const videoInfo = await probe_video(file, signal);
   notify('Probing', 15, `Detected ${videoInfo.width}x${videoInfo.height} (${videoInfo.duration}s)`);
 
   // 2. Transcribe
   notify('Transcribing', 20, 'Transcribing spoken speech with Whisper AI...');
-  const transcript = await transcribe_video(file, onProgress);
+  const transcript = await transcribe_video(file, onProgress, signal);
+  throwIfAborted();
   notify('Transcribing', 45, `Detected ${transcript.length} spoken words`);
 
   // 3. Plan kinetic storyboard
@@ -540,12 +595,13 @@ export async function runFullVideoPipeline(file, userPrompt = '', onProgress, cu
 
   // 5. Composite video
   notify('Rendering', 72, 'Compositing captions onto source video...');
-  const finalVideo = await composite_video(file, overlayHtml, videoInfo, onProgress);
+  const finalVideo = await composite_video(file, overlayHtml, videoInfo, onProgress, signal);
+  throwIfAborted();
 
   // 6. Save to Zulora Drive & Media Library
   notify('Encoding', 95, 'Saving final video to Zulora Drive & Library...');
   let driveResult = null;
-  if (currentUser?.uid && uploadFileToDrive) {
+  if (!signal?.aborted && currentUser?.uid && uploadFileToDrive) {
     try {
       const finalFile = new File([finalVideo.blob], finalVideo.filename, { type: finalVideo.blob.type });
       driveResult = await uploadFileToDrive(finalFile, currentUser.uid, 'Videos');
@@ -554,6 +610,7 @@ export async function runFullVideoPipeline(file, userPrompt = '', onProgress, cu
     }
   }
 
+  throwIfAborted();
   notify('Done', 100, 'Video ready!');
 
   return {

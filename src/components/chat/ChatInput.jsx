@@ -31,8 +31,9 @@ export default function ChatInput({
   fileInputRef,
   cameraInputRef,
   onFileSelect,
+  attachmentPreviewUrls = new Map(),
   isSendDisabled = false,
-  mediaUploadProgress = null,
+  mediaAnalysisStatus = '',
   enableWebSearch = false,
   onToggleWebSearch,
   onOpenConnectors,
@@ -107,14 +108,15 @@ export default function ChatInput({
         <div className="flex flex-wrap gap-2 p-2.5 border-b border-slate-100 dark:border-slate-800/80">
           {attachments.map((file, idx) => {
             const isImg = file.type?.startsWith('image/');
+            const previewUrl = attachmentPreviewUrls.get(file);
             return (
               <div 
                 key={`${file.name}-${idx}`} 
                 className="relative group flex items-center gap-1.5 pl-2 pr-6 py-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-300 border border-slate-200/60 dark:border-slate-700/60 max-w-[200px]"
               >
-                {isImg ? (
+                {isImg && previewUrl ? (
                   <img 
-                    src={URL.createObjectURL(file)} 
+                    src={previewUrl || ''}
                     alt={file.name} 
                     className="w-4 h-4 object-cover rounded" 
                   />
@@ -135,19 +137,10 @@ export default function ChatInput({
         </div>
       )}
 
-      {mediaUploadProgress && (
-        <div className="mx-3 my-2 rounded-xl border border-sky-100 bg-sky-50/80 px-3 py-2 dark:border-sky-900/50 dark:bg-sky-950/30" role="status" aria-live="polite">
-          <div className="flex items-center justify-between gap-3 text-[11px] font-medium text-sky-800 dark:text-sky-200">
-            <span>{mediaUploadProgress.status === 'error'
-              ? `Upload failed: ${mediaUploadProgress.error}`
-              : mediaUploadProgress.status === 'complete'
-                ? 'Files uploaded to server.'
-                : `Uploading file to server... ${mediaUploadProgress.percent}%`}</span>
-            {mediaUploadProgress.status === 'uploading' && <span className="shrink-0">{mediaUploadProgress.fileCount} file{mediaUploadProgress.fileCount === 1 ? '' : 's'}</span>}
-          </div>
-          <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-sky-100 dark:bg-slate-800" role="progressbar" aria-label="Media upload progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={mediaUploadProgress.status === 'error' ? 0 : mediaUploadProgress.percent}>
-            <div className={`h-full rounded-full transition-[width] duration-200 ${mediaUploadProgress.status === 'error' ? 'bg-rose-500' : 'bg-gradient-to-r from-sky-500 to-blue-600'}`} style={{ width: `${mediaUploadProgress.status === 'error' ? 0 : mediaUploadProgress.percent}%` }} />
-          </div>
+      {mediaAnalysisStatus && (
+        <div className="mx-3 my-2 inline-flex items-center gap-2 rounded-xl border border-sky-100 bg-sky-50/80 px-3 py-2 text-[11px] font-medium text-sky-800 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-200" role="status" aria-live="polite">
+          <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-sky-500" aria-hidden="true" />
+          <span>{mediaAnalysisStatus}</span>
         </div>
       )}
 

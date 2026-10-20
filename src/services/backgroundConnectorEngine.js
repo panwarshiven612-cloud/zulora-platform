@@ -60,13 +60,13 @@ export function detectConnectorTask(prompt) {
   return null;
 }
 
-async function readRecentGmail(count, query = 'in:inbox', readAll = false) {
+async function readRecentGmail(count, query = 'in:inbox', readAll = false, signal) {
   const ids = [];
   let pageToken = '';
   do {
     const params = new URLSearchParams({ maxResults: String(readAll ? 500 : Math.min(500, count - ids.length)), q: query });
     if (pageToken) params.set('pageToken', pageToken);
-    const result = await connectorManager.apiFetch('gmail', `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`);
+    const result = await connectorManager.apiFetch('gmail', `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`, { signal });
     if (!result || typeof result !== 'object' || (result.messages !== undefined && !Array.isArray(result.messages))
       || (!Array.isArray(result.messages) && !Number.isFinite(Number(result.resultSizeEstimate)))) {
       throw new Error('Gmail returned an invalid inbox response. No inbox result is reported.');
@@ -79,7 +79,8 @@ async function readRecentGmail(count, query = 'in:inbox', readAll = false) {
     if (!item?.id) throw new Error('Gmail returned a message without an ID. No inbox result is reported.');
     const message = await connectorManager.apiFetch(
       'gmail',
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(item.id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(item.id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+      { signal }
     );
     if (!message?.id || !message?.threadId) throw new Error('Gmail returned an invalid message record. No inbox result is reported.');
     const headers = message.payload?.headers || [];
@@ -112,7 +113,7 @@ function spreadsheetIdFromPrompt(prompt) {
   return String(prompt).match(/docs\.google\.com\/spreadsheets\/d\/([\w-]+)/i)?.[1] || '';
 }
 
-async function getRecentSpreadsheets() {
+async function getRecentSpreadsheets(signal) {
   const query = new URLSearchParams({
     q: "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
     orderBy: 'modifiedTime desc',
@@ -121,31 +122,33 @@ async function getRecentSpreadsheets() {
   });
   const result = await connectorManager.apiFetch(
     'drive',
-    `https://www.googleapis.com/drive/v3/files?${query}`
+    `https://www.googleapis.com/drive/v3/files?${query}`,
+    { signal }
   );
   return result.files || [];
 }
 
-async function appendRows(spreadsheetId, rows) {
+async function appendRows(spreadsheetId, rows, signal) {
   const metadata = await connectorManager.apiFetch(
     'sheets',
-    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties.title`
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties.title`,
+    { signal }
   );
   const firstSheet = metadata.sheets?.[0]?.properties?.title || 'Sheet1';
   const range = encodeURIComponent(`'${firstSheet.replace(/'/g, "''")}'!A:D`);
   return connectorManager.apiFetch(
     'sheets',
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${range}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
-    { method: 'POST', body: JSON.stringify({ values: rows }) }
+    { method: 'POST', body: JSON.stringify({ values: rows }), signal }
   );
 }
 
-async function writeSheetRange(spreadsheetId, range, rows) {
+async function writeSheetRange(spreadsheetId, range, rows, signal) {
   const encodedRange = encodeURIComponent(range);
   return connectorManager.apiFetch(
     'sheets',
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodedRange}?valueInputOption=USER_ENTERED`,
-    { method: 'PUT', body: JSON.stringify({ values: rows }) }
+    { method: 'PUT', body: JSON.stringify({ values: rows }), signal }
   );
 }
 
@@ -172,14 +175,15 @@ export async function listConnectorSpreadsheets() {
   return getRecentSpreadsheets();
 }
 
-export async function listUpcomingCalendarEvents(maxResults = 8, { timeMin, timeMax } = {}) {
+export async function listUpcomingCalendarEvents(maxResults = 8, { timeMin, timeMax, signal } = {}) {
   const query = new URLSearchParams({
     timeMin: timeMin || new Date().toISOString(), maxResults: String(maxResults), singleEvents: 'true', orderBy: 'startTime'
   });
   if (timeMax) query.set('timeMax', timeMax);
   const result = await connectorManager.apiFetch(
     'calendar',
-    `https://www.googleapis.com/calendar/v3/calendars/primary/events?${query}`
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events?${query}`,
+    { signal }
   );
   if (!result || typeof result !== 'object' || (result.items !== undefined && !Array.isArray(result.items))
     || (!Array.isArray(result.items) && result.kind !== 'calendar#events')) {
@@ -232,11 +236,12 @@ export function extractCalendarEventCount(prompt) {
   return Math.min(2500, Math.max(1, Number(match?.[1]) || 10));
 }
 
-export async function listGoogleFormResponses(formId, maxResults = 20) {
+export async function listGoogleFormResponses(formId, maxResults = 20, signal) {
   const query = new URLSearchParams({ pageSize: String(maxResults) });
   const result = await connectorManager.apiFetch(
     'forms',
-    `https://forms.googleapis.com/v1/forms/${encodeURIComponent(formId)}/responses?${query}`
+    `https://forms.googleapis.com/v1/forms/${encodeURIComponent(formId)}/responses?${query}`,
+    { signal }
   );
   return result.responses || [];
 }
@@ -298,19 +303,20 @@ export function parseCalendarEvent(prompt) {
   };
 }
 
-export async function createGoogleCalendarEvent(event) {
+export async function createGoogleCalendarEvent(event, signal) {
   const created = await connectorManager.apiFetch('calendar', 'https://www.googleapis.com/calendar/v3/calendars/primary/events', {
-    method: 'POST', body: JSON.stringify(event)
+    method: 'POST', body: JSON.stringify(event), signal
   });
   if (!created?.id) throw new Error('Google Calendar did not return an event ID. The event is not reported as created.');
   return { ...created, verified: true };
 }
 
-export async function executeConnectorTask(prompt, { onStatus = () => {} } = {}) {
+export async function executeConnectorTask(prompt, { onStatus = () => {}, signal } = {}) {
   const provider = detectConnectorTask(prompt);
   if (!provider) return null;
   const request = String(prompt || '');
   try {
+    if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
     onStatus(`Using ${provider} native API connector…`);
     if (provider === 'gmail') {
       if (/\b(send|draft|compose)\b/i.test(request)) {
@@ -320,10 +326,10 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
         const missing = [!to && 'recipient address', !subject && 'subject', !body && 'message body'].filter(Boolean);
         if (missing.length) return { handled: true, provider, data: [], text: `I have not sent anything. Please provide the ${missing.join(', ')} so I can ${/\bdraft\b|\bcompose\b/i.test(request) ? 'prepare a draft' : 'send the message'}.` };
         if (/\bdraft\b|\bcompose\b/i.test(request)) {
-          const draft = await connectorManager.createGmailDraft({ to, subject, body });
+          const draft = await connectorManager.createGmailDraft({ to, subject, body, signal });
           return { handled: true, executed: true, provider, data: draft, text: `Created a Gmail draft to ${to} with the subject “${subject}”.` };
         }
-        const sent = await connectorManager.sendGmailMessage({ to, subject, body });
+        const sent = await connectorManager.sendGmailMessage({ to, subject, body, signal });
         const verified = sent.verified === true && Boolean(sent.id && sent.threadId);
         return {
           handled: true,
@@ -335,7 +341,7 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
         };
       }
       const allToday = /\ball\b.{0,30}\btoday\b|\btoday\b.{0,30}\ball\b/i.test(request);
-      const emails = await readRecentGmail(extractMessageCount(request), gmailQueryFromPrompt(request), allToday);
+      const emails = await readRecentGmail(extractMessageCount(request), gmailQueryFromPrompt(request), allToday, signal);
       const output = formatEmailReport(emails);
       const wantsSheet = /\b(sheet|spreadsheet|sheets|export)\b/i.test(request);
       let sheetNote = '';
@@ -349,13 +355,13 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
         ];
         if (createNew) {
           onStatus('Creating and populating the Google Sheet');
-          const populated = await connectorManager.createAndPopulateSpreadsheet({ title: `Gmail Export ${new Date().toLocaleDateString()}`, rows });
+          const populated = await connectorManager.createAndPopulateSpreadsheet({ title: `Gmail Export ${new Date().toLocaleDateString()}`, rows, signal });
           sheetNote = `\n\nCreated and populated [${populated.spreadsheet.title}](${populated.spreadsheet.url}) with ${emails.length} email rows.`;
         } else if (!id) {
-          const candidates = await getRecentSpreadsheets();
+          const candidates = await getRecentSpreadsheets(signal);
           if (candidates.length === 1) {
             if (!emails.length) throw new Error('No matching Gmail messages were available to append. No spreadsheet was changed.');
-            await appendRows(candidates[0].id, [['Date', 'From', 'Subject', 'Preview'], ...emails.map(email => [email.date, email.sender, email.subject, email.preview])]);
+            await appendRows(candidates[0].id, [['Date', 'From', 'Subject', 'Preview'], ...emails.map(email => [email.date, email.sender, email.subject, email.preview])], signal);
             sheetNote = `\n\nAppended the email details to [${candidates[0].name}](${candidates[0].webViewLink || `https://docs.google.com/spreadsheets/d/${candidates[0].id}`}).`;
           } else if (candidates.length) {
             sheetNote = `\n\nI found these spreadsheets. Tell me which one to update:\n${candidates.map(file => `- ${file.name}: ${file.webViewLink || `https://docs.google.com/spreadsheets/d/${file.id}`}`).join('\n')}`;
@@ -364,7 +370,7 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
           }
         } else {
           if (!emails.length) throw new Error('No matching Gmail messages were available to append. No spreadsheet was changed.');
-          await appendRows(id, [['Date', 'From', 'Subject', 'Preview'], ...emails.map(email => [email.date, email.sender, email.subject, email.preview])]);
+          await appendRows(id, [['Date', 'From', 'Subject', 'Preview'], ...emails.map(email => [email.date, email.sender, email.subject, email.preview])], signal);
           sheetNote = `\n\nAppended ${emails.length} email rows to the requested spreadsheet.`;
         }
       }
@@ -375,19 +381,19 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
     if (provider === 'sheets') {
       let id = spreadsheetIdFromPrompt(request);
       if (!id) {
-        const files = await getRecentSpreadsheets();
+        const files = await getRecentSpreadsheets(signal);
         if (!files.length) return { handled: true, provider, data: [], text: 'I could not find any spreadsheets. Include a Google Sheets link or create a spreadsheet, then try again.' };
         if (files.length === 1 && /\b(?:append|add|write|update|put|save)\b/i.test(request)) id = files[0].id;
-        else return { handled: true, provider, data: files, text: `Your recently modified spreadsheets:\n${files.map(file => `- [${file.name}](${file.webViewLink || `https://docs.google.com/spreadsheets/d/${file.id}`})`).join('\n')}\n\nInclude a spreadsheet link when you want me to update a particular sheet.` };
+        else return { handled: true, executed: true, provider, data: files, text: `Your recently modified spreadsheets:\n${files.map(file => `- [${file.name}](${file.webViewLink || `https://docs.google.com/spreadsheets/d/${file.id}`})`).join('\n')}\n\nInclude a spreadsheet link when you want me to update a particular sheet.` };
       }
       if (/\b(read|show|view)\b/i.test(request)) {
-        const metadata = await connectorManager.apiFetch('sheets', `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(id)}?fields=sheets.properties.title`);
+        const metadata = await connectorManager.apiFetch('sheets', `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(id)}?fields=sheets.properties.title`, { signal });
         const firstSheet = metadata.sheets?.[0]?.properties?.title || 'Sheet1';
         const range = encodeURIComponent(`'${firstSheet.replace(/'/g, "''")}'!A1:Z30`);
-        const result = await connectorManager.apiFetch('sheets', `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(id)}/values/${range}`);
+        const result = await connectorManager.apiFetch('sheets', `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(id)}/values/${range}`, { signal });
         const values = result.values || [];
         const driveNote = await autoSaveReport('Sheets', values, request);
-        return { handled: true, provider, data: values, text: `Spreadsheet data:\n\n${values.map(row => row.join(' | ')).join('\n') || '(No values in the first 30 rows.)'}${driveNote}` };
+        return { handled: true, executed: true, provider, data: values, text: `Spreadsheet data:\n\n${values.map(row => row.join(' | ')).join('\n') || '(No values in the first 30 rows.)'}${driveNote}` };
       }
       if (/\b(?:append|add|write|insert|update|put|save)\b/i.test(request)) {
         const quoted = request.match(/["“]([^"”]+)["”]/)?.[1]?.trim();
@@ -398,11 +404,11 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
         if (!textToWrite) return { handled: true, provider, data: [], text: 'No spreadsheet cell was changed. Include the exact text to write, optionally in quotes; I will append a row unless you provide a cell range.' };
         const rows = [textToWrite.split(/\s*\|\s*|\t|\s*,\s*/).map(value => value.trim()).filter(Boolean)];
         if (range) {
-          await writeSheetRange(id, range, rows);
-          return { handled: true, provider, data: rows, text: `Updated ${range} in the requested spreadsheet.` };
+          await writeSheetRange(id, range, rows, signal);
+          return { handled: true, executed: true, provider, data: rows, text: `Updated ${range} in the requested spreadsheet.` };
         }
-        await appendRows(id, rows);
-        return { handled: true, provider, data: rows, text: 'Appended the requested row to the spreadsheet.' };
+        await appendRows(id, rows, signal);
+        return { handled: true, executed: true, provider, data: rows, text: 'Appended the requested row to the spreadsheet.' };
       }
       return { handled: true, provider, data: [], text: 'I found the spreadsheet. Tell me what to read, or provide the exact row to append.' };
     }
@@ -411,11 +417,11 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
       if (/\b(create|add|book|schedule)\b/i.test(request)) {
         const event = parseCalendarEvent(request);
         if (!event) return { handled: true, provider, data: [], text: 'I have not created an event. Provide a title and a clear date/time such as “2026-10-03 15:30” so Calendar can schedule it accurately.' };
-        const created = await createGoogleCalendarEvent({ ...event, reminders: { useDefault: true } });
+        const created = await createGoogleCalendarEvent({ ...event, reminders: { useDefault: true } }, signal);
         return { handled: true, executed: created.verified === true && Boolean(created.id), provider, data: created, text: `Created “${created.summary || event.summary}” on Calendar for ${created.start?.dateTime || event.start.dateTime}.` };
       }
       const range = parseCalendarTimeRange(request);
-      const events = await listUpcomingCalendarEvents(extractCalendarEventCount(request), range || {});
+      const events = await listUpcomingCalendarEvents(extractCalendarEventCount(request), { ...(range || {}), signal });
       const wantsSheet = /\b(sheet|spreadsheet|sheets|export)\b/i.test(request);
       let sheetNote = '';
       if (wantsSheet) {
@@ -426,14 +432,14 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
         const id = spreadsheetIdFromPrompt(request);
         if (id) {
           if (events.length) {
-            await appendRows(id, rows);
+            await appendRows(id, rows, signal);
             sheetNote = `\n\nAppended ${events.length} calendar events to the requested spreadsheet.`;
           } else {
             sheetNote = '\n\nThere were no Calendar events in this time range to append.';
           }
         } else {
           onStatus('Creating and populating the Google Sheet');
-          const populated = await connectorManager.createAndPopulateSpreadsheet({ title: `Calendar Export ${new Date().toLocaleDateString()}`, rows });
+          const populated = await connectorManager.createAndPopulateSpreadsheet({ title: `Calendar Export ${new Date().toLocaleDateString()}`, rows, signal });
           sheetNote = `\n\nCreated and populated [${populated.spreadsheet.title}](${populated.spreadsheet.url}) with ${events.length} calendar events.`;
         }
       }
@@ -444,15 +450,17 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
 
     const formId = request.match(/forms\/d\/(?:e\/)?([\w-]+)/i)?.[1] || request.match(/\bform\s+(?:id\s+)?([\w-]{8,})/i)?.[1];
     if (!formId) return { handled: true, provider, data: [], text: 'Include a Google Form URL or form ID so I know which response set to read.' };
-    const responses = await listGoogleFormResponses(formId);
+    const responses = await listGoogleFormResponses(formId, 20, signal);
     const driveNote = await autoSaveReport('Google-Forms', responses, request);
     return {
       handled: true,
+      executed: true,
       provider,
       data: responses,
       text: responses.length ? `Retrieved ${responses.length} form responses.\n\n${responses.map((response, index) => `${index + 1}. Submitted ${response.lastSubmittedTime || 'date unavailable'} — ${Object.entries(response.answers || {}).map(([key, answer]) => `${key}: ${(answer.textAnswers?.answers || []).map(item => item.value).join(', ')}`).join('; ')}`).join('\n')}${driveNote}` : 'This form has no responses.'
     };
   } catch (error) {
+    if (signal?.aborted || error?.name === 'AbortError') throw error;
     onStatus('Connector request needs attention');
     const needsReconnect = /OAuth Permission Required|needs to be connected again|re-?connect|HTTP 401|HTTP 403|token is expired/i.test(error.message || '');
     if (needsReconnect && typeof window !== 'undefined') {

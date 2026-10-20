@@ -16,7 +16,7 @@ import {
   runTransaction
 } from 'firebase/firestore';
 import { db, storage } from './firebase';
-import { ref, uploadBytes, uploadString, getDownloadURL, uploadBytesResumable } from 'firebase/storage';
+import { ref, uploadBytes, uploadString, getDownloadURL } from 'firebase/storage';
 import { emailService } from './emailService';
 import { rateLimiter } from './rateLimiter';
 
@@ -581,34 +581,6 @@ export const firestoreService = {
     return TOKEN_LIMITS[getTier(profile)];
   },
 
-  async uploadChatMediaToStorage(file, uid, { onProgress } = {}) {
-    if (!uid) throw new Error('Sign in to upload chat media.');
-    if (!file || !/^(?:image|video)\//i.test(String(file.type || ''))) {
-      throw new Error('Choose an image or video to upload.');
-    }
-    if (Number(file.size) >= 60 * 1024 * 1024) {
-      throw new Error('Chat images and videos must be smaller than 60 MB.');
-    }
-
-    const fileId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const storagePath = `users/${uid}/assets/chat-${fileId}`;
-    const storageRef = ref(storage, storagePath);
-    await new Promise((resolve, reject) => {
-      const task = uploadBytesResumable(storageRef, file, {
-        contentType: file.type || 'application/octet-stream',
-        customMetadata: { ownerUid: uid, uploadSource: 'chat' }
-      });
-      task.on('state_changed', snapshot => {
-        const percent = snapshot.totalBytes
-          ? Math.min(100, Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100))
-          : 0;
-        onProgress?.({ percent, bytesTransferred: snapshot.bytesTransferred, totalBytes: snapshot.totalBytes });
-      }, reject, resolve);
-    });
-
-    return { storagePath, url: await getDownloadURL(storageRef) };
-  },
-
   /** Read plugin-specific token usage and optional limits configured in Firestore. */
   async getComputerPluginTokenUsage(uid, profile = {}) {
     if (!uid) return { usedTokens: 0, maxTokenLimit: this.getProfileTokenLimit(profile) };
@@ -1115,6 +1087,31 @@ export const firestoreService = {
       ? payload.title
       : deriveChatTitle(payload.messages?.find(message => message.role === 'user')?.displayContent || payload.messages?.find(message => message.role === 'user')?.content);
     debounceFirestoreWrite(`chat:${uid}:${chatId}`, () => setDoc(doc(db, 'users', uid, 'chats', chatId), { ...payload, title }, { merge: true }));
+  },
+
+  async logChatMessage(uid, entry) {
+    if (!uid || !entry?.messageId || !['user', 'assistant', 'system'].includes(entry.role)) return;
+    const messageId = String(entry.messageId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 140);
+    const attachments = (Array.isArray(entry.attachments) ? entry.attachments : []).slice(0, 10).map(file => ({
+      name: String(file?.name || '').slice(0, 180),
+      mimeType: String(file?.mimeType || '').slice(0, 120),
+      size: Math.max(0, Number(file?.size) || 0)
+    }));
+    const payload = {
+      userId: uid,
+      sessionId: String(entry.sessionId || '').slice(0, 180),
+      messageId,
+      role: entry.role,
+      content: String(entry.content || '').slice(0, 180_000),
+      uploadedContext: String(entry.uploadedContext || '').slice(0, 80_000),
+      attachments,
+      model: String(entry.model || '').slice(0, 120),
+      provider: String(entry.provider || '').slice(0, 120),
+      clientTimestamp: Number(entry.timestamp) || Date.now(),
+      createdAt: serverTimestamp()
+    };
+    // Inline image/video bytes stay in the generation request and are never copied into logs.
+    await setDoc(doc(db, 'chat_logs', uid, 'messages', messageId), payload, { merge: true });
   },
 
   /**

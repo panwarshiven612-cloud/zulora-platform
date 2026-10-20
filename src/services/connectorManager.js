@@ -1006,11 +1006,11 @@ export const connectorManager = {
     return this.getActiveGoogleProviders().length > 0;
   },
 
-  async sendGmailMessage({ to, recipient = to, subject, body, htmlContent, body_html }) {
+  async sendGmailMessage({ to, recipient = to, subject, body, htmlContent, body_html, signal }) {
     const resolvedBody = body ?? htmlContent ?? body_html ?? '';
     const raw = buildHtmlMimeMessage({ to: recipient, subject, body: resolvedBody, senderEmail: sessionTokens.get('gmail')?.email || '' });
     const res = await this.apiFetch('gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-      method: 'POST', body: JSON.stringify({ raw }), expectedStatus: 200
+      method: 'POST', body: JSON.stringify({ raw }), expectedStatus: 200, signal
     });
     if (!res?.id || !res?.threadId) {
       throw new Error('Gmail API did not confirm delivery with both a message ID and thread ID. The email is not reported as sent.');
@@ -1022,10 +1022,10 @@ export const connectorManager = {
     return this.sendGmailMessage({ to, subject, body });
   },
 
-  async createGmailDraft({ to, subject, body }) {
+  async createGmailDraft({ to, subject, body, signal }) {
     const raw = buildHtmlMimeMessage({ to, subject, body, senderEmail: sessionTokens.get('gmail')?.email || '' });
     const res = await this.apiFetch('gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/drafts', {
-      method: 'POST', body: JSON.stringify({ message: { raw } })
+      method: 'POST', body: JSON.stringify({ message: { raw } }), signal
     });
     if (!res?.id || !res?.message?.id) throw new Error('Gmail API did not return a valid draft ID.');
     return { ...res, success: true, isDraft: true, to, subject, verified: true };
@@ -1133,9 +1133,9 @@ export const connectorManager = {
     throw new Error('Provide event details (title, start_time, end_time) or a list of events to schedule.');
   },
 
-  async createAndPopulateSpreadsheet({ title, rows = [] } = {}) {
+  async createAndPopulateSpreadsheet({ title, rows = [], signal } = {}) {
     if (!Array.isArray(rows) || !rows.length) throw new Error('At least one header or data row is required to populate the spreadsheet.');
-    const spreadsheet = await this.createSpreadsheet({ title });
+    const spreadsheet = await this.createSpreadsheet({ title, signal });
     const spreadsheetId = spreadsheet?.spreadsheetId;
     if (!spreadsheetId) throw new Error('Google Sheets did not return the new spreadsheet ID.');
     
@@ -1145,8 +1145,9 @@ export const connectorManager = {
     let totalUpdated = 0;
     try {
       for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+        if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
         const chunk = rows.slice(i, i + CHUNK_SIZE);
-        lastResult = await this.appendSheetRow({ spreadsheet_id: spreadsheetId, range: 'Sheet1!A1', values: chunk });
+        lastResult = await this.appendSheetRow({ spreadsheet_id: spreadsheetId, range: 'Sheet1!A1', values: chunk, signal });
         totalUpdated += Number(lastResult?.updates?.updatedRows || chunk.length);
       }
     } catch (error) {
@@ -1223,14 +1224,14 @@ export const connectorManager = {
     return this.apiFetch('calendar', `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(event_id)}`, { method: 'DELETE' });
   },
 
-  async appendSheetRow({ spreadsheet_id, range = 'Sheet1!A:Z', values = [] }) {
+  async appendSheetRow({ spreadsheet_id, range = 'Sheet1!A:Z', values = [], signal }) {
     const id = normalizeSpreadsheetId(spreadsheet_id);
     const a1Range = normalizeSheetRange(range);
     const rows = normalizeSheetValues(values);
     const params = new URLSearchParams({ valueInputOption: 'USER_ENTERED' });
     const endpoint = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(id)}/values/${encodeURIComponent(a1Range)}:append?${params}`;
     const result = await this.apiFetch('sheets', endpoint, {
-      method: 'POST', body: JSON.stringify({ range: a1Range, majorDimension: 'ROWS', values: rows }), expectedStatus: 200
+      method: 'POST', body: JSON.stringify({ range: a1Range, majorDimension: 'ROWS', values: rows }), expectedStatus: 200, signal
     });
     if (!result?.spreadsheetId || !result?.updates || Number(result.updates.updatedRows) < rows.length) {
       throw new Error(`Google Sheets did not confirm that all ${rows.length} requested row(s) were appended.`);
@@ -1238,11 +1239,11 @@ export const connectorManager = {
     return result;
   },
 
-  async createSpreadsheet({ title, folder_id = '' }) {
+  async createSpreadsheet({ title, folder_id = '', signal }) {
     const safeTitle = String(title || '').trim();
     if (!safeTitle) throw new Error('A spreadsheet title is required.');
     const spreadsheet = await this.apiFetch('sheets', 'https://sheets.googleapis.com/v4/spreadsheets', {
-      method: 'POST', body: JSON.stringify({ properties: { title: safeTitle } }), expectedStatus: 200
+      method: 'POST', body: JSON.stringify({ properties: { title: safeTitle } }), expectedStatus: 200, signal
     });
     if (!spreadsheet?.spreadsheetId) throw new Error('Google Sheets did not return the new spreadsheet ID.');
     if (!String(folder_id || '').trim()) return spreadsheet;
