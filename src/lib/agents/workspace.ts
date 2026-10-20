@@ -26,6 +26,8 @@ export interface WorkspaceResponse<T = any> {
   data?: T;
   error?: string;
   code?: string;
+  status?: number;
+  retryable?: boolean;
   url?: string;
 }
 
@@ -34,11 +36,20 @@ export interface WorkspaceResponse<T = any> {
  */
 function handleWorkspaceError(error: any): WorkspaceResponse {
   const message = error?.message || String(error || 'Unknown Workspace error');
-  const code = error?.code || (message.includes('OAuth') || message.includes('client credentials') ? 'GOOGLE_OAUTH_ERROR' : 'WORKSPACE_ERROR');
+  const status = Number(error?.status || error?.statusCode) || undefined;
+  const code = error?.code || (status === 401
+    ? 'GOOGLE_OAUTH_REQUIRED'
+    : status === 503
+      ? 'GOOGLE_OAUTH_UNAVAILABLE'
+      : message.includes('OAuth') || message.includes('client credentials')
+        ? 'GOOGLE_OAUTH_ERROR'
+        : 'WORKSPACE_ERROR');
   return {
     success: false,
     error: message,
-    code
+    code,
+    ...(status ? { status } : {}),
+    retryable: status === 503 || Boolean(status && status >= 500)
   };
 }
 

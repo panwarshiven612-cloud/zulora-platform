@@ -1071,14 +1071,13 @@ export const apiRouter = {
     const coding = isCodingPrompt(prompt);
     const websiteBuild = isWebsiteGenerationPrompt(prompt);
     const simpleQuery = Boolean(options.simpleQuery);
-    const complex = !simpleQuery && isComplexPrompt(prompt);
     const directGeminiModel = String(requestedTier).startsWith('gemini-');
     const flagship = requestedTier === 'think' || requestedTier === 'gemini-2.5-pro';
     const geminiSelected = requestedTier === 'gemini';
-    const intentGeminiModel = directGeminiModel ? requestedTier : coding || complex || flagship ? GEMINI_PRO_MODEL_ID : 'gemini-3.8-flash';
+    const intentGeminiModel = directGeminiModel ? requestedTier : flagship ? GEMINI_PRO_MODEL_ID : 'gemini-3.8-flash';
     const tier = vision
       ? directGeminiModel ? requestedTier : (geminiSelected ? 'gemini' : requestedTier === 'think' || requestedTier === 'pro' ? 'gemini-2.5-pro' : 'gemini-3.8-flash')
-      : requestedTier === 'auto' ? (coding ? 'gemini-2.5-pro' : complex ? 'gemini-2.5-pro' : 'gemini-3.8-flash') : requestedTier;
+      : requestedTier === 'auto' ? 'gemini-3.8-flash' : requestedTier;
     const highTierCodeRequest = coding && (flagship || requestedTier === 'pro' || (directGeminiModel && /pro/i.test(requestedTier)));
     options = { ...options, coding, websiteBuild, flagship: highTierCodeRequest, maxTokens: coding ? CODE_GENERATION_MAX_TOKENS : options.maxTokens, tier, preferBestKey: flagship || highTierCodeRequest, streamState: options.streamState || { sent: false } };
     const errors = [];

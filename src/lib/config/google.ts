@@ -1,20 +1,13 @@
-/**
- * google.ts — Centralized Google OAuth 2.0 Configuration
- * ========================================================
- * Public browser OAuth configuration. The OAuth client secret is server-only
- * and must be supplied through GOOGLE_CLIENT_SECRET in the deployment env.
- */
+/** Public browser OAuth configuration. Client secrets stay server-side. */
+import {
+  GOOGLE_OAUTH_CLIENT_ID,
+  GOOGLE_OAUTH_REDIRECT_URIS,
+  GOOGLE_OAUTH_REDIRECT_URI
+} from './env';
 
-export const GOOGLE_CLIENT_ID = '79125936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com';
-
-export const GOOGLE_REDIRECT_URIS = [
-  'https://zulora.in/dashboard',
-  'http://localhost:5173/dashboard'
-] as const;
-
-export const GOOGLE_DEFAULT_REDIRECT_URI = typeof window !== 'undefined' && window.location.origin.includes('localhost')
-  ? 'http://localhost:5173/dashboard'
-  : 'https://zulora.in/dashboard';
+export const GOOGLE_CLIENT_ID = GOOGLE_OAUTH_CLIENT_ID;
+export const GOOGLE_REDIRECT_URIS = GOOGLE_OAUTH_REDIRECT_URIS;
+export const GOOGLE_DEFAULT_REDIRECT_URI = GOOGLE_OAUTH_REDIRECT_URI;
 
 export const GOOGLE_WORKSPACE_SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',

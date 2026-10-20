@@ -61,6 +61,34 @@ export function normalizeRequestedModel(modelName: string = 'auto'): RouteModelC
 interface StreamStats {
   tokenCount: number;
   signal?: AbortSignal;
+  responseText: string;
+  firstTokenAt?: number;
+}
+
+function estimateTokenCount(text: string): number {
+  const trimmed = text.trim();
+  return trimmed ? Math.ceil(trimmed.length / 4) : 0;
+}
+
+function emitProviderChunk(
+  chunk: string,
+  controller: ReadableStreamDefaultController,
+  encoder: TextEncoder,
+  stats: StreamStats
+) {
+  if (!chunk || stats.signal?.aborted) return;
+  stats.responseText += chunk;
+  stats.tokenCount = estimateTokenCount(stats.responseText);
+  stats.firstTokenAt ||= Date.now();
+  const elapsedSeconds = Math.max(0.1, (Date.now() - stats.firstTokenAt) / 1000);
+  const payload = JSON.stringify({ token: chunk, tokenCount: stats.tokenCount, tokensPerSec: Number((stats.tokenCount / elapsedSeconds).toFixed(1)), estimated: true });
+  controller.enqueue(encoder.encode(['event: token', `data: ${payload}`, '', ''].join('\n')));
+}
+
+function resetStreamStats(stats: StreamStats) {
+  stats.tokenCount = 0;
+  stats.responseText = '';
+  stats.firstTokenAt = undefined;
 }
 
 const COMPLEX_REQUEST = /\b(?:research|deep dive|latest|recent news|source|citation|compare|benchmark|analy[sz]e|audit|architecture|implement|build|code|script|debug|step by step|multi[- ]step|workflow|automate|gmail|inbox|calendar|spreadsheet|google sheets|google drive|workspace|forms|send email|draft email|generate|create|render|animate|video|image|photo|picture|plan)\b/i;
@@ -167,13 +195,7 @@ async function streamFromGemini(
               const textChunk = data.candidates?.[0]?.content?.parts?.[0]?.text;
               if (textChunk) {
                 receivedAnyChunk = true;
-                // Word-by-word token chunking for live real-time response
-                const words = textChunk.split(/(\s+)/);
-                for (const word of words) {
-                  if (!word) continue;
-                  stats.tokenCount += 1;
-                  controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ token: word, tokenCount: stats.tokenCount })}\n\n`));
-                }
+                emitProviderChunk(textChunk, controller, encoder, stats);
               }
             } catch {
               // skip unparseable fragments
@@ -247,12 +269,7 @@ async function streamFromOpenAiCompatible(
             const token = parsed.choices?.[0]?.delta?.content;
             if (token) {
               receivedAnyToken = true;
-              const words = token.split(/(\s+)/);
-              for (const word of words) {
-                if (!word) continue;
-                stats.tokenCount += 1;
-                controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ token: word, tokenCount: stats.tokenCount })}\n\n`));
-              }
+              emitProviderChunk(token, controller, encoder, stats);
             }
           } catch {}
         }
@@ -298,8 +315,6 @@ export async function POST(req: Request) {
   const requestedModel = body.modelPreference || body.model || 'auto';
   const { provider, model, isAuto } = normalizeRequestedModel(requestedModel);
   const wantsStream = body.stream !== false;
-  const latestPrompt = String(messages.at(-1)?.content || body.prompt || '');
-  const simpleQuery = isSimpleChatQuery(latestPrompt, false, false);
 
   if (!wantsStream) {
     for (const key of GEMINI_KEYS) {
@@ -335,33 +350,18 @@ export async function POST(req: Request) {
   else req.signal.addEventListener('abort', abortFromRequest, { once: true });
   const stream = new ReadableStream({
     async start(controller: ReadableStreamDefaultController) {
-      const stats: StreamStats = { tokenCount: 0, signal: abortController.signal };
+      const stats: StreamStats = { tokenCount: 0, responseText: '', signal: abortController.signal };
 
       // Sub-second initial response emission (<100ms)
       const emit = (event: string, value: unknown) => {
         if (!abortController.signal.aborted) controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`));
       };
 
-      // Instant sub-second response for standard greetings and small-talk
-      const instant = instantSmallTalkReply(latestPrompt);
-      if (instant) {
-        emit('provider', { provider: 'Zulora AI', model: requestedModel || 'auto' });
-        const words = instant.split(/(\s+)/);
-        for (const word of words) {
-          if (!word) continue;
-          stats.tokenCount += 1;
-          controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ token: word, tokenCount: stats.tokenCount })}\n\n`));
-        }
-        emit('done', { done: true, model, provider: 'Zulora AI', tokenCount: stats.tokenCount });
-        if (!abortController.signal.aborted) controller.close();
-        req.signal.removeEventListener('abort', abortFromRequest);
-        return;
-      }
-
       emit('provider', { provider, model });
-      if (!simpleQuery) emit('thinking', { stage: 'Analyzing query and reasoning in real time...', tokenCount: 0 });
 
       let streamed = false;
+      let activeProvider = provider;
+      let activeModel = model;
 
       // 1. Execute user's manually chosen engine first
       if (provider === 'gemini') {
@@ -381,46 +381,59 @@ export async function POST(req: Request) {
       // 2. Waterfall Fallback: Only activates if primary provider returned 429/500 rate limit or failure
       if (!streamed) {
         emit('reset', {});
+        resetStreamStats(stats);
         
         // Waterfall Step 1: Gemini 3.8 Flash
         if (model !== 'gemini-3.8-flash') {
-          emit('provider', { provider: 'Google Gemini (Waterfall)', model: 'gemini-3.8-flash' });
-          streamed = await streamFromGemini(messages, 'gemini-3.8-flash', controller, encoder, stats);
+          activeProvider = 'gemini';
+          activeModel = 'gemini-3.8-flash';
+          emit('provider', { provider: 'Google Gemini', model: activeModel });
+          streamed = await streamFromGemini(messages, activeModel, controller, encoder, stats);
         }
 
         // Waterfall Step 2: Groq Llama 3.3 70B
         if (!streamed && GROQ_KEYS[0]) {
-          emit('provider', { provider: 'Groq LPU (Waterfall)', model: 'llama-3.3-70b-versatile' });
-          streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', GROQ_KEYS[0], 'llama-3.3-70b-versatile', messages, controller, encoder, stats);
+          activeProvider = 'groq';
+          activeModel = 'llama-3.3-70b-versatile';
+          emit('provider', { provider: 'Groq LPU', model: activeModel });
+          streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', GROQ_KEYS[0], activeModel, messages, controller, encoder, stats);
         }
 
         // Waterfall Step 3: Cerebras Llama 3.1 70B
         if (!streamed && CEREBRAS_KEYS[0]) {
-          emit('provider', { provider: 'Cerebras (Waterfall)', model: 'llama3.1-70b' });
-          streamed = await streamFromOpenAiCompatible('https://api.cerebras.ai/v1/chat/completions', CEREBRAS_KEYS[0], 'llama3.1-70b', messages, controller, encoder, stats);
+          activeProvider = 'cerebras';
+          activeModel = 'llama3.1-70b';
+          emit('provider', { provider: 'Cerebras', model: activeModel });
+          streamed = await streamFromOpenAiCompatible('https://api.cerebras.ai/v1/chat/completions', CEREBRAS_KEYS[0], activeModel, messages, controller, encoder, stats);
         }
 
         // Waterfall Step 4: OpenRouter
         if (!streamed && OPENROUTER_KEYS[0]) {
-          emit('provider', { provider: 'OpenRouter (Waterfall)', model: 'meta-llama/llama-3.3-70b-instruct' });
-          streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', OPENROUTER_KEYS[0], 'meta-llama/llama-3.3-70b-instruct', messages, controller, encoder, stats);
+          activeProvider = 'openrouter';
+          activeModel = 'meta-llama/llama-3.3-70b-instruct';
+          emit('provider', { provider: 'OpenRouter', model: activeModel });
+          streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', OPENROUTER_KEYS[0], activeModel, messages, controller, encoder, stats);
         }
 
         // Waterfall Step 5: Mistral
         if (!streamed && MISTRAL_KEYS[0]) {
-          emit('provider', { provider: 'Mistral (Waterfall)', model: 'mistral-small-latest' });
-          streamed = await streamFromOpenAiCompatible('https://api.mistral.ai/v1/chat/completions', MISTRAL_KEYS[0], 'mistral-small-latest', messages, controller, encoder, stats);
+          activeProvider = 'mistral';
+          activeModel = 'mistral-small-latest';
+          emit('provider', { provider: 'Mistral AI', model: activeModel });
+          streamed = await streamFromOpenAiCompatible('https://api.mistral.ai/v1/chat/completions', MISTRAL_KEYS[0], activeModel, messages, controller, encoder, stats);
         }
 
         // Waterfall Step 6: Gemini 3.5 Flash-Lite
         if (!streamed) {
-          emit('provider', { provider: 'Gemini 3.5 Flash-Lite (Fallback)', model: 'gemini-3.5-flash-lite' });
-          streamed = await streamFromGemini(messages, 'gemini-3.5-flash-lite', controller, encoder, stats);
+          activeProvider = 'gemini';
+          activeModel = 'gemini-3.5-flash-lite';
+          emit('provider', { provider: 'Google Gemini', model: activeModel });
+          streamed = await streamFromGemini(messages, activeModel, controller, encoder, stats);
         }
       }
 
       // Signal completion with token count
-      emit('done', { done: true, model, provider, tokenCount: stats.tokenCount });
+      emit('done', { done: true, model: activeModel, provider: activeProvider, tokenCount: stats.tokenCount, estimated: true });
       if (!abortController.signal.aborted) controller.close();
       req.signal.removeEventListener('abort', abortFromRequest);
     },

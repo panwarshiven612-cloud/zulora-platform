@@ -135,6 +135,10 @@ const getZuloraEngineLabel = (model = '', provider = '') => {
   if (/zulora resilient fallback|fallback cluster|system safe/.test(value)) return 'Zulora Fallback';
   return rawModel;
 };
+const estimateStreamTokenCount = text => {
+  const trimmed = String(text || '').trim();
+  return trimmed ? Math.ceil(trimmed.length / 4) : 0;
+};
 
 // MODULE 2: In-chat media generation intent detection
 const IMAGE_EDIT_REGEX = /\b(?:edit|modify|change|update|transform|enhance|improve|fix|crop|resize|adjust|remove|add)\s+(?:this\s+)?(?:image|photo|picture|background)\b/i;
@@ -610,7 +614,7 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
               {message.streaming && (
                 <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-sky-200/50 bg-sky-50/50 px-2.5 py-1 text-[10px] font-semibold text-sky-600 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-400">
                   <span className="animate-pulse">⚡</span>
-                  <span>Generating ({message.streamMetrics ? `${message.streamMetrics.tokens} tokens | ${message.streamMetrics.tokensPerSec} tokens/sec` : 'tokens...'})</span>
+                  <span>Generating ({message.streamMetrics ? `~${message.streamMetrics.tokens} tokens | ~${message.streamMetrics.tokensPerSec} tokens/sec` : 'tokens...'})</span>
                   <span aria-hidden="true" className="inline-block h-3 ml-0.5 align-middle border-r-2 border-sky-500 animate-pulse" />
                 </div>
               )}
@@ -784,7 +788,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     skipModelPreferenceWriteRef.current = true;
     const stored = readStoredModelPreference(modelPreferenceKey) || readStoredModelPreference('zulora_chat_model_preference') || 'auto';
     const sessionModel = activeSession?.modelPreference || activeSession?.model;
-    if (stored && stored !== 'auto') {
+    if (stored) {
       setModelPreference(stored);
       return;
     }
@@ -1242,11 +1246,21 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     let streamedProvider = null;
     let thinkingSteps = [];
     let hasLoggedFirstToken = false;
+    let firstTokenAt = 0;
     let lastStreamSnapshotAt = 0;
     let streamSnapshotTimer = null;
     const shouldShowThinkingBox = !simpleQuery;
     const defaultModelLabel = getZuloraEngineLabel(modelPreference);
     const startTime = Date.now();
+    const getLiveStreamMetrics = () => {
+      const tokens = estimateStreamTokenCount(displayedText);
+      const elapsedSeconds = firstTokenAt ? Math.max(0.1, (Date.now() - firstTokenAt) / 1000) : 0.1;
+      return {
+        tokens,
+        tokensPerSec: (tokens / elapsedSeconds).toFixed(1),
+        estimated: true
+      };
+    };
     const logMessage = (message, uploadedContext = '') => {
       if (!currentUser?.uid || !message?.id) return;
       firestoreService.logChatMessage(currentUser.uid, {
@@ -1308,10 +1322,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           provider: streamedProvider?.provider || 'Zulora Intelligence',
           thinkingSteps: [...thinkingSteps],
           streaming,
-          streamMetrics: {
-            tokens: Math.ceil(displayedText.length / 4),
-            tokensPerSec: (Math.ceil(displayedText.length / 4) / Math.max(0.1, (Date.now() - startTime) / 1000)).toFixed(1)
-          }
+          streamMetrics: getLiveStreamMetrics()
         }
       ]);
     };
@@ -1343,10 +1354,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             provider: streamedProvider?.provider,
             thinkingSteps: [...thinkingSteps],
             streaming: true,
-            streamMetrics: {
-              tokens: Math.ceil(displayedText.length / 4),
-              tokensPerSec: (Math.ceil(displayedText.length / 4) / Math.max(0.1, (Date.now() - startTime) / 1000)).toFixed(1)
-            }
+            streamMetrics: getLiveStreamMetrics()
           }
         ]);
       } catch (err) {
@@ -1709,6 +1717,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           onProgress: entry => pushThinkingStep(entry.label, entry.status, entry.detail),
           onToken: token => {
             if (!token) return;
+            firstTokenAt ||= Date.now();
             streamedText += token;
             displayedText += token;
             persistGenerationSnapshot();
@@ -1737,10 +1746,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
                 provider: route.provider,
                 thinkingSteps: [...thinkingSteps],
                 streaming: true,
-                streamMetrics: {
-                  tokens: Math.ceil(displayedText.length / 4),
-                  tokensPerSec: (Math.ceil(displayedText.length / 4) / Math.max(0.1, (Date.now() - startTime) / 1000)).toFixed(1)
-                }
+                streamMetrics: getLiveStreamMetrics()
               }
             ]);
           },
@@ -1808,8 +1814,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         model: directTask
           ? String(result.connectorProvider || '').toLowerCase().includes('computer') ? 'Zulora Computer Agent'
             : result.connectorProvider ? 'Zulora Connectors' : 'Zulora Drive'
-          : getZuloraEngineLabel(modelPreference),
-        provider: 'Zulora AI',
+          : result.model || streamedProvider?.model || modelPreference,
+        provider: directTask ? 'Zulora AI' : result.provider || streamedProvider?.provider || 'Zulora AI',
         sources: result.sources || [],
         webSearched: Boolean(enableWebSearch),
         thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps] : undefined,

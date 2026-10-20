@@ -48,7 +48,7 @@ MANDATORY RULES:
 4. Use responsive design with CSS Grid/Flexbox. Mobile-first approach.
 5. Embed beautiful animations: CSS keyframes, smooth transitions, hover effects.
 6. Typography: Use Google Fonts (Inter or Poppins) via CDN link. 
-7. Colors: Deep dark backgrounds (#0a0a1a, #1a1a2e) with vibrant accent gradients (#6c63ff → #ff6584 or similar).
+7. Use the Pearl & Azure palette throughout: pearl white and translucent glass surfaces, pale blue-gray backgrounds, and azure or sky-blue accents. Use deep navy only for contrast where the brief calls for it.
 8. Include working navigation, hero section, features, call-to-action, and footer as appropriate.
 9. Output ONLY the raw HTML code starting with <!DOCTYPE html>. No explanations outside code blocks.
 10. Never truncate. Produce the complete file. If you must be long, be long — this is production.`;

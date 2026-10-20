@@ -964,7 +964,11 @@ async function generateChat(body, streamOptions = {}) {
     : requestedPreference === 'gemini' ? 'gemini-3.8-flash'
       : flagship || useProModel ? GEMINI_PRO_MODEL_ID : 'gemini-3.8-flash';
   const groqModel = 'llama-3.3-70b-versatile';
-  const order = vision ? ['gemini'] : simpleQuery && requestedPreference === 'auto' ? chooseChatOrder('groq') : chooseChatOrder(preference);
+  const order = vision
+    ? ['gemini']
+    : requestedPreference === 'auto'
+      ? ['groq', 'cerebras', 'gemini', 'openrouter', 'mistral']
+      : chooseChatOrder(preference);
   for (const provider of order) {
     try {
       const result = provider === 'gemini'
@@ -1622,10 +1626,6 @@ export default async function handler(req, res) {
     try { uid = await verifyUser(req); }
     catch { return rejectRequest(503, 'Could not verify sign-in. Please retry.'); }
     if (!uid) return rejectRequest(401, 'Your sign-in session has expired. Sign in again.');
-  }
-  if (type === 'chat' && (streamChat || streamGuestChat)) {
-    const instantReply = instantSmallTalkReply(body);
-    if (instantReply) return streamInstantReply(res, instantReply, eventStream);
   }
   const preference = normalizeModelPreference(body.modelPreference || body.model);
   const highTierRequest = preference === 'think' || preference === 'pro' || preference === 'gemini-3.1-pro-preview' || preference === 'gemini-2.5-pro';

@@ -46,7 +46,8 @@ const sessionDocumentPath = uid => `${firestoreRoot()}/users/${encodeURIComponen
 const GOOGLE_OAUTH_CLIENT_ID = '79125936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com';
 
 function googleClientId() {
-  return readServerEnv('GOOGLE_CLIENT_ID', { allowViteAlias: false }) || GOOGLE_OAUTH_CLIENT_ID;
+  // Keep the server code-exchange client in sync with the public browser ID.
+  return GOOGLE_OAUTH_CLIENT_ID;
 }
 
 function googleClientSecret() {
@@ -256,7 +257,13 @@ export async function deleteGoogleSession(uid, idToken, res = null) {
 async function exchangeToken(params) {
   const clientId = googleClientId();
   const clientSecret = googleClientSecret();
-  if (!clientId || !clientSecret) throw new Error('Google Workspace connection is temporarily unavailable. Please try again later.');
+  if (!clientId) throw new Error('The Google OAuth client ID is not configured.');
+  if (!clientSecret) {
+    throw Object.assign(
+      new Error('Google Workspace is not configured on the server. Set GOOGLE_CLIENT_SECRET in the server environment.'),
+      { code: 'GOOGLE_OAUTH_CONFIGURATION_MISSING' }
+    );
+  }
   const response = await fetch(TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
