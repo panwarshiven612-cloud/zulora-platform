@@ -1101,7 +1101,10 @@ export const apiRouter = {
       ? GEMINI_FLASH_MODEL
       : directGeminiModel ? requestedTier : geminiSelected ? intentGeminiModel : flagship ? GEMINI_PRO_MODEL_ID : (MODEL_TIERS[tier]?.geminiModel || 'gemini-3.8-flash');
 
-    if (!simpleQuery) {
+    // Stream first, then let the server's authenticated request path enforce
+    // limits. The extra allowance round trip was delaying every non-trivial
+    // first token and duplicated the server quota check.
+    if (!simpleQuery && !options.onToken) {
       await ensureGenerationAllowance('chat', options.currentUser, {
         modelPreference: requestedTier,
         messages,
@@ -1110,9 +1113,11 @@ export const apiRouter = {
       });
     }
 
-    const activeConnectorProviders = simpleQuery ? [] : await connectorManager.restoreSession();
-    options = { ...options, connectorProviders: activeConnectorProviders };
     const requestedProvider = simpleQuery ? '' : requestedConnectorProvider(prompt, ['gmail', 'calendar', 'sheets', 'forms', 'drive', 'computer']);
+    // Restoring the Google session can involve IndexedDB and Firestore. Normal
+    // chat turns do not need it; restore only when the prompt requests a tool.
+    const activeConnectorProviders = requestedProvider ? await connectorManager.restoreSession() : [];
+    options = { ...options, connectorProviders: activeConnectorProviders };
     if (requestedProvider === 'workspace') {
       const requiredProviders = ['drive', 'sheets', 'gmail'];
       const missingProviders = requiredProviders.filter(provider => !activeConnectorProviders.includes(provider));

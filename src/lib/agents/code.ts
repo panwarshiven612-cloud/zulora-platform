@@ -42,6 +42,8 @@ function buildWebsiteSystemPrompt(type: string): string {
 MANDATORY RULES:
 1. Generate a COMPLETE, single-file HTML document with embedded CSS and JavaScript. Never truncate.
 2. Use modern glassmorphism design: frosted glass panels (backdrop-filter: blur), gradient backgrounds, subtle shadows, rounded corners.
+2a. For visual styling, use a Pearl & Azure palette with pearl white surfaces, translucent glass panels, azure and sky-blue accents, and polished mobile layouts.
+2b. This Pearl & Azure palette takes priority over any different color examples below.
 3. Include ALL sections the user requested — never say "continued below" or leave placeholders.
 4. Use responsive design with CSS Grid/Flexbox. Mobile-first approach.
 5. Embed beautiful animations: CSS keyframes, smooth transitions, hover effects.
@@ -77,6 +79,7 @@ export async function generateCode(options: CodeGenerationOptions): Promise<Code
 
   const type = typeHint || detectCodeType(prompt);
   const systemPrompt = buildWebsiteSystemPrompt(type);
+  const outputTokenLimit = type === 'website' ? Math.min(32768, Math.max(16384, maxTokens)) : maxTokens;
 
   const userMessage = `${prompt}\n\nIMPORTANT: Generate the COMPLETE code without any truncation. Output a production-ready, fully working implementation.`;
 
@@ -92,7 +95,7 @@ export async function generateCode(options: CodeGenerationOptions): Promise<Code
           contents: [{ role: 'user', parts: [{ text: userMessage }] }],
           generationConfig: {
             temperature: 0.8,
-            maxOutputTokens: maxTokens,
+            maxOutputTokens: outputTokenLimit,
             stopSequences: []
           }
         })
@@ -152,7 +155,7 @@ export async function generateCode(options: CodeGenerationOptions): Promise<Code
             { role: 'user', content: userMessage }
           ],
           temperature: 0.8,
-          max_tokens: 8192,
+          max_tokens: outputTokenLimit,
           stream: false
         })
       });
@@ -197,6 +200,7 @@ export async function* streamCode(options: CodeGenerationOptions): AsyncGenerato
 
   const type = typeHint || detectCodeType(prompt);
   const systemPrompt = buildWebsiteSystemPrompt(type);
+  const outputTokenLimit = type === 'website' ? Math.min(32768, Math.max(16384, maxTokens)) : maxTokens;
   const userMessage = `${prompt}\n\nIMPORTANT: Generate the COMPLETE code without any truncation.`;
 
   for (const key of GEMINI_KEYS) {
@@ -209,7 +213,7 @@ export async function* streamCode(options: CodeGenerationOptions): AsyncGenerato
         body: JSON.stringify({
           system_instruction: { parts: [{ text: systemPrompt }] },
           contents: [{ role: 'user', parts: [{ text: userMessage }] }],
-          generationConfig: { temperature: 0.8, maxOutputTokens: maxTokens }
+          generationConfig: { temperature: 0.8, maxOutputTokens: outputTokenLimit }
         })
       });
 

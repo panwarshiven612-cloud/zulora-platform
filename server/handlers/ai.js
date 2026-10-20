@@ -7,7 +7,6 @@ import { WEBSITE_BUILD_SYSTEM_PROMPT } from '../../src/services/websiteBuildProm
 import { buildImagePrompt } from '../../src/services/imageGen.js';
 import { refineVideoPrompt } from '../../src/services/videoPrompt.js';
 import { webSearch } from '../../src/services/webSearch.js';
-import { googleSessionStatus, loadGoogleSession } from './googleOAuthStore.js';
 
 export const maxDuration = 60;
 export const config = { maxDuration };
@@ -38,26 +37,11 @@ const CHAT_WINDOW_MS = 4 * 60 * 60 * 1000;
 const CHAT_REQUEST_LIMIT = 60;
 const TOKEN_LIMITS = { free: 70_000, pro: 200_000, ultra: 8_000_000 };
 const CODE_GENERATION_MAX_TOKENS = 32_768;
-const getZuloraEngineLabel = preference => {
-  const selected = String(preference || 'auto').toLowerCase().replace(/[_-]+/g, ' ');
-  if (/pro ultra|gemini 2 5 pro|high reasoning|\bthink\b|\bpro\b/.test(selected)) return 'Zulora 3.1 Pro Ultra';
-  if (/cerebras|ultra speed/.test(selected)) return 'Cerebras Ultra Speed';
-  if (/groq|\blpu\b|lpu speed|turbo/.test(selected)) return 'Groq LPU';
-  if (/openrouter|global engine/.test(selected)) return 'OpenRouter Multi-Provider';
-  if (/mistral|deep synthesis|reasoning/.test(selected)) return 'Mistral AI';
-  if (/gemini|flash|fast engine/.test(selected)) return 'Gemini';
-  return 'Auto';
-};
-const maskClientChatMetadata = (output, preference) => {
-  const connectorProvider = String(output?.connectorProvider || '').toLowerCase();
-  return {
-    ...output,
-    provider: 'Zulora AI',
-    model: connectorProvider.includes('computer') ? 'Zulora Computer Agent'
-      : connectorProvider ? 'Zulora Connectors'
-        : getZuloraEngineLabel(preference)
-  };
-};
+const maskClientChatMetadata = (output, preference) => ({
+  ...output,
+  provider: output?.provider || 'Zulora AI',
+  model: output?.model || String(preference || 'Zulora AI')
+});
 const TOKEN_WINDOW_MS = 4 * 60 * 60 * 1000;
 let cachedFirestoreToken = null;
 let cachedFirebaseCertificates = null;
@@ -1534,28 +1518,65 @@ function instantSmallTalkReply(body) {
   return '';
 }
 
-async function streamInstantReply(res, body, text) {
-  const preference = normalizeModelPreference(body.modelPreference || body.model);
+function beginChatEventStream(req, res) {
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
-  const send = (event, data) => {
-    if (res.destroyed || res.writableEnded) return;
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-    res.flush?.();
+  const controller = new AbortController();
+  const abortDisconnectedRequest = () => {
+    if (!res.writableEnded) controller.abort(new DOMException('The client disconnected.', 'AbortError'));
   };
+  req.once('aborted', abortDisconnectedRequest);
+  res.once('close', abortDisconnectedRequest);
+  const send = (event, data) => {
+    if (controller.signal.aborted || res.destroyed || res.writableEnded) return;
+    try {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      res.flush?.();
+    } catch (error) {
+      console.error('Error sending SSE event:', error);
+    }
+  };
+  const cleanup = () => {
+    req.off('aborted', abortDisconnectedRequest);
+    res.off('close', abortDisconnectedRequest);
+  };
+  const end = () => {
+    cleanup();
+    if (!res.writableEnded) res.end();
+    return res;
+  };
+  const stream = { controller, signal: controller.signal, send, cleanup, end };
   send('status', { status: 'connected' });
-  send('provider', { provider: 'Zulora AI', model: getZuloraEngineLabel(preference) });
+  return stream;
+}
+
+async function streamInstantReply(res, text, eventStream) {
+  const send = eventStream?.send || ((event, data) => {
+    if (!res.destroyed && !res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  });
+  if (!eventStream) {
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+    send('status', { status: 'connected' });
+  }
+  send('provider', { provider: 'Zulora AI', model: 'Zulora Instant Reply' });
   for (const part of text.match(/\S+\s*/g) || [text]) {
     if (res.destroyed || res.writableEnded) return;
     send('token', { token: part });
     await new Promise(resolve => setTimeout(resolve, 0));
   }
-  send('done', { text, status: 'success', provider: 'Zulora AI', model: getZuloraEngineLabel(preference), usage: { type: 'chat', tracked: false, source: 'instant-response' } });
-  return res.end();
+  send('done', { text, status: 'success', provider: 'Zulora AI', model: 'Zulora Instant Reply', usage: { type: 'chat', tracked: false, source: 'instant-response' } });
+  if (eventStream) eventStream.end();
+  else res.end();
+  return res;
 }
 
 export default async function handler(req, res) {
@@ -1577,33 +1598,36 @@ export default async function handler(req, res) {
     ? (['chat', 'image', 'video'].includes(body.usageType) ? body.usageType : null)
     : (body.action === 'chat' || streamChat || streamGuestChat || isChatRoute) ? 'chat' : body.action === 'image' ? 'image' : (body.action === 'video' || streamVideo) ? 'video' : null;
   if (!type) return safeError(res, 400, 'Unsupported generation action.');
+  let eventStream = null;
+  const rejectRequest = (status, message, extra = {}) => {
+    if (!eventStream) return safeError(res, status, message, extra);
+    eventStream.send('error', { error: message, status, ...extra });
+    eventStream.end();
+    return res;
+  };
   let uid;
+  if (type === 'chat' && (streamChat || streamGuestChat)) eventStream = beginChatEventStream(req, res);
   if (streamGuestChat) {
-    const limit = await reserveGuestRequest(req);
-    if (!limit.allowed) return safeError(res, 429, 'You have used all 10 free demo questions. Sign in with Google to unlock unlimited access.', { guestLimit: GUEST_CHAT_LIMIT, resetAt: new Date(limit.resetAt).toISOString() });
     body = { ...body, guestDemo: true, modelPreference: 'auto' };
+    let limit;
+    try { limit = await reserveGuestRequest(req); }
+    catch (error) {
+      console.warn('Guest chat request limit could not be checked:', error?.message || error);
+      return rejectRequest(503, 'Guest chat is temporarily unavailable. Please retry in a moment.');
+    }
+    if (!limit.allowed) return rejectRequest(429, 'You have used all 10 free demo questions. Sign in with Google to unlock unlimited access.', { guestLimit: GUEST_CHAT_LIMIT, resetAt: new Date(limit.resetAt).toISOString() });
   } else {
     const token = bearer(req);
-    if (!token) return safeError(res, 401, 'Sign in to use Zulora AI.');
+    if (!token) return rejectRequest(401, 'Sign in to use Zulora AI.');
     try { uid = await verifyUser(req); }
-    catch { return safeError(res, 503, 'Could not verify sign-in. Please retry.'); }
-    if (!uid) return safeError(res, 401, 'Your sign-in session has expired. Sign in again.');
-    if (type === 'chat' && body.simpleQuery !== true && Array.isArray(body.activeConnectorProviders) && body.activeConnectorProviders.length) {
-      try {
-        const session = await loadGoogleSession(uid, token, String(req.headers.cookie || ''));
-        body = { ...body, activeConnectorProviders: googleSessionStatus(session).enabledProviders };
-      } catch (error) {
-        console.warn('Workspace context could not verify the active OAuth session:', error?.message || 'session unavailable');
-        body = { ...body, activeConnectorProviders: [] };
-      }
-    }
+    catch { return rejectRequest(503, 'Could not verify sign-in. Please retry.'); }
+    if (!uid) return rejectRequest(401, 'Your sign-in session has expired. Sign in again.');
   }
   if (type === 'chat' && (streamChat || streamGuestChat)) {
     const instantReply = instantSmallTalkReply(body);
-    if (instantReply) return streamInstantReply(res, body, instantReply);
+    if (instantReply) return streamInstantReply(res, instantReply, eventStream);
   }
   const preference = normalizeModelPreference(body.modelPreference || body.model);
-  const clientVisibleEngine = getZuloraEngineLabel(preference);
   const highTierRequest = preference === 'think' || preference === 'pro' || preference === 'gemini-3.1-pro-preview' || preference === 'gemini-2.5-pro';
   const flagshipRequest = type === 'chat' && highTierRequest && isCodeGenerationRequest(body);
 
@@ -1627,8 +1651,8 @@ export default async function handler(req, res) {
         chatRemaining: bucket.chatRemaining,
         chatResetAt: bucket.chatRequestTimes.length ? new Date(bucket.chatResetAt).toISOString() : null
       };
-      if (type === 'chat' && bucket.chatRemaining <= 0) return safeError(res, 429, 'You have used all 60 chat requests in this rolling 4-hour window.', { upgradeRequired: false, usage: { ...status, blocked: true } });
-      if (!bucket.allowed && !flagshipRequest) return safeError(res, 429, 'Your four-hour AI credit allocation is used. It refreshes automatically as earlier usage expires.', { upgradeRequired: false, usage: { ...status, blocked: true } });
+      if (type === 'chat' && bucket.chatRemaining <= 0) return rejectRequest(429, 'You have used all 60 chat requests in this rolling 4-hour window.', { upgradeRequired: false, usage: { ...status, blocked: true } });
+      if (!bucket.allowed && !flagshipRequest) return rejectRequest(429, 'Your four-hour AI credit allocation is used. It refreshes automatically as earlier usage expires.', { upgradeRequired: false, usage: { ...status, blocked: true } });
       return json(res, 200, { allowance: { type, allowed: true, planTier: before.planTier, usage: { ...status, blocked: false } } });
     }
 
@@ -1648,83 +1672,55 @@ export default async function handler(req, res) {
     let chatReservationId = null;
     if (!streamGuestChat && firestoreAdminCredentials()) {
       try {
-        const before = await readPlan(uid);
-        profileTier = before.planTier;
-        if (before.error) {
-          console.warn('Server quota check fell back to the client store:', before.error);
-        } else {
-          if (!flagshipRequest) {
-            const tokenState = await readTokenUsageState(uid);
-            if (!tokenState.allowed) return safeError(res, 429, 'Your four-hour AI credit allocation is used. It refreshes automatically as earlier usage expires.', { upgradeRequired: false, usage: { blocked: true, usedPercent: 100, resetAt: new Date(tokenState.resetAt).toISOString() } });
+        if (type === 'chat') {
+          if (preference === 'think' && !flagshipRequest) {
+            const before = await readPlan(uid);
+            profileTier = before.planTier;
+            if (before.error) return rejectRequest(503, before.error);
+            const normalizedTier = String(profileTier || '').toLowerCase().replace(/[ _-]/g, '');
+            if (!normalizedTier.includes('pro') && !normalizedTier.includes('ultra')) {
+              return rejectRequest(403, 'The Zulora 3.1 Pro Ultra model requires a Pro or Ultra subscription for non-code requests.', { upgradeRequired: true });
+            }
           }
-          usageTrackingAvailable = true;
-        }
-      } catch (error) {
-        console.warn('Server quota check fell back to the client store:', error?.message || 'Could not read usage.');
-      }
-    }
 
-    if (type === 'chat' && preference === 'think' && !flagshipRequest) {
-      const normalizedTier = String(profileTier || '').toLowerCase().replace(/[ _-]/g, '');
-      if (profileTier && !normalizedTier.includes('pro') && !normalizedTier.includes('ultra')) {
-        return safeError(res, 403, 'The Zulora 3.1 Pro Ultra model requires a Pro or Ultra subscription for non-code requests.', { upgradeRequired: true });
-      }
-    }
-
-    if (!streamGuestChat && firestoreAdminCredentials() && type === 'chat') {
-      try {
-        const promptRate = await registerPromptAttempt(uid, estimatedReservationTokens(body), flagshipRequest);
-        if (!promptRate.allowed) {
-          if (promptRate.requestLimit) return safeError(res, 429, 'You have used all 60 chat requests in this rolling 4-hour window.', { upgradeRequired: false, usage: { blocked: true, ...promptRate } });
-          return safeError(res, 429, 'Your four-hour AI credit allocation is used. It refreshes automatically as earlier usage expires.', { upgradeRequired: false, usage: { blocked: true, ...promptRate } });
+          // This atomic reservation performs the request and token quota check
+          // in one transaction, avoiding the previous duplicate readPlan and
+          // token-state preflight round trips.
+          const promptRate = await registerPromptAttempt(uid, estimatedReservationTokens(body), flagshipRequest);
+          if (!promptRate.allowed) {
+            if (promptRate.requestLimit) return rejectRequest(429, 'You have used all 60 chat requests in this rolling 4-hour window.', { upgradeRequired: false, usage: { blocked: true, ...promptRate } });
+            return rejectRequest(429, 'Your four-hour AI credit allocation is used. It refreshes automatically as earlier usage expires.', { upgradeRequired: false, usage: { blocked: true, ...promptRate } });
+          }
+          chatReservationId = promptRate.reservationId;
         }
-        chatReservationId = promptRate.reservationId;
+        usageTrackingAvailable = true;
       } catch (error) {
         console.warn('Firestore rolling chat limit could not be checked:', error?.message || error);
-        return safeError(res, 503, 'Usage limits are temporarily unavailable. Please retry in a moment.');
+        if (type === 'chat') return rejectRequest(503, 'Usage limits are temporarily unavailable. Please retry in a moment.');
       }
     }
 
     if (streamChat || streamGuestChat) {
-      res.statusCode = 200;
-      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-cache, no-transform');
-      res.setHeader('Connection', 'keep-alive');
-      res.setHeader('X-Accel-Buffering', 'no');
-      const activeProvider = { provider: 'Zulora AI', model: clientVisibleEngine };
+      const activeProvider = { provider: 'Zulora AI', model: preference };
       let announcedProvider = '';
-      const requestController = new AbortController();
-      const abortDisconnectedRequest = () => {
-        if (!res.writableEnded) requestController.abort(new DOMException('The client disconnected.', 'AbortError'));
-      };
-      req.once('aborted', abortDisconnectedRequest);
-      res.once('close', abortDisconnectedRequest);
-      const sendEvent = (name, data) => {
-        if (requestController.signal.aborted || res.destroyed || res.writableEnded) return;
-        try {
-          if (!res.headersSent) res.flushHeaders?.();
-          res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
-          res.flush?.();
-        } catch (err) {
-          console.error("Error sending SSE event:", err);
-        }
-      };
-      sendEvent('status', { status: 'connected' });
+      const requestController = eventStream.controller;
+      const sendEvent = eventStream.send;
       const streamState = { sent: false };
       try {
         const output = await generateChat(body, {
           stream: true,
           signal: requestController.signal,
           streamState,
-          onProvider: () => {
-            activeProvider.provider = 'Zulora AI';
-            activeProvider.model = clientVisibleEngine;
+          onProvider: (provider, model) => {
+            activeProvider.provider = provider || 'Zulora AI';
+            activeProvider.model = model || preference;
+            const providerKey = `${activeProvider.provider}:${activeProvider.model}`;
+            if (providerKey !== announcedProvider) {
+              announcedProvider = providerKey;
+              sendEvent('provider', activeProvider);
+            }
           },
           onToken: tokenValue => {
-            if (!res.headersSent) {
-              res.setHeader('X-AI-Provider', activeProvider.provider || 'Unknown');
-              res.setHeader('X-AI-Model', activeProvider.model || '');
-            }
             const providerKey = `${activeProvider.provider}:${activeProvider.model}`;
             if (providerKey !== announcedProvider) {
               announcedProvider = providerKey;
@@ -1752,10 +1748,9 @@ export default async function handler(req, res) {
         sendEvent('token', { token: fallbackText });
         sendEvent('done', { text: fallbackText, provider: 'Zulora Resilient Fallback', model: 'fallback-cluster', usage: { type, tracked: false } });
       } finally {
-        req.off('aborted', abortDisconnectedRequest);
-        res.off('close', abortDisconnectedRequest);
+        eventStream.cleanup();
       }
-      return res.end();
+      return eventStream.end();
     }
 
     if (streamVideo) {
@@ -1795,7 +1790,7 @@ export default async function handler(req, res) {
     const clientOutput = type === 'chat' ? maskClientChatMetadata(output, preference) : output;
     if (type === 'chat') {
       res.setHeader('X-AI-Provider', 'Zulora AI');
-      res.setHeader('X-AI-Model', clientOutput.model || clientVisibleEngine);
+      res.setHeader('X-AI-Model', clientOutput.model || preference);
     }
     let usage = { type, tracked: false };
     if (usageTrackingAvailable) {
@@ -1811,6 +1806,6 @@ export default async function handler(req, res) {
     const rawMessage = error?.message || 'The response could not be completed. Please try again.';
     console.error('Zulora generation request failed:', type, rawMessage);
     const isSetup = /FIREBASE_|Firebase|Firestore|usage service|User profile was not found|No (?:text|video)-generation providers are configured|No image-(?:generation|editing) providers are configured/.test(rawMessage);
-    return safeError(res, isSetup ? 503 : 502, safeProviderFailure(rawMessage));
+    return rejectRequest(isSetup ? 503 : 502, safeProviderFailure(rawMessage));
   }
 }

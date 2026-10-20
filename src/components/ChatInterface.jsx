@@ -105,20 +105,35 @@ const normalizeAttachmentFile = file => {
 const isImageAttachment = file => attachmentMimeType(file).startsWith('image/');
 const isPdfAttachment = file => attachmentMimeType(file) === 'application/pdf';
 const getZuloraEngineLabel = (model = '', provider = '') => {
-  const value = `${model} ${provider}`.toLowerCase().replace(/[_-]+/g, ' ');
-  if (/pro ultra|gemini 2 5 pro|high reasoning|\bthink\b/.test(value)) return 'Zulora 3.1 Pro Ultra';
-  if (/cerebras|ultra speed/.test(value)) return 'Zulora Ultra Speed';
-  if (/groq|\blpu\b|lpu speed/.test(value)) return 'Zulora LPU Speed';
-  if (/openrouter|global engine/.test(value)) return 'Zulora Global Engine';
-  if (/mistral|deep synthesis|zulora reasoning/.test(value)) return 'Zulora Reasoning';
-  if (/gemini|flash|fast engine/.test(value)) return 'Zulora Fast Engine';
-  if (/zulora live voice/.test(value)) return 'Zulora Live Voice';
+  const rawModel = String(model || '').trim();
+  const value = `${rawModel} ${provider}`.toLowerCase().replace(/[_-]+/g, ' ');
+  if (/instant reply/.test(value)) return 'Zulora Instant Reply';
+  if (/selecting model|generating/.test(value) || !rawModel || rawModel.toLowerCase() === 'auto') return 'Selecting model';
+  if (/^(?:pro|think)$/.test(rawModel.toLowerCase())) return 'Gemini 2.5 Pro';
+  if (rawModel.toLowerCase() === 'groq') return 'Groq LPU';
+  if (rawModel.toLowerCase() === 'cerebras') return 'Cerebras';
+  if (rawModel.toLowerCase() === 'openrouter') return 'OpenRouter';
+  if (rawModel.toLowerCase() === 'mistral') return 'Mistral AI';
   if (/zulora video engine/.test(value)) return 'Zulora Video Engine';
-  if (/auto|smart route/.test(value)) return 'Zulora Auto';
-  if (/computer plugin|computer agent/.test(value)) return 'Zulora Computer Agent';
-  if (/connector/.test(value)) return 'Zulora Connectors';
-  if (/drive/.test(value)) return 'Zulora Drive';
-  return 'Zulora Auto';
+  if (/computer plugin|computer agent/.test(value)) return 'Computer Agent';
+  if (/native api connectors|connector/.test(value)) return rawModel || 'Google Workspace Connector';
+
+  const modelId = rawModel.toLowerCase();
+  const cleanModelName = value => value.replace(/[-_]+/g, ' ')
+    .replace(/\b(llama|flash|lite|pro|preview|versatile|instruct|small|latest|cerebras)\b/gi, word => word[0].toUpperCase() + word.slice(1).toLowerCase())
+    .replace(/\b(\d+(?:\.\d+)?)b\b/gi, '$1B');
+  const prettyModel = modelId.startsWith('gemini-')
+    ? `Gemini ${cleanModelName(modelId.slice('gemini-'.length))}`
+    : cleanModelName(modelId.includes('/') ? modelId.split('/').at(-1) : modelId);
+
+  if (/groq|llama/.test(value)) return `Groq LPU (${prettyModel || 'Llama model'})`;
+  if (/cerebras/.test(value)) return `Cerebras (${prettyModel || 'Active model'})`;
+  if (/openrouter/.test(value)) return `OpenRouter (${prettyModel || 'Active model'})`;
+  if (/mistral/.test(value)) return `Mistral AI (${prettyModel || 'Active model'})`;
+  if (/gemini/.test(value) || modelId.startsWith('gemini-')) return prettyModel;
+  if (/pollinations/.test(value)) return `Pollinations AI (${prettyModel || 'Mistral'})`;
+  if (/zulora resilient fallback|fallback cluster|system safe/.test(value)) return 'Zulora Fallback';
+  return rawModel;
 };
 
 // MODULE 2: In-chat media generation intent detection
@@ -450,7 +465,7 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
               {message.connectorBadge}
             </span>
           ) : message.model && !isUser && (
-            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${getZuloraEngineLabel(message.model, message.provider) === 'Zulora LPU Speed'
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${getZuloraEngineLabel(message.model, message.provider).startsWith('Groq LPU')
               ? 'bg-orange-100 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300 border-orange-200/60 dark:border-orange-800/40'
               : 'bg-sky-100 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 border-sky-200/50 dark:border-sky-800/40'}`}>
               {getZuloraEngineLabel(message.model, message.provider)}
@@ -595,7 +610,7 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
               {message.streaming && (
                 <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-sky-200/50 bg-sky-50/50 px-2.5 py-1 text-[10px] font-semibold text-sky-600 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-400">
                   <span className="animate-pulse">⚡</span>
-                  <span>Thinking / Generating ({message.streamMetrics ? `${message.streamMetrics.tokens} tokens · ${message.streamMetrics.tokensPerSec} tokens/sec` : 'tokens...'})</span>
+                  <span>Generating ({message.streamMetrics ? `${message.streamMetrics.tokens} tokens | ${message.streamMetrics.tokensPerSec} tokens/sec` : 'tokens...'})</span>
                   <span aria-hidden="true" className="inline-block h-3 ml-0.5 align-middle border-r-2 border-sky-500 animate-pulse" />
                 </div>
               )}
@@ -1112,7 +1127,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     if (!basePrompt) return;
 
     const codeGenerationRequest = isCodeGenerationPrompt(basePrompt);
-    const highTierCodeRequest = codeGenerationRequest && (modelPreference === 'think' || modelPreference === 'pro' || /-pro(?:-|$)/i.test(modelPreference));
     const simpleQuery = isSimpleChatRequest(basePrompt, { attachments, webSearch: enableWebSearch });
     const generationController = new AbortController();
     activeGenerationControllerRef.current = generationController;
@@ -1127,27 +1141,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       }
     };
     sendingRef.current = true;
-    let allowance;
-    try {
-      allowance = currentUser?.uid
-        ? simpleQuery
-          ? { allowed: true }
-          : await checkUsage('chat', { skipTokenLimit: highTierCodeRequest })
-        : guestGate.check();
-    } catch (error) {
-      finishPreparation();
-      if (generationController.signal.aborted) return;
-      if (!currentUser?.uid) setShowGuestUpgrade(true);
-      console.warn('Could not check chat usage:', error.message);
-      setIsUsageModalOpen(true);
-      return;
-    }
     if (generationController.signal.aborted) { finishPreparation(); return; }
-    if (!allowance.allowed) {
-      finishPreparation();
-      if (!currentUser?.uid) setShowGuestUpgrade(true);
-      return;
-    }
 
     // Read media on the client and send inline data to the model; user attachments are never auto-uploaded.
     let fullPrompt = basePrompt;
@@ -1399,11 +1393,10 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     pushThinkingStep('Preparing request');
 
     try {
-      // Save the user turn before inference so navigation or reloads do not lose it.
+      // Start persistence without making the model wait for Firestore.
       if (currentUser?.uid) {
-        const saveTurn = firestoreService.saveChatSession(currentUser.uid, sessionId, pendingSession);
-        if (simpleQuery) saveTurn.catch(error => console.warn('Chat session save failed:', error.message));
-        else await saveTurn;
+        firestoreService.saveChatSession(currentUser.uid, sessionId, pendingSession)
+          .catch(error => console.warn('Chat session save failed:', error.message));
         firestoreService.recordUserHistory(currentUser.uid, {
           type: enableWebSearch ? 'search' : 'prompt',
           prompt: basePrompt
@@ -1411,15 +1404,13 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       }
       persistGenerationSnapshot(true);
       const contextMessages = buildContextMessages();
-      const contextMemory = !simpleQuery && currentUser?.uid
-        ? await firestoreService.getRecentActivityContext(currentUser.uid)
-        : [];
-      const aiBrain = !simpleQuery && currentUser?.uid
-        ? await firestoreService.getAiBrain(currentUser.uid)
-        : null;
-      const userVault = !simpleQuery && currentUser?.uid
-        ? await firestoreService.getVault(currentUser.uid)
-        : null;
+      const [contextMemory, aiBrain, userVault] = !simpleQuery && currentUser?.uid
+        ? await Promise.all([
+          firestoreService.getRecentActivityContext(currentUser.uid),
+          firestoreService.getAiBrain(currentUser.uid),
+          firestoreService.getVault(currentUser.uid)
+        ])
+        : [[], null, null];
       if (generationController.signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
       if (!simpleQuery) pushThinkingStep('Checking active connectors and request context', 'done');
       const detectedConnector = simpleQuery ? null : detectConnectorTask(basePrompt);
@@ -1731,9 +1722,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             clearTimeout(thinkingTimerRef.current);
             setShowThinking(false);
           },
-          onProvider: () => {
-            streamedProvider = { provider: 'Zulora AI', model: getZuloraEngineLabel(modelPreference) };
-            pushThinkingStep('Zulora engine connected', 'done');
+          onProvider: route => {
+            streamedProvider = { provider: route?.provider || 'Zulora AI', model: route?.model || modelPreference };
+            pushThinkingStep(`${getZuloraEngineLabel(streamedProvider.model, streamedProvider.provider)} connected`, 'done');
             if (!displayedText || !isRequestCurrent()) return;
             setMessages(prev => [
               ...prev.filter(m => m.id !== assistantId),
@@ -1985,7 +1976,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         sendingRef.current = false;
       }
     }
-  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, buildContextMessages, getAttachmentDataUrl, isPro, checkUsage, recordUsage, setIsUsageModalOpen, setIsPricingModalOpen, onUpdateSession, connectorContext]);
+  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, buildContextMessages, getAttachmentDataUrl, isPro, recordUsage, setIsUsageModalOpen, setIsPricingModalOpen, onUpdateSession, connectorContext]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {

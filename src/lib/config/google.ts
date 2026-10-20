@@ -1,12 +1,11 @@
 /**
  * google.ts — Centralized Google OAuth 2.0 Configuration
  * ========================================================
- * Hardcoded & strictly aligned Google OAuth 2.0 credentials
- * matching Google Cloud Console registration.
+ * Public browser OAuth configuration. The OAuth client secret is server-only
+ * and must be supplied through GOOGLE_CLIENT_SECRET in the deployment env.
  */
 
 export const GOOGLE_CLIENT_ID = '79125936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com';
-export const GOOGLE_CLIENT_SECRET = ['GOCSPX', 'xJEljqx6weRJx2poeii8p7NoNfA7'].join('-');
 
 export const GOOGLE_REDIRECT_URIS = [
   'https://zulora.in/dashboard',
@@ -35,7 +34,6 @@ export const GOOGLE_WORKSPACE_SCOPES = [
 
 export default {
   GOOGLE_CLIENT_ID,
-  GOOGLE_CLIENT_SECRET,
   GOOGLE_REDIRECT_URIS,
   GOOGLE_DEFAULT_REDIRECT_URI,
   GOOGLE_WORKSPACE_SCOPES
