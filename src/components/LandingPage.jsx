@@ -179,7 +179,7 @@ export const LandingPage = ({ onTryDemo, onSignIn }) => {
       iconBg: 'bg-gradient-to-br from-sky-500 to-sky-600',
       title: 'Multi-Model AI Chat',
       badge: '7+ Models',
-      desc: 'Intelligent waterfall routing across Gemini, Groq, Mistral, Cerebras & more. Zero downtime, always the best available model.',
+      desc: 'Intelligent waterfall routing across fast, reasoning, and open-source models. Zero downtime, always the best available Zulora engine.',
       items: ['60 chats / rolling 4 hours (Free)', 'Markdown & code rendering', 'Voice input & TTS output', 'Chat history & sessions'],
     },
     {
@@ -211,8 +211,8 @@ export const LandingPage = ({ onTryDemo, onSignIn }) => {
       iconBg: 'bg-gradient-to-br from-amber-500 to-amber-600',
       title: 'API Waterfall',
       badge: 'Smart Failover',
-      desc: 'If one AI provider goes down, Zulora instantly switches to the next. Seven Gemini keys, plus Groq, Mistral, Cerebras & more.',
-      items: ['7 Gemini API keys', 'Gemini Pro fallback', 'Groq ultra-fast inference'],
+      desc: 'If one model route goes down, Zulora instantly switches to the next available route in its resilient engine pool.',
+      items: ['Multi-key model failover', 'Flagship model fallback', 'Ultra-fast inference routes'],
     },
     {
       icon: Globe,
@@ -230,7 +230,7 @@ export const LandingPage = ({ onTryDemo, onSignIn }) => {
       price: 0,
       period: 'month',
       desc: 'Perfect for getting started',
-      features: ['60 chats / rolling 4 hours', '30 image generations / day', '4 video generations / day', 'Gemini model waterfall', 'Chat history storage', 'Voice input & output'],
+      features: ['60 chats / rolling 4 hours', '30 image generations / day', '4 video generations / day', 'Zulora multi-engine waterfall', 'Chat history storage', 'Voice input & output'],
     },
     {
       tier: 'Pro',
@@ -578,13 +578,13 @@ export const LandingPage = ({ onTryDemo, onSignIn }) => {
             </p>
           </div>
           <div className="mt-4 pt-4 border-t border-slate-200/40 dark:border-slate-800/40 text-center text-[10px] text-slate-400 dark:text-slate-600">
-            © {new Date().getFullYear()} Zulora. All rights reserved. Powered by Google Gemini, Groq, Mistral & more.
+            © {new Date().getFullYear()} Zulora. All rights reserved. Powered by Zulora's model engine pool.
           </div>
           <article className="mx-auto mt-5 max-w-4xl border-t border-slate-200/40 pt-4 text-center dark:border-slate-800/40">
             <section aria-labelledby="why-zulora-ai" className="space-y-1.5">
               <h2 id="why-zulora-ai" className="text-xs font-semibold text-slate-500 dark:text-slate-400">Why Zulora AI?</h2>
               <p className="mx-auto max-w-3xl text-[11px] leading-5 text-slate-400 dark:text-slate-500">
-                Zulora AI is a free-to-start, high-performance alternative to ChatGPT and Google Gemini, bringing zero-latency multi-model switching, AI web research, image and video generation, code assistance, and Google Workspace automation together in one studio.
+                Zulora AI is a free-to-start, high-performance alternative to AI chat tools, bringing zero-latency multi-engine switching, AI web research, image and video generation, code assistance, and Google Workspace automation together in one studio.
               </p>
             </section>
           </article>

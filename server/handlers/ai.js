@@ -35,7 +35,28 @@ const GEMINI_CHAT_MODEL_FALLBACKS = Object.freeze([
 ]);
 const CHAT_WINDOW_MS = 4 * 60 * 60 * 1000;
 const CHAT_REQUEST_LIMIT = 60;
-const TOKEN_LIMITS = { free: 60_000, pro: 200_000, ultra: 8_000_000 };
+const TOKEN_LIMITS = { free: 70_000, pro: 200_000, ultra: 8_000_000 };
+const CODE_GENERATION_MAX_TOKENS = 32_768;
+const getZuloraEngineLabel = preference => {
+  const selected = String(preference || 'auto').toLowerCase().replace(/[_-]+/g, ' ');
+  if (/pro ultra|gemini 2 5 pro|high reasoning|\bthink\b|\bpro\b/.test(selected)) return 'Zulora 3.1 Pro Ultra';
+  if (/cerebras|ultra speed/.test(selected)) return 'Zulora Ultra Speed';
+  if (/groq|\blpu\b|lpu speed|turbo/.test(selected)) return 'Zulora LPU Speed';
+  if (/openrouter|global engine/.test(selected)) return 'Zulora Global Engine';
+  if (/mistral|deep synthesis|reasoning/.test(selected)) return 'Zulora Reasoning';
+  if (/gemini|flash|fast engine/.test(selected)) return 'Zulora Fast Engine';
+  return 'Zulora Auto';
+};
+const maskClientChatMetadata = (output, preference) => {
+  const connectorProvider = String(output?.connectorProvider || '').toLowerCase();
+  return {
+    ...output,
+    provider: 'Zulora AI',
+    model: connectorProvider.includes('computer') ? 'Zulora Computer Agent'
+      : connectorProvider ? 'Zulora Connectors'
+        : getZuloraEngineLabel(preference)
+  };
+};
 const TOKEN_WINDOW_MS = 4 * 60 * 60 * 1000;
 let cachedFirestoreToken = null;
 let cachedFirebaseCertificates = null;
@@ -350,7 +371,7 @@ async function readTokenUsageState(uid) {
 
 async function incrementTokenUsage(uid, estimatedTokens = 1000, allowOverage = false, reservationId = null) {
   const adminToken = await firestoreAccessToken();
-  const charge = Math.max(1, Math.min(20_000, Math.ceil(Number(estimatedTokens) || 1000)));
+  const charge = Math.max(1, Math.min(40_000, Math.ceil(Number(estimatedTokens) || 1000)));
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const begin = await fetchWithTimeout(`${firestoreRoot()}:beginTransaction`, {
       method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ options: { readWrite: {} } })
@@ -772,7 +793,7 @@ async function tryGemini(messages, options = {}) {
           contents,
           ...(systemPrompt ? { system_instruction: { parts: [{ text: systemPrompt }] } } : {}),
           ...(options.enableWebSearch ? { tools: [{ google_search: {} }] } : {}),
-          generationConfig: { temperature: 0.7, maxOutputTokens: options.coding || options.flagship ? 16_384 : (options.model === 'gemini-2.5-pro' ? 16_384 : 4096) }
+          generationConfig: { temperature: 0.7, maxOutputTokens: options.maxTokens || (options.coding || options.flagship || options.model === 'gemini-2.5-pro' ? CODE_GENERATION_MAX_TOKENS : 4096) }
         })
       }, options.stream ? 12_000 : 16_000, 1);
       if (response.ok) {
@@ -947,14 +968,14 @@ async function generateChat(body, streamOptions = {}) {
   for (const provider of order) {
     try {
       const result = provider === 'gemini'
-        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: false, model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: body.guestDemo ? 2_048 : 16_384, ...streamOptions })
+        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: false, model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: body.guestDemo && !coding ? 2_048 : coding ? CODE_GENERATION_MAX_TOKENS : 16_384, ...streamOptions })
         : await tryOpenAiProvider(provider, messages, {
           attachments: body.attachments,
           vision,
           coding,
           model: provider === 'groq' ? groqModel : undefined,
           reasoning: preference === 'think' && provider === 'groq',
-          maxTokens: body.guestDemo ? 2_048 : coding || useProModel || flagship ? 16_384 : 4096,
+          maxTokens: body.guestDemo && !coding ? 2_048 : coding ? CODE_GENERATION_MAX_TOKENS : useProModel || flagship ? 16_384 : 4096,
           ...streamOptions
         });
       if (result) return { ...result, ...(body.enableWebSearch ? { sources: searchResults } : {}) };
@@ -1470,7 +1491,11 @@ function estimatedReservationTokens(body) {
   const textCharacters = messages.reduce((total, message) => total + String(message?.content || '').length, 0);
   const imageCharacters = (Array.isArray(body?.attachments) ? body.attachments : [])
     .reduce((total, attachment) => total + String(attachment?.base64 || '').length, 0);
-  return Math.min(40_000, Math.max(9_000, Math.ceil(textCharacters / 4) + Math.ceil(imageCharacters / 5_000) + 8_192));
+  const inputEstimate = Math.ceil(textCharacters / 4) + Math.ceil(imageCharacters / 5_000);
+  const codeGeneration = isCodeGenerationRequest(body);
+  return codeGeneration
+    ? Math.min(40_000, Math.max(CODE_GENERATION_MAX_TOKENS, inputEstimate + CODE_GENERATION_MAX_TOKENS))
+    : Math.min(40_000, Math.max(9_000, inputEstimate + 8_192));
 }
 
 export default async function handler(req, res) {
@@ -1514,6 +1539,7 @@ export default async function handler(req, res) {
     }
   }
   const preference = normalizeModelPreference(body.modelPreference || body.model);
+  const clientVisibleEngine = getZuloraEngineLabel(preference);
   const highTierRequest = preference === 'think' || preference === 'pro' || preference === 'gemini-3.1-pro-preview' || preference === 'gemini-2.5-pro';
   const flagshipRequest = type === 'chat' && highTierRequest && isCodeGenerationRequest(body);
 
@@ -1601,7 +1627,7 @@ export default async function handler(req, res) {
       res.setHeader('Cache-Control', 'no-cache, no-transform');
       res.setHeader('Connection', 'keep-alive');
       res.setHeader('X-Accel-Buffering', 'no');
-      const activeProvider = { provider: '', model: '' };
+      const activeProvider = { provider: 'Zulora AI', model: clientVisibleEngine };
       let announcedProvider = '';
       const sendEvent = (name, data) => {
         try {
@@ -1618,9 +1644,9 @@ export default async function handler(req, res) {
         const output = await generateChat(body, {
           stream: true,
           streamState,
-          onProvider: (provider, model) => {
-            activeProvider.provider = provider;
-            activeProvider.model = model;
+          onProvider: () => {
+            activeProvider.provider = 'Zulora AI';
+            activeProvider.model = clientVisibleEngine;
           },
           onToken: tokenValue => {
             if (!res.headersSent) {
@@ -1645,7 +1671,7 @@ export default async function handler(req, res) {
             console.warn('Firestore usage write fell back to the client store:', error?.message || 'Could not save usage.');
           }
         }
-        sendEvent('done', { ...output, usage });
+        sendEvent('done', { ...maskClientChatMetadata(output, preference), usage });
       } catch (error) {
         console.warn('Top-level SSE catch triggered; recovering gracefully:', error?.message);
         const fallbackText = "I encountered a brief connection spike with the primary server, but I am ready. Please re-send your message to reconnect immediately.";
@@ -1689,9 +1715,10 @@ export default async function handler(req, res) {
     }
 
     const output = type === 'chat' ? await generateChat(body) : type === 'image' ? await generateImage(body) : await generateVideo(body);
+    const clientOutput = type === 'chat' ? maskClientChatMetadata(output, preference) : output;
     if (type === 'chat') {
-      res.setHeader('X-AI-Provider', output.provider || 'Unknown');
-      res.setHeader('X-AI-Model', output.model || '');
+      res.setHeader('X-AI-Provider', 'Zulora AI');
+      res.setHeader('X-AI-Model', clientOutput.model || clientVisibleEngine);
     }
     let usage = { type, tracked: false };
     if (usageTrackingAvailable) {
@@ -1702,7 +1729,7 @@ export default async function handler(req, res) {
         console.warn('Server usage write fell back to the client store:', error?.message || 'Could not save usage.');
       }
     }
-    return json(res, 200, { ...output, usage });
+    return json(res, 200, { ...clientOutput, usage });
   } catch (error) {
     const rawMessage = error?.message || 'The response could not be completed. Please try again.';
     console.error('Zulora generation request failed:', type, rawMessage);

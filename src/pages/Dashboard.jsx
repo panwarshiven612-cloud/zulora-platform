@@ -242,7 +242,7 @@ export const Dashboard = ({
               messages: [
                 ...(Array.isArray(activeSession?.messages) ? activeSession.messages : []),
                 { id: Date.now().toString(), role: 'user', content: turn?.user || '', timestamp: Date.now() },
-                { id: (Date.now() + 1).toString(), role: 'assistant', content: turn?.assistant || '', timestamp: Date.now(), model: 'Gemini Live Voice' }
+                { id: (Date.now() + 1).toString(), role: 'assistant', content: turn?.assistant || '', timestamp: Date.now(), model: 'Zulora Live Voice' }
               ],
               updatedAt: Date.now()
             };

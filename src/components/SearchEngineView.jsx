@@ -411,7 +411,7 @@ export const SearchEngineView = ({ onNavigate, onSignIn }) => {
               {
                 icon: Cpu,
                 title: 'Multi-Model AI Chat',
-                desc: '7+ models with smart failover across Gemini, Groq, Cerebras & Mistral.',
+                desc: '7+ Zulora engines with smart failover across fast, reasoning, and open-source routes.',
                 action: 'Open Chat',
                 path: '/dashboard'
               },

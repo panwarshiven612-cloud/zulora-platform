@@ -1,4 +1,5 @@
 import connectorManager from './connectorManager';
+import { isExplicitBrowserAutomationIntent } from './browserAutomationIntent';
 import { scanComputerSystem } from './browserAgentEngine';
 import { gmailQueryFromPrompt, parseCalendarTimeRange } from './backgroundConnectorEngine';
 
@@ -161,8 +162,7 @@ export function getGoogleConnectorFunctionDeclarations(activeProviders = connect
     && /\b(?:folder|list|show|search|find|download|open|manage|delete|trash|inspect|create)\b/i.test(cleanPrompt);
   const isExplicitForms = /\b(?:google\s+)?forms?\b/i.test(cleanPrompt)
     && /\b(?:read|create|make|build|show|list|responses?)\b/i.test(cleanPrompt);
-  const isExplicitComputer = /\b(?:computer|system|browser)\b/i.test(cleanPrompt)
-    && /\b(?:scan|inspect|check)\b/i.test(cleanPrompt);
+  const isExplicitComputer = isExplicitBrowserAutomationIntent(cleanPrompt);
 
   const names = [
     ...(providers.has('gmail') && (isExplicitGmail || workspaceWorkflow) ? ['gmail_read_inbox', 'gmail_analyze_emails', 'gmail_send_email', 'gmail_search_messages', 'reply_and_draft'] : []),

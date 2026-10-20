@@ -9,6 +9,8 @@ When the matching Google Workspace function is provided, treat it as the live ex
 
 const COMPLETE_CODE_GUIDANCE = ` For software work, provide complete code without TODOs, ellipses, or omitted sections. Keep interfaces responsive and accessible, make controls work, and respect the existing project architecture.`;
 
+const PRODUCTION_WEB_UI_GUIDANCE = ` For website, HTML, CSS, JavaScript, or UI generation, build a production-ready, fully styled experience with complete working interactions, responsive layouts from small phones through desktop, semantic accessible markup, clear visual hierarchy, and finished copy. Use a Pearl & Azure glassmorphic direction by default: pearl white surfaces, cool ink text, translucent glass panels, fine borders, soft layered shadows, and focused azure highlights. Include polished spacing, typography, states, and mobile navigation. Do not return a bare scaffold, placeholder content, TODOs, or incomplete code; keep the implementation cohesive and runnable.`;
+
 const INTERACTIVE_UI_GUIDANCE = ` For web interface requests, use advanced motion or canvas effects only when they fit the requested design. When asked, implement cursor-reactive Three.js tubes with resize and teardown handling; continuous horizontal sentence tracks with GSAP ScrollTrigger rather than slide decks; portfolio image reveals with an inertial organic cursor mask and inverted foreground text; and fluid canvases with a real ping-pong WebGL solver, pointer/touch forces, resize handling, and reduced-motion fallbacks. Respect the user's existing framework and dependencies, keep content readable above effects, and dispose listeners, animation frames, observers, and GPU resources on unmount.`;
 
 const VIDEO_EDITING_AGENT_DIRECTIVE = `
@@ -26,7 +28,7 @@ export const FLAGSHIP_SYSTEM_PROMPT = `\n\nUse careful, extended multi-step reas
 
 export function buildSystemPrompt(contextMemory = [], now = new Date(), userBrain = {}, userVault = {}) {
   const parts = [
-    `${CORE_SYSTEM_PROMPT}${WORKSPACE_OPERATION_RULES}${COMPLETE_CODE_GUIDANCE}${INTERACTIVE_UI_GUIDANCE}${VIDEO_EDITING_AGENT_DIRECTIVE}`,
+    `${CORE_SYSTEM_PROMPT}${WORKSPACE_OPERATION_RULES}${COMPLETE_CODE_GUIDANCE}${PRODUCTION_WEB_UI_GUIDANCE}${INTERACTIVE_UI_GUIDANCE}${VIDEO_EDITING_AGENT_DIRECTIVE}`,
     `Current date: ${now.toISOString().slice(0, 10)} (UTC).`
   ];
   const memory = Array.isArray(contextMemory)

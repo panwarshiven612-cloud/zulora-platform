@@ -16,7 +16,7 @@ import {
   runTransaction
 } from 'firebase/firestore';
 import { db, storage } from './firebase';
-import { ref, uploadBytes, uploadString, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytes, uploadString, getDownloadURL, uploadBytesResumable } from 'firebase/storage';
 import { emailService } from './emailService';
 import { rateLimiter } from './rateLimiter';
 
@@ -53,7 +53,7 @@ export const TIER_PRICING = {
 const CHAT_WINDOW_MS = 4 * 60 * 60 * 1000; // rolling 4 hours
 const DAY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 const TOKEN_WINDOW_MS = 4 * 60 * 60 * 1000; // rolling 4 hours
-const TOKEN_LIMITS = { free: 60_000, pro: 200_000, ultra: 8_000_000 };
+const TOKEN_LIMITS = { free: 70_000, pro: 200_000, ultra: 8_000_000 };
 
 // LocalStorage fallback prefix
 const STORAGE_PREFIX = 'zulora_store_';
@@ -581,6 +581,34 @@ export const firestoreService = {
     return TOKEN_LIMITS[getTier(profile)];
   },
 
+  async uploadChatMediaToStorage(file, uid, { onProgress } = {}) {
+    if (!uid) throw new Error('Sign in to upload chat media.');
+    if (!file || !/^(?:image|video)\//i.test(String(file.type || ''))) {
+      throw new Error('Choose an image or video to upload.');
+    }
+    if (Number(file.size) >= 60 * 1024 * 1024) {
+      throw new Error('Chat images and videos must be smaller than 60 MB.');
+    }
+
+    const fileId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const storagePath = `users/${uid}/assets/chat-${fileId}`;
+    const storageRef = ref(storage, storagePath);
+    await new Promise((resolve, reject) => {
+      const task = uploadBytesResumable(storageRef, file, {
+        contentType: file.type || 'application/octet-stream',
+        customMetadata: { ownerUid: uid, uploadSource: 'chat' }
+      });
+      task.on('state_changed', snapshot => {
+        const percent = snapshot.totalBytes
+          ? Math.min(100, Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100))
+          : 0;
+        onProgress?.({ percent, bytesTransferred: snapshot.bytesTransferred, totalBytes: snapshot.totalBytes });
+      }, reject, resolve);
+    });
+
+    return { storagePath, url: await getDownloadURL(storageRef) };
+  },
+
   /** Read plugin-specific token usage and optional limits configured in Firestore. */
   async getComputerPluginTokenUsage(uid, profile = {}) {
     if (!uid) return { usedTokens: 0, maxTokenLimit: this.getProfileTokenLimit(profile) };
@@ -677,6 +705,7 @@ export const firestoreService = {
           textUsed: 0,
           imageUsed: 0,
           videoUsed: 0,
+          freeTokens: 70_000,
           tier: TIERS.FREE,
           tierUpdatedAt: now,
           welcomeEmailSent: false,
@@ -713,6 +742,7 @@ export const firestoreService = {
           textUsed: 0,
           imageUsed: 0,
           videoUsed: 0,
+          freeTokens: 70_000,
           tier: TIERS.FREE,
           tierUpdatedAt: now,
           welcomeEmailSent: false,

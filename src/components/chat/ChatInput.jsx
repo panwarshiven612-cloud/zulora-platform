@@ -30,6 +30,8 @@ export default function ChatInput({
   fileInputRef,
   cameraInputRef,
   onFileSelect,
+  isSendDisabled = false,
+  mediaUploadProgress = null,
   enableWebSearch = false,
   onToggleWebSearch,
   onOpenConnectors
@@ -71,7 +73,7 @@ export default function ChatInput({
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (inputPrompt.trim() || attachments.length > 0) {
+      if (!isSendDisabled && (inputPrompt.trim() || attachments.length > 0)) {
         onSendMessage();
       }
     }
@@ -93,6 +95,7 @@ export default function ChatInput({
   };
 
   const hasContent = inputPrompt.trim().length > 0 || attachments.length > 0;
+  const canSend = hasContent && !isSendDisabled;
 
   return (
     <div className="chat-composer-container relative w-full max-w-4xl mx-auto rounded-2xl sm:rounded-3xl border border-slate-200/90 dark:border-slate-800 bg-white/95 dark:bg-[#0c1222]/95 shadow-xl backdrop-blur-2xl transition-all">
@@ -126,6 +129,22 @@ export default function ChatInput({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {mediaUploadProgress && (
+        <div className="mx-3 my-2 rounded-xl border border-sky-100 bg-sky-50/80 px-3 py-2 dark:border-sky-900/50 dark:bg-sky-950/30" role="status" aria-live="polite">
+          <div className="flex items-center justify-between gap-3 text-[11px] font-medium text-sky-800 dark:text-sky-200">
+            <span>{mediaUploadProgress.status === 'error'
+              ? `Upload failed: ${mediaUploadProgress.error}`
+              : mediaUploadProgress.status === 'complete'
+                ? 'Files uploaded to server.'
+                : `Uploading file to server... ${mediaUploadProgress.percent}%`}</span>
+            {mediaUploadProgress.status === 'uploading' && <span className="shrink-0">{mediaUploadProgress.fileCount} file{mediaUploadProgress.fileCount === 1 ? '' : 's'}</span>}
+          </div>
+          <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-sky-100 dark:bg-slate-800" role="progressbar" aria-label="Media upload progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={mediaUploadProgress.status === 'error' ? 0 : mediaUploadProgress.percent}>
+            <div className={`h-full rounded-full transition-[width] duration-200 ${mediaUploadProgress.status === 'error' ? 'bg-rose-500' : 'bg-gradient-to-r from-sky-500 to-blue-600'}`} style={{ width: `${mediaUploadProgress.status === 'error' ? 0 : mediaUploadProgress.percent}%` }} />
+          </div>
         </div>
       )}
 
@@ -229,7 +248,7 @@ export default function ChatInput({
             <button
               type="button"
               onClick={onOpenVoiceAssistant}
-              title="Open Gemini Live Voice Assistant"
+              title="Open Zulora Live Voice Assistant"
               aria-label="Live Voice Assistant"
               className="chat-live-voice-btn h-8 px-2 sm:h-8.5 sm:px-2.5 shrink-0 flex items-center justify-center gap-1 rounded-xl border border-sky-300/70 dark:border-sky-700/60 bg-sky-50/90 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 hover:bg-sky-100 dark:hover:bg-sky-900/40 transition-all text-xs font-semibold shadow-xs"
             >
@@ -244,11 +263,11 @@ export default function ChatInput({
           <button
             type="button"
             onClick={() => onSendMessage()}
-            disabled={!hasContent}
+            disabled={!canSend}
             aria-label="Send message"
             title="Send message"
             className={`h-8 w-8 sm:h-8.5 sm:w-8.5 flex items-center justify-center rounded-xl font-semibold transition-all duration-200 ${
-              hasContent
+              canSend
                 ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-md shadow-sky-500/25 hover:from-sky-600 hover:to-blue-700 active:scale-95'
                 : 'cursor-not-allowed bg-slate-100 dark:bg-slate-800/50 text-slate-400 dark:text-slate-600'
             }`}

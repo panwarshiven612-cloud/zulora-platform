@@ -63,6 +63,8 @@ import { isCodeGenerationPrompt, isImageGenIntent } from '../services/aiModels';
 import { firestoreService, deriveChatTitle } from '../services/firestoreService';
 import { db } from '../services/firebase';
 import { imageFileToDataUrl, readFileAsDataUrl } from '../services/imageUtils';
+import { uploadToCloudinary } from '../services/cloudinaryService';
+import { isExplicitBrowserAutomationIntent } from '../services/browserAutomationIntent';
 import { checkExtensionConnected, executeCommand } from '../services/browserAgentEngine';
 import CodeArtifactRunner from './CodeArtifactRunner';
 import ModelSelector from './ModelSelector';
@@ -102,10 +104,23 @@ const normalizeAttachmentFile = file => {
 };
 const isImageAttachment = file => attachmentMimeType(file).startsWith('image/');
 const isPdfAttachment = file => attachmentMimeType(file) === 'application/pdf';
-const isComputerScanToolIntent = prompt => /\b(?:scan|inspect|check)\b.{0,40}\b(?:my\s+)?(?:computer|system|browser)\b/i.test(String(prompt || ''));
-const isComputerAutomationIntent = prompt => !isComputerScanToolIntent(prompt)
-  && /\b(?:whatsapp|browser|webpage|website|tab|dom|button|input|text field|element|current page|web app|computer)\b/i.test(String(prompt || ''))
-  && /\b(?:open|launch|navigate|go to|click|type|fill|send|message|search|select|press|close|switch|scroll|download|export)\b/i.test(String(prompt || ''));
+const isRemoteMediaAttachment = file => /^(?:image|video)\//i.test(attachmentMimeType(file));
+const getZuloraEngineLabel = (model = '', provider = '') => {
+  const value = `${model} ${provider}`.toLowerCase().replace(/[_-]+/g, ' ');
+  if (/pro ultra|gemini 2 5 pro|high reasoning|\bthink\b/.test(value)) return 'Zulora 3.1 Pro Ultra';
+  if (/cerebras|ultra speed/.test(value)) return 'Zulora Ultra Speed';
+  if (/groq|\blpu\b|lpu speed/.test(value)) return 'Zulora LPU Speed';
+  if (/openrouter|global engine/.test(value)) return 'Zulora Global Engine';
+  if (/mistral|deep synthesis|zulora reasoning/.test(value)) return 'Zulora Reasoning';
+  if (/gemini|flash|fast engine/.test(value)) return 'Zulora Fast Engine';
+  if (/zulora live voice/.test(value)) return 'Zulora Live Voice';
+  if (/zulora video engine/.test(value)) return 'Zulora Video Engine';
+  if (/auto|smart route/.test(value)) return 'Zulora Auto';
+  if (/computer plugin|computer agent/.test(value)) return 'Zulora Computer Agent';
+  if (/connector/.test(value)) return 'Zulora Connectors';
+  if (/drive/.test(value)) return 'Zulora Drive';
+  return 'Zulora Auto';
+};
 
 // MODULE 2: In-chat media generation intent detection
 const IMAGE_EDIT_REGEX = /\b(?:edit|modify|change|update|transform|enhance|improve|fix|crop|resize|adjust|remove|add)\s+(?:this\s+)?(?:image|photo|picture|background)\b/i;
@@ -412,10 +427,10 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
               {message.connectorBadge}
             </span>
           ) : message.model && !isUser && (
-            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${String(message.provider || '').toLowerCase().includes('groq')
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${getZuloraEngineLabel(message.model, message.provider) === 'Zulora LPU Speed'
               ? 'bg-orange-100 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300 border-orange-200/60 dark:border-orange-800/40'
               : 'bg-sky-100 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 border-sky-200/50 dark:border-sky-800/40'}`}>
-              {String(message.provider || '').toLowerCase().includes('groq') ? 'Powered by Groq LPU' : message.model}
+              {getZuloraEngineLabel(message.model, message.provider)}
             </span>
           )}
           {timestamp && (
@@ -462,7 +477,7 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                 <summary className="cursor-pointer list-none px-3 py-2 text-xs font-semibold flex items-center justify-between">
                   <span className="flex items-center gap-1.5">
                     <span>⚡</span>
-                    <span>Executive Process Tracker ({message.thinkingSteps.filter(s => s.status === 'done').length}/{message.thinkingSteps.length} complete)</span>
+                    <span>Response process ({message.thinkingSteps.filter(s => s.status === 'done').length}/{message.thinkingSteps.length} complete)</span>
                   </span>
                 </summary>
                 <div className="step-log space-y-1.5 border-t border-violet-200/60 px-3 py-2 dark:border-violet-900/50">
@@ -674,6 +689,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const [modelPreference, setModelPreference] = useState(() => readStoredModelPreference(`${CHAT_MODEL_PREFERENCE_KEY}_guest`));
   const [enableWebSearch, setEnableWebSearch] = useState(false);
   const [attachments, setAttachments] = useState([]);
+  const [mediaUploadStates, setMediaUploadStates] = useState(() => new Map());
   const [attachmentPreviewUrls, setAttachmentPreviewUrls] = useState(() => new Map());
   const [messageMedia, setMessageMedia] = useState(() => new Map());
   const [isListening, setIsListening] = useState(false);
@@ -711,6 +727,18 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const chatMountedRef = useRef(true);
   const modelPreferenceKey = `${CHAT_MODEL_PREFERENCE_KEY}_${currentUser?.uid || 'guest'}`;
   const skipModelPreferenceWriteRef = useRef(false);
+
+  const remoteMediaAttachments = attachments.filter(isRemoteMediaAttachment);
+  const failedMediaUpload = remoteMediaAttachments
+    .map(file => ({ file, state: mediaUploadStates.get(file) }))
+    .find(item => item.state?.status === 'error');
+  const hasPendingMediaUpload = remoteMediaAttachments.some(file => mediaUploadStates.get(file)?.status !== 'complete');
+  const mediaUploadProgress = remoteMediaAttachments.length ? {
+    status: failedMediaUpload ? 'error' : hasPendingMediaUpload ? 'uploading' : 'complete',
+    percent: Math.round(remoteMediaAttachments.reduce((total, file) => total + (mediaUploadStates.get(file)?.percent || 0), 0) / remoteMediaAttachments.length),
+    fileCount: remoteMediaAttachments.length,
+    error: failedMediaUpload?.state?.error || ''
+  } : null;
 
   useEffect(() => {
     skipModelPreferenceWriteRef.current = true;
@@ -965,10 +993,35 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     return () => { cancelled = true; };
   }, [pendingLibraryAsset, addAttachments, onLibraryAssetConsumed]);
 
-  const handleUploadAttachment = useCallback(async (file, { promptConnect = false } = {}) => {
+  const handleUploadAttachment = useCallback(async file => {
+    if (isRemoteMediaAttachment(file)) {
+      setMediaUploadStates(previous => new Map(previous).set(file, { status: 'uploading', percent: 0 }));
+      const onProgress = progress => {
+        const percent = Math.min(99, Math.max(0, Number(progress?.percent) || 0));
+        setMediaUploadStates(previous => new Map(previous).set(file, { status: 'uploading', percent }));
+      };
+      try {
+        let saved;
+        if (driveAuth.currentUser) {
+          saved = await uploadChatMediaToDrive(file, 'Chat Uploads', { onProgress });
+        } else if (currentUser?.uid) {
+          saved = await firestoreService.uploadChatMediaToStorage(file, currentUser.uid, { onProgress });
+        } else {
+          saved = await uploadToCloudinary(file, 'zulora-chat-uploads', onProgress);
+        }
+        setMediaUploadStates(previous => new Map(previous).set(file, {
+          status: 'complete', percent: 100, url: saved?.url || saved?.downloadURL || ''
+        }));
+      } catch (error) {
+        setMediaUploadStates(previous => new Map(previous).set(file, {
+          status: 'error', percent: 0, error: error.message || 'Upload failed.'
+        }));
+      }
+      return;
+    }
+
     if (!driveAuth.currentUser) {
       setDriveUploadStatus('Attachment is ready in chat. Connect Zulora Drive to sync it to your Library.');
-      if (promptConnect) setShowConnectorsModal(true);
       return;
     }
     setDriveUploadingFile(file.name);
@@ -976,23 +1029,23 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     try {
       const saved = await uploadChatMediaToDrive(file, 'Chat Uploads', {
         onProgress: progress => setDriveUploadStatus(progress.stage === 'saved'
-          ? `Saving ${file.name} to Zulora Drive…`
-          : `Uploading ${file.name} to Zulora Drive… ${progress.percent || 0}%`)
+          ? `Saving ${file.name} to Zulora Drive?`
+          : `Uploading ${file.name} to Zulora Drive? ${progress.percent || 0}%`)
       });
       setDriveUploadStatus(`Uploaded ${saved.name} to Zulora Drive.`);
     } catch (error) {
       setDriveUploadStatus(error.message || 'Could not upload this file to Zulora Drive.');
     } finally {
-    setDriveUploadingFile('');
+      setDriveUploadingFile('');
     }
-  }, []);
+  }, [currentUser?.uid]);
 
   useEffect(() => {
-    if (!driveConnected) return;
     attachments.forEach(file => {
+      if (!driveConnected && !isRemoteMediaAttachment(file)) return;
       if (uploadedAttachmentFilesRef.current.has(file)) return;
       uploadedAttachmentFilesRef.current.add(file);
-      handleUploadAttachment(file).catch(() => uploadedAttachmentFilesRef.current.delete(file));
+      handleUploadAttachment(file);
     });
   }, [attachments, driveConnected, handleUploadAttachment]);
 
@@ -1017,7 +1070,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       .slice(0, Math.max(0, 5 - attachments.length));
     try {
       addAttachments(selectedFiles);
-      if (!driveAuth.currentUser && selectedFiles.length) setDriveUploadStatus('Attachment is ready in chat. Connect Zulora Drive to sync it to your Library.');
+      if (!driveAuth.currentUser && selectedFiles.some(file => !isRemoteMediaAttachment(file))) setDriveUploadStatus('Attachment is ready in chat. Connect Zulora Drive to sync it to your Library.');
       selectedFiles.filter(file => isImageAttachment(file) || isPdfAttachment(file)).forEach(file => {
         getAttachmentDataUrl(file).catch(error => console.warn('Could not prepare selected attachment:', error.message));
       });
@@ -1041,11 +1094,19 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     event.preventDefault();
     const files = Array.from(event.dataTransfer?.files || []).map(normalizeAttachmentFile);
     addAttachments(files);
-    if (!driveAuth.currentUser && files.length) setDriveUploadStatus('Dropped files are ready in chat. Connect Zulora Drive to sync them to your Library.');
+    if (!driveAuth.currentUser && files.some(file => !isRemoteMediaAttachment(file))) setDriveUploadStatus('Dropped files are ready in chat. Connect Zulora Drive to sync them to your Library.');
   }, [addAttachments]);
 
   const removeAttachment = (idx) => {
-    if (attachments[idx]) preparedAttachmentDataRef.current.delete(attachments[idx]);
+    if (attachments[idx]) {
+      preparedAttachmentDataRef.current.delete(attachments[idx]);
+      uploadedAttachmentFilesRef.current.delete(attachments[idx]);
+      setMediaUploadStates(previous => {
+        const next = new Map(previous);
+        next.delete(attachments[idx]);
+        return next;
+      });
+    }
     setAttachments(prev => prev.filter((_, i) => i !== idx));
   };
 
@@ -1059,7 +1120,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   }, [messages]);
 
   const sendMessage = useCallback(async (promptOverride = null) => {
+    if (loading || sendingRef.current) return;
     const hasAttachments = attachments.length > 0;
+    if (attachments.some(file => isRemoteMediaAttachment(file) && mediaUploadStates.get(file)?.status !== 'complete')) return;
     const basePrompt = String(promptOverride ?? inputPrompt).trim() || (hasAttachments ? 'Please analyze the attached image or document.' : '');
     if (!basePrompt) return;
 
@@ -1163,15 +1226,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     let streamedProvider = null;
     let thinkingSteps = [];
     let hasLoggedFirstToken = false;
-    const shouldShowThinkingBox = codeGenerationRequest || enableWebSearch || isComputerAutomationIntent(basePrompt) || isVideoGenIntent(basePrompt)
-      || /\b(?:gmail|email|calendar|meeting|sheets|spreadsheet|forms|drive|multi[- ]step|multi[- ]task|multiple actions|and then|after that|step by step|complex|analy[sz]e|architecture|execute|run code)\b/i.test(basePrompt);
-    const defaultModelLabel = modelPreference === 'groq' ? 'Groq LPU'
-      : modelPreference === 'gemini' ? 'Gemini'
-      : modelPreference === 'cerebras' ? 'Cerebras'
-      : modelPreference === 'openrouter' ? 'OpenRouter'
-      : modelPreference === 'mistral' ? 'Mistral AI'
-      : modelPreference === 'pro_ultra' ? 'Zulora 3.1 Pro Ultra'
-      : 'Auto (Smart Route)';
+    const shouldShowThinkingBox = true;
+    const defaultModelLabel = getZuloraEngineLabel(modelPreference);
 
     const publishAssistant = (streaming = true) => {
       if (!isRequestCurrent()) return;
@@ -1259,6 +1315,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     setMessages(newMessages);
     setInputPrompt('');
     attachments.forEach(file => preparedAttachmentDataRef.current.delete(file));
+    setMediaUploadStates(previous => {
+      const next = new Map(previous);
+      attachments.forEach(file => next.delete(file));
+      return next;
+    });
     setAttachments([]);
     setLoading(true);
     setShowThinking(true);
@@ -1296,7 +1357,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         && /\bsubject\b/i.test(basePrompt)
         && /\b(body|message|saying)\b/i.test(basePrompt);
       let browserTask = null;
-      if (isComputerAutomationIntent(basePrompt)) {
+      if (isExplicitBrowserAutomationIntent(basePrompt) && !codeGenerationRequest) {
         if (!await checkExtensionConnected()) {
           browserTask = {
             handled: true,
@@ -1468,7 +1529,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
                   const phaseProgress = phase.includes('ready') ? 100 : phase.includes('playback') ? 92 : phase.includes('another provider') ? 36 : phase.includes('generating') ? 18 : 6;
                   videoProgress = Math.max(videoProgress, Number(progress?.percent) || phaseProgress);
                   updateProgress(videoProgress);
-                  pushThinkingStep(progress?.provider || 'Generating video frames', 'running', `${videoProgress}%`);
+                  pushThinkingStep('Rendering video frames', 'running', `${videoProgress}%`);
                 }
               });
             } finally {
@@ -1482,9 +1543,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           pushThinkingStep('Video ready', 'done', '100%');
           const aiMsg = {
             id: assistantId, role: 'assistant',
-            content: `Here's your AI-generated video! 🎬\n\n*${vidResult?.provider || 'Zulora Video AI'}*`,
-            timestamp: Date.now(), model: vidResult?.model || 'Video AI',
-            provider: vidResult?.provider || 'Video Studio',
+            content: `Here's your AI-generated video! 🎬\n\n*Zulora Video Engine*`,
+            timestamp: Date.now(), model: 'Zulora Video Engine',
+            provider: 'Zulora AI',
             generatedVideoUrl: vidUrl, queryTime: elapsed,
             thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps] : undefined
           };
@@ -1546,9 +1607,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             clearTimeout(thinkingTimerRef.current);
             setShowThinking(false);
           },
-          onProvider: route => {
-            streamedProvider = route;
-            pushThinkingStep(`Connected to ${route.provider || 'model provider'}`, 'done');
+          onProvider: () => {
+            streamedProvider = { provider: 'Zulora AI', model: getZuloraEngineLabel(modelPreference) };
+            pushThinkingStep('Zulora engine connected', 'done');
             if (!displayedText || !isRequestCurrent()) return;
             setMessages(prev => [
               ...prev.filter(m => m.id !== assistantId),
@@ -1614,8 +1675,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         role: 'assistant',
         content: responseText,
         timestamp: Date.now(),
-        model: result.model || 'Zulora AI',
-        provider: result.provider,
+        model: directTask
+          ? String(result.connectorProvider || '').toLowerCase().includes('computer') ? 'Zulora Computer Agent'
+            : result.connectorProvider ? 'Zulora Connectors' : 'Zulora Drive'
+          : getZuloraEngineLabel(modelPreference),
+        provider: 'Zulora AI',
         sources: result.sources || [],
         webSearched: Boolean(enableWebSearch),
         thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps] : undefined,
@@ -1728,7 +1792,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       setLoading(sessionStillProcessing);
       sendingRef.current = false;
     }
-  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, buildContextMessages, getAttachmentDataUrl, isPro, checkUsage, recordUsage, setIsUsageModalOpen, setIsPricingModalOpen, onUpdateSession, connectorContext]);
+  }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, mediaUploadStates, currentUser, activeSession, buildContextMessages, getAttachmentDataUrl, isPro, checkUsage, recordUsage, setIsUsageModalOpen, setIsPricingModalOpen, onUpdateSession, connectorContext]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1811,6 +1875,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           fileInputRef={fileInputRef}
           cameraInputRef={cameraInputRef}
           onFileSelect={handleFileSelect}
+          isSendDisabled={loading || hasPendingMediaUpload}
+          mediaUploadProgress={mediaUploadProgress}
           showMoreTools={showMoreTools}
           onToggleMoreTools={() => setShowMoreTools(value => !value)}
           enableWebSearch={enableWebSearch}

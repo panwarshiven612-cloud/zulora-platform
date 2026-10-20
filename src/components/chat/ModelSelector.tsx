@@ -24,63 +24,63 @@ export interface ModelOption {
 export const MODEL_OPTIONS: ModelOption[] = [
   {
     id: 'auto',
-    label: 'Auto (Smart Route)',
-    shortLabel: 'Auto',
-    description: 'Intelligent auto-routing based on query complexity.',
+    label: 'Zulora Auto',
+    shortLabel: 'Zulora Auto',
+    description: 'Smart Route',
     icon: Sparkles,
     color: 'text-sky-500',
     badge: 'Smart'
   },
   {
     id: 'gemini',
-    label: 'Gemini (Flash & Pro Pool)',
-    shortLabel: 'Gemini',
-    description: 'Gemini 2.5/3.1/3.5/3.8 Flash & Pro Pool',
+    label: 'Zulora Fast Engine',
+    shortLabel: 'Zulora Fast',
+    description: 'High-throughput general assistant',
     icon: Zap,
     color: 'text-amber-500',
     badge: 'Fast'
   },
   {
     id: 'groq',
-    label: 'Groq LPU',
-    shortLabel: 'Groq LPU',
-    description: 'Ultra-fast Llama 3.3 70B inference (<0.5s TTFT)',
+    label: 'Zulora LPU Speed',
+    shortLabel: 'Zulora LPU',
+    description: 'Sub-second response engine',
     icon: Gauge,
     color: 'text-orange-500',
     badge: 'LPU Speed'
   },
   {
     id: 'cerebras',
-    label: 'Cerebras Ultra Speed',
-    shortLabel: 'Cerebras',
-    description: 'Wafer-scale accelerated Llama 3.1 70B',
+    label: 'Zulora Ultra Speed',
+    shortLabel: 'Zulora Ultra',
+    description: 'Wafer-scale accelerated reasoning',
     icon: Cpu,
     color: 'text-rose-500',
     badge: 'Wafer'
   },
   {
     id: 'openrouter',
-    label: 'OpenRouter Multi-Provider',
-    shortLabel: 'OpenRouter',
-    description: 'Global redundant open-source model routing',
+    label: 'Zulora Global Engine',
+    shortLabel: 'Zulora Global',
+    description: 'Open-source multi-provider pool',
     icon: Layers,
     color: 'text-indigo-500',
     badge: 'Global'
   },
   {
     id: 'mistral',
-    label: 'Mistral AI',
-    shortLabel: 'Mistral',
-    description: 'Mistral Small & Large high-speed reasoning',
+    label: 'Zulora Reasoning',
+    shortLabel: 'Zulora Reasoning',
+    description: 'Deep synthesis engine',
     icon: Flame,
     color: 'text-red-500',
-    badge: 'Mistral'
+    badge: 'Synthesis'
   },
   {
     id: 'pro_ultra',
     label: 'Zulora 3.1 Pro Ultra',
-    shortLabel: '3.1 Pro Ultra',
-    description: 'Deep reasoning extended thinking waterfall',
+    shortLabel: 'Zulora Pro Ultra',
+    description: 'Flagship model',
     icon: Brain,
     color: 'text-purple-500',
     badge: 'Reasoning'

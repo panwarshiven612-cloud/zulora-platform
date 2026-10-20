@@ -18,6 +18,7 @@ import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from './systemPrompt';
 import { webSearch, formatCitations } from './webSearch';
 import { AI_STUDIO_SYSTEM_PROMPT } from './aiStudioPrompt';
 import { GEMINI_FLASH_MODEL_ID, GEMINI_MODELS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from './aiModels';
+import { isExplicitBrowserAutomationIntent } from './browserAutomationIntent';
 import { buildImagePrompt } from './imageGen';
 import connectorManager from './connectorManager';
 import { checkExtensionConnected } from './browserAgentEngine';
@@ -58,9 +59,11 @@ const CLOUDFLARE_TOKEN = getEnv('VITE_CLOUDFLARE_API_TOKEN');
 // Round-robin tracking index
 let activeGeminiIdx = 0;
 const geminiKeyPerformance = new Map();
+const CODE_GENERATION_MAX_TOKENS = 32_768;
 
 const providerSystemPrompt = options => [
   buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault),
+  options.studioMode ? AI_STUDIO_SYSTEM_PROMPT : '',
   getGoogleConnectorToolInstructions(options.connectorProviders),
   options.connectorContext ? `NATIVE CONNECTORS CONTEXT:\n${options.connectorContext}` : '',
   // MODULE 7: Inject web search grounding
@@ -463,7 +466,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
         body: JSON.stringify({
           model,
           messages,
-          max_tokens: options.coding || options.flagship ? 16_384 : tierConfig.maxTokens,
+          max_tokens: options.coding || options.flagship ? (options.maxTokens || CODE_GENERATION_MAX_TOKENS) : tierConfig.maxTokens,
           ...(options.onToken ? { stream: true } : {}),
           temperature: 0.7
         })
@@ -514,7 +517,7 @@ const tryGeminiKey = async (key, prompt, contextMessages, tier = 'pro', options 
         ],
         system_instruction: { parts: [{ text: providerSystemPrompt(options) }] },
         generationConfig: {
-          maxOutputTokens: options.coding || options.flagship ? 16_384 : tierConfig.maxTokens,
+          maxOutputTokens: options.coding || options.flagship ? (options.maxTokens || CODE_GENERATION_MAX_TOKENS) : tierConfig.maxTokens,
           temperature: 0.7
         }
       })
@@ -584,6 +587,7 @@ function requestedConnectorProvider(prompt, declarations = []) {
   const text = String(prompt || '');
   if (/\b(?:should\s+i|should\s+we|how\s+do\s+i|how\s+to|whether\s+i\s+should)\b/i.test(text)) return '';
   if (isWorkspaceMetricsWorkflowRequest(text)) return 'workspace';
+  if (isExplicitBrowserAutomationIntent(text) && !isCodingPrompt(text)) return 'computer';
   const intents = classifyGoogleConnectorIntents(text);
   if (intents.length) return intents[0];
   const providers = new Set(declarations.map(declaration => typeof declaration === 'string' ? declaration : getGoogleConnectorFunctionProvider(declaration.name)));
@@ -597,8 +601,6 @@ function requestedConnectorProvider(prompt, declarations = []) {
     && /\b(?:read|create|make|build|show|list|responses?)\b/i.test(text)) return 'forms';
   if (providers.has('drive') && /\bdrive\b/i.test(text)
     && /\b(?:list|show|search|find|download|open|manage|delete|trash|inspect)\b/i.test(text)) return 'drive';
-  if (providers.has('computer') && /\b(?:computer|system|browser)\b/i.test(text)
-    && /\b(?:scan|inspect|check)\b/i.test(text)) return 'computer';
   return '';
 }
 
@@ -899,8 +901,8 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
 }
 
 async function tryGoogleConnectorToolWaterfall(prompt, contextMessages, model, options, errors) {
-  const activeProviders = [...connectorManager.getActiveGoogleProviders()];
-  if (/\b(?:computer|system|browser)\b/i.test(prompt) && /\b(?:scan|inspect|check)\b/i.test(prompt) && await checkExtensionConnected()) {
+  const activeProviders = connectorManager.getActiveGoogleProviders().filter(provider => provider !== 'computer');
+  if (isExplicitBrowserAutomationIntent(prompt) && !isCodingPrompt(prompt) && await checkExtensionConnected()) {
     activeProviders.push('computer');
   }
   const declarations = getGoogleConnectorFunctionDeclarations(activeProviders, prompt);
@@ -952,8 +954,8 @@ const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
         model,
         messages,
         ...(tier === 'think'
-          ? { max_completion_tokens: options.flagship ? 16_384 : tierConfig.maxTokens, reasoning_effort: 'high', reasoning_format: 'hidden', temperature: 0.6 }
-          : { max_tokens: options.coding || options.flagship ? 16_384 : tierConfig.maxTokens, temperature: 0.7 }),
+          ? { max_completion_tokens: options.coding ? (options.maxTokens || CODE_GENERATION_MAX_TOKENS) : options.flagship ? 16_384 : tierConfig.maxTokens, reasoning_effort: 'high', reasoning_format: 'hidden', temperature: 0.6 }
+          : { max_tokens: options.coding || options.flagship ? (options.maxTokens || CODE_GENERATION_MAX_TOKENS) : tierConfig.maxTokens, temperature: 0.7 }),
         ...(options.onToken ? { stream: true } : {})
       })
     },
@@ -1073,7 +1075,7 @@ export const apiRouter = {
       ? directGeminiModel ? requestedTier : (geminiSelected ? 'gemini' : requestedTier === 'think' || requestedTier === 'pro' ? 'gemini-2.5-pro' : 'gemini-3.8-flash')
       : requestedTier === 'auto' ? (coding ? 'gemini-2.5-pro' : complex ? 'gemini-2.5-pro' : 'gemini-3.8-flash') : requestedTier;
     const highTierCodeRequest = coding && (flagship || requestedTier === 'pro' || (directGeminiModel && /pro/i.test(requestedTier)));
-    options = { ...options, coding, flagship: highTierCodeRequest, tier, preferBestKey: flagship || highTierCodeRequest, streamState: options.streamState || { sent: false } };
+    options = { ...options, coding, flagship: highTierCodeRequest, maxTokens: coding ? CODE_GENERATION_MAX_TOKENS : options.maxTokens, tier, preferBestKey: flagship || highTierCodeRequest, streamState: options.streamState || { sent: false } };
     const errors = [];
     let webCitations = [];
     // MODULE 7: Web search injection for grounding

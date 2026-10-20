@@ -64,7 +64,7 @@ export const Chat = ({
           <button
             onClick={() => setIsVoiceOpen(true)}
             className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-bold text-sky-600 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/60 border border-sky-300/60 dark:border-sky-700/60"
-            title="Open Gemini Live Voice"
+            title="Open Zulora Live Voice"
           >
             <Radio className="w-3.5 h-3.5 text-sky-500 animate-pulse" />
             <span>Voice</span>
@@ -104,7 +104,7 @@ export const Chat = ({
               messages: [
                 ...(Array.isArray(activeSession?.messages) ? activeSession.messages : []),
                 { id: Date.now().toString(), role: 'user', content: turn?.user || '', timestamp: Date.now() },
-                { id: (Date.now() + 1).toString(), role: 'assistant', content: turn?.assistant || '', timestamp: Date.now(), model: 'Gemini Live Voice' }
+                { id: (Date.now() + 1).toString(), role: 'assistant', content: turn?.assistant || '', timestamp: Date.now(), model: 'Zulora Live Voice' }
               ],
               updatedAt: Date.now()
             };

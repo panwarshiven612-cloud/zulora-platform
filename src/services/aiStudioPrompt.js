@@ -21,7 +21,7 @@ OUTPUT CONTRACT
 - Use realistic, compelling copy. Do not invent fake customer identities or real trademarked claims.
 
 DESIGN, GLASSMORPHISM & VISUAL EXCELLENCE
-- Visual Theme: Apply modern Glassmorphism UI (translucent glass panels with \`backdrop-filter: blur(16px)\`, fine 1px semi-transparent borders \`border-white/10\` or \`border-slate-800/40\`, subtle layered drop-shadows, and luminous glowing azure/cyan highlights).
+- Visual Theme: Use a Pearl & Azure design system: pearl white surfaces (#F7F9FC and #FFFFFF), cool ink typography, translucent glass panels with \`backdrop-filter: blur(16px)\`, fine semi-transparent borders, layered soft shadows, and focused azure highlights. Keep contrast high and the finish polished rather than scaffold-like.
 - Styling System: Load Tailwind CSS CDN (\`<script src="https://cdn.tailwindcss.com"></script>\`) as the utility layer. Enhance with handcrafted CSS keyframe animations, glow filters, and responsive layout classes.
 - Load Lucide Icons (\`<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>\`) or FontAwesome, and invoke \`lucide.createIcons()\` upon DOMContentLoaded.
 - Include a sleek light/dark mode theme switch with smooth transitions, persisting user choice to localStorage.
@@ -33,6 +33,7 @@ INTERNATIONALIZATION & RTL SUPPORT
 
 SMOOTH ENTRANCE ANIMATIONS & PERFORMANCE
 - Smooth Entrance Animations: Implement elegant CSS keyframe entrance animations (e.g. \`@keyframes fadeInUp\`, staggered reveals for hero typography and feature cards, floating glowing orbs, smooth hover transforms \`hover:scale-[1.02] hover:-translate-y-1 transition-all duration-300\`).
+- Ensure a complete, production-quality interface with distinctive visual hierarchy, finished content, functional controls, graceful empty and success states, and no TODOs or placeholder code. Make it responsive from small phones through desktop, with no clipped content or basic unstyled sections.
 - Ensure high performance, zero layout shift (CLS), and fluid 60fps scrolling. Honor \`@media (prefers-reduced-motion)\` for accessibility.
 - Navigation & Mobile View: Provide a sticky header with a fully working mobile hamburger drawer that toggles open/closed with smooth slide animations.
 
@@ -49,7 +50,7 @@ export function buildAIStudioUserPrompt(userRequest, attachmentText = '') {
   const request = String(userRequest || '').trim();
   const attachment = String(attachmentText || '').trim();
   return [
-    'Build or update the website described below. Use the active project code in the conversation as the starting point when it is present. Implement complete single-file HTML/Tailwind CSS/JavaScript code with smooth entrance animations, glassmorphism UI, and RTL text support (for Hindi, Urdu, and English).',
+    'Build or update the website described below. Use the active project code in the conversation as the starting point when it is present. Implement complete single-file HTML/Tailwind CSS/JavaScript code with a polished Pearl & Azure glassmorphic design, smooth entrance animations, mobile-responsive layouts, working interactions, and RTL text support (for Hindi, Urdu, and English).',
     `User request:\n${request}`,
     attachment ? `Attached file context (${attachment.length} characters):\n${attachment}` : ''
   ].filter(Boolean).join('\n\n');

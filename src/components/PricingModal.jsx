@@ -193,7 +193,7 @@ export const PricingModal = ({ isOpen, onClose }) => {
                 </li>
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-sky-500 shrink-0" />
-                  <span>Priority Groq & Gemini speed</span>
+                  <span>Priority Zulora LPU & Fast Engine speed</span>
                 </li>
                 <li className="flex items-center gap-2">
                   <Check className="w-3.5 h-3.5 text-sky-500 shrink-0" />

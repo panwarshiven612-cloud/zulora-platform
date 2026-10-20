@@ -106,12 +106,12 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
             </button>
           )}
 
-          {/* Gemini Live Voice Assistant button */}
+          {/* Zulora Live Voice Assistant button */}
           {!guestMode && onOpenVoiceAssistant && (
             <button
               onClick={onOpenVoiceAssistant}
               className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold text-sky-600 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/60 border border-sky-300/60 dark:border-sky-700/60 hover:border-sky-400 shadow-sm transition-all flex-shrink-0"
-              title="Open Gemini Live Voice Assistant"
+              title="Open Zulora Live Voice Assistant"
             >
               <Radio className="w-3.5 h-3.5 text-sky-500 animate-pulse" />
               <span className="hidden md:inline">Live Voice</span>
