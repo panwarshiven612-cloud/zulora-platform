@@ -24,66 +24,66 @@ export interface ModelOption {
 export const MODEL_OPTIONS: ModelOption[] = [
   {
     id: 'auto',
-    label: 'Zulora Auto',
-    shortLabel: 'Zulora Auto',
-    description: 'Smart Route',
+    label: 'Auto',
+    shortLabel: 'Auto',
+    description: 'Smart Route — best model selected per query',
     icon: Sparkles,
     color: 'text-sky-500',
     badge: 'Smart'
   },
   {
     id: 'gemini',
-    label: 'Zulora Fast',
-    shortLabel: 'Zulora Fast',
-    description: 'High-throughput general assistant',
+    label: 'Gemini',
+    shortLabel: 'Gemini',
+    description: 'Gemini 2.5 / 3.8 Flash & Pro Pool',
     icon: Zap,
     color: 'text-amber-500',
-    badge: 'Fast'
+    badge: 'Flash'
   },
   {
     id: 'groq',
-    label: 'Zulora LPU Speed',
-    shortLabel: 'Zulora LPU',
-    description: 'Sub-second response engine',
+    label: 'Groq LPU',
+    shortLabel: 'Groq LPU',
+    description: 'Ultra-fast Llama 3.3 70B on LPU hardware',
     icon: Gauge,
     color: 'text-orange-500',
-    badge: 'LPU Speed'
+    badge: 'LPU'
   },
   {
     id: 'cerebras',
-    label: 'Zulora Ultra Speed',
-    shortLabel: 'Zulora Ultra Speed',
-    description: 'Wafer-scale accelerated reasoning',
+    label: 'Cerebras Ultra Speed',
+    shortLabel: 'Cerebras',
+    description: 'Wafer-scale accelerated Llama 3.1 70B',
     icon: Cpu,
     color: 'text-rose-500',
     badge: 'Wafer'
   },
   {
     id: 'openrouter',
-    label: 'Zulora Global Engine',
-    shortLabel: 'Zulora Global',
-    description: 'Open-source multi-provider pool',
+    label: 'OpenRouter Multi-Provider',
+    shortLabel: 'OpenRouter',
+    description: 'Global open-source multi-provider routing',
     icon: Layers,
     color: 'text-indigo-500',
     badge: 'Global'
   },
   {
     id: 'mistral',
-    label: 'Zulora Reasoning',
-    shortLabel: 'Zulora Reasoning',
-    description: 'Deep synthesis engine',
+    label: 'Mistral AI',
+    shortLabel: 'Mistral',
+    description: 'Mistral Small & Large — deep synthesis',
     icon: Flame,
     color: 'text-red-500',
-    badge: 'Synthesis'
+    badge: 'Mistral'
   },
   {
     id: 'pro_ultra',
     label: 'Zulora 3.1 Pro Ultra',
-    shortLabel: 'Zulora Pro Ultra',
-    description: 'Flagship model',
+    shortLabel: 'Pro Ultra',
+    description: 'Flagship reasoning model — Gemini 2.5 Pro',
     icon: Brain,
     color: 'text-purple-500',
-    badge: 'Reasoning'
+    badge: 'Flagship'
   }
 ];
 
@@ -102,18 +102,17 @@ export default function ModelSelector({
   onToggle,
   onClose
 }: ModelSelectorProps) {
-  // Normalize model ID to match available engines
+  // Normalize model ID to match available engines — supports both legacy Zulora names and raw IDs
   const normalizedId = (() => {
     const raw = String(modelPreference || 'auto').trim();
     const cur = raw.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
-    if (cur === 'zulora auto' || cur === 'auto') return 'auto';
-    if (cur === 'zulora fast' || cur === 'fast') return 'gemini';
-    if (cur === 'zulora ultra speed' || cur === 'ultra speed') return 'cerebras';
-    if (cur === 'zulora 3.1 pro ultra' || cur === 'pro ultra') return 'pro_ultra';
-    if (cur === 'zulora lpu speed' || cur === 'zulora lpu') return 'groq';
-    if (cur === 'zulora global engine') return 'openrouter';
-    if (cur === 'zulora reasoning') return 'mistral';
-    if (cur === 'pro ultra' || cur === 'think' || cur === 'pro' || cur === 'gemini 2.5 pro') return 'pro_ultra';
+    if (cur === 'auto' || cur === 'zulora auto') return 'auto';
+    if (cur === 'gemini' || cur === 'flash' || cur === 'zulora fast' || cur === 'fast' || cur.startsWith('gemini ')) return 'gemini';
+    if (cur === 'groq' || cur === 'groq lpu' || cur === 'zulora lpu speed' || cur === 'zulora lpu') return 'groq';
+    if (cur === 'cerebras' || cur === 'cerebras ultra speed' || cur === 'zulora ultra speed' || cur === 'ultra speed') return 'cerebras';
+    if (cur === 'openrouter' || cur === 'openrouter multi provider' || cur === 'zulora global engine') return 'openrouter';
+    if (cur === 'mistral' || cur === 'mistral ai' || cur === 'zulora reasoning') return 'mistral';
+    if (cur === 'pro ultra' || cur === 'zulora 3.1 pro ultra' || cur === 'think' || cur === 'pro' || cur === 'gemini 2.5 pro') return 'pro_ultra';
     if (cur === 'gemini' || cur === 'flash' || cur.startsWith('gemini ')) return 'gemini';
     if (cur === 'groq') return 'groq';
     if (cur === 'cerebras') return 'cerebras';

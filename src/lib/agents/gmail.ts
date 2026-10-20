@@ -2,10 +2,23 @@
  * gmail.ts — Dynamic Gmail Agent for Zulora AI
  * Allows dynamic email generation tailored to exact user formatting instructions
  * rather than rigid, static pre-made templates.
+ * 
+ * OAuth 2.0 credentials are managed server-side via googleOAuthStore.js.
+ * Client ID is referenced here for diagnostics only — never the secret.
  */
 
 import connectorManager from '../../services/connectorManager';
 import { GEMINI_KEYS } from '../config/keys';
+
+// Google OAuth 2.0 Client ID (public — safe in browser bundle)
+// Secret is kept server-only in server/handlers/googleOAuthStore.js
+export const GMAIL_OAUTH_CLIENT_ID = '79125936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com';
+
+export const GMAIL_OAUTH_SCOPES = [
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/gmail.compose'
+];
 
 export interface DynamicEmailOptions {
   to: string;

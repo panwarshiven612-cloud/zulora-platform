@@ -41,12 +41,12 @@ const CODE_GENERATION_MAX_TOKENS = 32_768;
 const getZuloraEngineLabel = preference => {
   const selected = String(preference || 'auto').toLowerCase().replace(/[_-]+/g, ' ');
   if (/pro ultra|gemini 2 5 pro|high reasoning|\bthink\b|\bpro\b/.test(selected)) return 'Zulora 3.1 Pro Ultra';
-  if (/cerebras|ultra speed/.test(selected)) return 'Zulora Ultra Speed';
-  if (/groq|\blpu\b|lpu speed|turbo/.test(selected)) return 'Zulora LPU Speed';
-  if (/openrouter|global engine/.test(selected)) return 'Zulora Global Engine';
-  if (/mistral|deep synthesis|reasoning/.test(selected)) return 'Zulora Reasoning';
-  if (/gemini|flash|fast engine/.test(selected)) return 'Zulora Fast Engine';
-  return 'Zulora Auto';
+  if (/cerebras|ultra speed/.test(selected)) return 'Cerebras Ultra Speed';
+  if (/groq|\blpu\b|lpu speed|turbo/.test(selected)) return 'Groq LPU';
+  if (/openrouter|global engine/.test(selected)) return 'OpenRouter Multi-Provider';
+  if (/mistral|deep synthesis|reasoning/.test(selected)) return 'Mistral AI';
+  if (/gemini|flash|fast engine/.test(selected)) return 'Gemini';
+  return 'Auto';
 };
 const maskClientChatMetadata = (output, preference) => {
   const connectorProvider = String(output?.connectorProvider || '').toLowerCase();
@@ -984,14 +984,14 @@ async function generateChat(body, streamOptions = {}) {
   for (const provider of order) {
     try {
       const result = provider === 'gemini'
-        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: false, model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: body.guestDemo && !coding ? 2_048 : coding ? CODE_GENERATION_MAX_TOKENS : 16_384, ...streamOptions })
+        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: false, model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: body.guestDemo && !coding ? 2_048 : coding ? CODE_GENERATION_MAX_TOKENS : 32_768, ...streamOptions })
         : await tryOpenAiProvider(provider, messages, {
           attachments: body.attachments,
           vision,
           coding,
           model: provider === 'groq' ? groqModel : undefined,
           reasoning: preference === 'think' && provider === 'groq',
-          maxTokens: body.guestDemo && !coding ? 2_048 : coding ? CODE_GENERATION_MAX_TOKENS : useProModel || flagship ? 16_384 : 4096,
+          maxTokens: body.guestDemo && !coding ? 2_048 : coding ? CODE_GENERATION_MAX_TOKENS : useProModel || flagship ? 32_768 : 16_384,
           ...streamOptions
         });
       if (result) return { ...result, ...(body.enableWebSearch ? { sources: searchResults } : {}) };

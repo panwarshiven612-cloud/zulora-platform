@@ -133,7 +133,7 @@ async function streamFromGemini(
           ...(systemMessage ? { system_instruction: { parts: [{ text: systemMessage }] } } : {}),
           generationConfig: {
             temperature: 0.7,
-            maxOutputTokens: model === 'gemini-2.5-pro' ? 16384 : 8192
+            maxOutputTokens: model === 'gemini-2.5-pro' ? 32768 : 16384
           }
         }),
         signal: fetchSignal.signal
@@ -217,7 +217,7 @@ async function streamFromOpenAiCompatible(
         messages,
         stream: true,
         temperature: 0.7,
-        max_tokens: 8192
+        max_tokens: 16384
       }),
       signal: fetchSignal.signal
     });
