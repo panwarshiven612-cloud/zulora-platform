@@ -625,18 +625,38 @@ async function providerAccessToken(providerId, token) {
 }
 
 async function silentlyRefresh(providerId, uid = auth.currentUser?.uid || '') {
-  if (silentRefreshes.has(providerId)) return silentRefreshes.get(providerId);
+  // Production providers share one server-side OAuth session. In development,
+  // each service gets its own browser token scoped to that provider.
+  const refreshKey = import.meta.env?.DEV ? providerId : 'google-workspace-session';
+  if (silentRefreshes.has(refreshKey)) {
+    await silentRefreshes.get(refreshKey);
+    return sessionTokens.get(providerId) || null;
+  }
   const refreshPromise = (async () => {
     const provider = CONNECTOR_CONFIG[providerId];
     if (!provider || !uid || (auth.currentUser?.uid && auth.currentUser.uid !== uid)) return null;
     try {
+      const priorTokens = new Map(sessionTokens);
       const token = import.meta.env?.DEV
         ? await tokenRequest(await loadIdentityServices(), provider.scopes, '')
         : await oauthApiRequest('refresh');
       const record = await providerAccessToken(providerId, token);
-      const targets = record.enabledProviders?.length ? record.enabledProviders : [providerId];
+      const targets = record.enabledProviders?.length
+        ? record.enabledProviders
+        : priorTokens.size ? [...priorTokens.keys()] : [providerId];
       for (const target of targets) {
-        if (CONNECTOR_CONFIG[target]) sessionTokens.set(target, { ...record, provider: target });
+        if (!CONNECTOR_CONFIG[target]) continue;
+        const previous = priorTokens.get(target);
+        sessionTokens.set(target, {
+          ...previous,
+          ...record,
+          accessToken: record.accessToken || previous?.accessToken || '',
+          scopes: record.scopes?.length ? record.scopes : previous?.scopes || [],
+          enabledProviders: record.enabledProviders?.length ? record.enabledProviders : previous?.enabledProviders || targets,
+          email: record.email || previous?.email || '',
+          provider: target,
+          connected: record.connected !== false
+        });
       }
       writeStoredTokens();
       emitConnectorChange();
@@ -649,8 +669,8 @@ async function silentlyRefresh(providerId, uid = auth.currentUser?.uid || '') {
       }
       return null;
     }
-  })().finally(() => silentRefreshes.delete(providerId));
-  silentRefreshes.set(providerId, refreshPromise);
+  })().finally(() => silentRefreshes.delete(refreshKey));
+  silentRefreshes.set(refreshKey, refreshPromise);
   return refreshPromise;
 }
 

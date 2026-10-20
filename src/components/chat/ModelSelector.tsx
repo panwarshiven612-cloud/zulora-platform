@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { 
   Sparkles, 
   Zap, 
@@ -33,7 +33,7 @@ export const MODEL_OPTIONS: ModelOption[] = [
   },
   {
     id: 'gemini',
-    label: 'Zulora Fast Engine',
+    label: 'Zulora Fast',
     shortLabel: 'Zulora Fast',
     description: 'High-throughput general assistant',
     icon: Zap,
@@ -52,7 +52,7 @@ export const MODEL_OPTIONS: ModelOption[] = [
   {
     id: 'cerebras',
     label: 'Zulora Ultra Speed',
-    shortLabel: 'Zulora Ultra',
+    shortLabel: 'Zulora Ultra Speed',
     description: 'Wafer-scale accelerated reasoning',
     icon: Cpu,
     color: 'text-rose-500',
@@ -102,23 +102,9 @@ export default function ModelSelector({
   onToggle,
   onClose
 }: ModelSelectorProps) {
-  const [selectedModelId, setSelectedModel] = useState<string>(() => {
-    try {
-      return localStorage.getItem('zulora_chat_model_preference') || modelPreference || 'auto';
-    } catch {
-      return modelPreference || 'auto';
-    }
-  });
-
-  useEffect(() => {
-    if (modelPreference) {
-      setSelectedModel(modelPreference);
-    }
-  }, [modelPreference]);
-
   // Normalize model ID to match available engines
   const normalizedId = (() => {
-    const cur = selectedModelId || modelPreference;
+    const cur = modelPreference || 'auto';
     if (cur === 'pro_ultra' || cur === 'think' || cur === 'pro' || cur === 'gemini-2.5-pro') return 'pro_ultra';
     if (cur === 'gemini' || cur === 'flash' || (String(cur).startsWith('gemini-') && cur !== 'gemini-2.5-pro')) return 'gemini';
     if (cur === 'groq') return 'groq';
@@ -134,7 +120,6 @@ export default function ModelSelector({
   const handleSelect = (modelId: string, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setSelectedModel(modelId);
     try {
       localStorage.setItem('zulora_chat_model_preference', modelId);
     } catch {

@@ -388,7 +388,12 @@ export async function submitHtmlVideoRenderJob(html, options = {}) {
       throw new Error(err.error || `Render server returned HTTP ${res.status}`);
     }
 
-    const { jobId } = await res.json();
+    const render = await res.json();
+    const { jobId } = render;
+    if (render.url && (render.phase === 'done' || render.percent === 100)) {
+      onProgress?.({ phase: 'Video ready', percent: 100, jobId });
+      return { jobId, url: render.url, phase: 'done', percent: 100 };
+    }
     onProgress?.({ phase: 'Processing frames...', percent: 20, jobId });
 
     // Poll for progress up to 90 seconds

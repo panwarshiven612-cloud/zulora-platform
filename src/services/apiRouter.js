@@ -64,7 +64,7 @@ const CODE_GENERATION_MAX_TOKENS = 32_768;
 const providerSystemPrompt = options => [
   buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault),
   options.studioMode ? AI_STUDIO_SYSTEM_PROMPT : '',
-  getGoogleConnectorToolInstructions(options.connectorProviders),
+  getGoogleConnectorToolInstructions(options.connectorProviders || []),
   options.connectorContext ? `NATIVE CONNECTORS CONTEXT:\n${options.connectorContext}` : '',
   // MODULE 7: Inject web search grounding
   options.flagship ? FLAGSHIP_SYSTEM_PROMPT : '',
@@ -1066,7 +1066,8 @@ export const apiRouter = {
     const requestedTier = normalizeModelPreference(options.model);
     const vision = (options.attachments || []).some(item => String(item.mimeType || '').startsWith('image/'));
     const coding = isCodingPrompt(prompt);
-    const complex = isComplexPrompt(prompt);
+    const simpleQuery = Boolean(options.simpleQuery);
+    const complex = !simpleQuery && isComplexPrompt(prompt);
     const directGeminiModel = String(requestedTier).startsWith('gemini-');
     const flagship = requestedTier === 'think' || requestedTier === 'gemini-2.5-pro';
     const geminiSelected = requestedTier === 'gemini';
@@ -1081,12 +1082,15 @@ export const apiRouter = {
     // MODULE 7: Web search injection for grounding
     if (options.webSearch && prompt) {
       try {
-        const { results, context } = await webSearch(prompt);
+        const { results, context } = await webSearch(prompt, { signal: options.signal });
         if (context) {
           options = { ...options, _searchContext: context };
           webCitations = results;
         }
-      } catch (searchErr) { console.warn('[Chat] Web search failed:', searchErr.message); }
+      } catch (searchErr) {
+        if (options.signal?.aborted) throw searchErr;
+        console.warn('[Chat] Web search failed:', searchErr.message);
+      }
     }
     const messages = [...buildHistory(contextMessages), { role: 'user', content: prompt }];
     const geminiModel = options.computerAgent && options.computerVision
@@ -1100,9 +1104,9 @@ export const apiRouter = {
       skipTokenLimit: highTierCodeRequest
     });
 
-    await connectorManager.restoreSession();
-    const activeConnectorProviders = connectorManager.getActiveGoogleProviders();
-    const requestedProvider = requestedConnectorProvider(prompt, ['gmail', 'calendar', 'sheets', 'forms', 'drive', 'computer']);
+    const activeConnectorProviders = simpleQuery ? [] : await connectorManager.restoreSession();
+    options = { ...options, connectorProviders: activeConnectorProviders };
+    const requestedProvider = simpleQuery ? '' : requestedConnectorProvider(prompt, ['gmail', 'calendar', 'sheets', 'forms', 'drive', 'computer']);
     if (requestedProvider === 'workspace') {
       const requiredProviders = ['drive', 'sheets', 'gmail'];
       const missingProviders = requiredProviders.filter(provider => !activeConnectorProviders.includes(provider));
@@ -1187,6 +1191,7 @@ export const apiRouter = {
           enableWebSearch: Boolean(options.webSearch),
           searchResults: webCitations,
           attachments: options.attachments || [],
+          simpleQuery,
           coding,
           flagship
         };
@@ -1287,9 +1292,10 @@ export const apiRouter = {
         height,
         sourceImage: options.sourceImage || '',
         operation: options.operation || (options.sourceImage ? 'edit' : 'generate')
-      }, currentUser);
+      }, currentUser, '/api/ai', options.signal);
       if (serverResult?.url) return await syncUsage(serverResult, 'image', currentUser);
     } catch (error) {
+      if (options.signal?.aborted) throw error;
       if (isQuotaAuthorityError(error)) throw error;
       console.warn('[Image] Server generation route unavailable; trying browser providers:', error.message);
     }

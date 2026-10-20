@@ -24,6 +24,7 @@ export interface VideoRenderOptions {
   duration?: number;
   fps?: number;
   currentUser?: any;
+  signal?: AbortSignal;
   onProgress?: (progress: { phase: string; percent: number; message?: string }) => void;
 }
 
@@ -62,13 +63,13 @@ STRICT RULES:
 3. ALL animation MUST be driven by global function window.renderFrame(t) where t is time in seconds.
 4. Use GSAP paused timelines: const tl = gsap.timeline({ paused: true }); window.renderFrame = (t) => tl.seek(t);
 5. Load GSAP: <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"><\/script>
-6. Expose window.DURATION = totalDuration.
+6. Expose window.DURATION = totalDuration, window.FPS = 30, and window.__ready = true after the page and renderFrame are ready.
 7. Return ONLY complete HTML document starting with <!DOCTYPE html>.`;
 
 /**
  * Generate a new video storyboard from text prompt
  */
-export async function generateStoryboard(prompt: string, duration = 10, aspectRatio = '16:9'): Promise<any> {
+export async function generateStoryboard(prompt: string, duration = 10, aspectRatio = '16:9', signal?: AbortSignal): Promise<any> {
   const userPrompt = `Create a ${duration}s video storyboard for: "${prompt}". Aspect ratio: ${aspectRatio}. Return JSON.`;
 
   for (const key of GEMINI_KEYS) {
@@ -76,6 +77,7 @@ export async function generateStoryboard(prompt: string, duration = 10, aspectRa
     try {
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
         method: 'POST',
+        signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           system_instruction: { parts: [{ text: STORYBOARD_PROMPT }] },
@@ -88,6 +90,7 @@ export async function generateStoryboard(prompt: string, duration = 10, aspectRa
       const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
       return JSON.parse(raw.replace(/```json|```/gi, '').trim());
     } catch {
+      if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
       // try next key
     }
   }
@@ -97,7 +100,7 @@ export async function generateStoryboard(prompt: string, duration = 10, aspectRa
 /**
  * Generate complete animated HTML from storyboard
  */
-export async function generateHtmlFromStoryboard(storyboard: any, aspectRatio = '16:9'): Promise<string> {
+export async function generateHtmlFromStoryboard(storyboard: any, aspectRatio = '16:9', signal?: AbortSignal): Promise<string> {
   const userPrompt = `Convert this storyboard into self-contained animated HTML with window.renderFrame(t):\n${JSON.stringify(storyboard, null, 2)}`;
 
   for (const key of GEMINI_KEYS) {
@@ -105,6 +108,7 @@ export async function generateHtmlFromStoryboard(storyboard: any, aspectRatio = 
     try {
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
         method: 'POST',
+        signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           system_instruction: { parts: [{ text: HTML_RENDER_PROMPT }] },
@@ -117,6 +121,7 @@ export async function generateHtmlFromStoryboard(storyboard: any, aspectRatio = 
       const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
       return raw.replace(/^```(?:html)?\n?/i, '').replace(/\n?```$/i, '').trim();
     } catch {
+      if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
       // try next key
     }
   }
@@ -130,7 +135,8 @@ export async function generateHtmlFromStoryboard(storyboard: any, aspectRatio = 
  */
 export async function editVideoIncrementally(
   existingHtml: string,
-  modificationPrompt: string
+  modificationPrompt: string,
+  signal?: AbortSignal
 ): Promise<string> {
   const systemPrompt = `You are a high-speed motion graphics code refactoring engineer.
 Your task is to perform an INCREMENTAL EDIT on existing HTML/CSS/GSAP video animation code.
@@ -154,6 +160,7 @@ Apply the requested modification directly into the HTML and return the updated f
     try {
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
         method: 'POST',
+        signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           system_instruction: { parts: [{ text: systemPrompt }] },
@@ -169,6 +176,7 @@ Apply the requested modification directly into the HTML and return the updated f
         return cleaned;
       }
     } catch {
+      if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
       // try next key
     }
   }
@@ -189,7 +197,8 @@ export async function renderHtmlToMp4(
   const res = await fetch('/api/video-render', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ html, aspectRatio, fps, crf: 18 })
+    body: JSON.stringify({ html, aspectRatio, fps, duration: options.duration || 8, crf: 18 }),
+    signal: options.signal
   });
 
   if (!res.ok) {
@@ -197,15 +206,21 @@ export async function renderHtmlToMp4(
     throw new Error(err.error || `Render server HTTP ${res.status}`);
   }
 
-  const { jobId } = await res.json();
+  const render = await res.json();
+  const { jobId } = render;
+  if (render.url && (render.phase === 'done' || render.percent === 100)) {
+    onProgress?.({ phase: 'Video ready', percent: 100, message: 'The MP4 render is ready to play and download.' });
+    return { jobId: jobId || `render_${Date.now()}`, url: render.url };
+  }
   onProgress?.({ phase: 'Rendering frames', percent: 25, message: 'Rendering GSAP animation frames via headless browser...' });
 
   // Poll for completion
   let lastPercent = 25;
   for (let i = 0; i < 40; i++) {
+    if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
     await new Promise(r => setTimeout(r, 1500));
     try {
-      const statusRes = await fetch(`/api/video-render/status/${jobId}`);
+      const statusRes = await fetch(`/api/video-render/status/${jobId}`, { signal: options.signal });
       if (!statusRes.ok) continue;
       const status = await statusRes.json();
       if (status.percent > lastPercent) {
@@ -218,7 +233,7 @@ export async function renderHtmlToMp4(
           url: `/api/video-render/download/${jobId}`
         };
       }
-    } catch {}
+      } catch (error) { if (options.signal?.aborted) throw error; }
   }
 
   // Fallback to direct download endpoint
@@ -243,12 +258,12 @@ export async function executeVideoAgent(
 
   if (isIncremental) {
     onProgress?.({ phase: 'Applying incremental edit', percent: 20, message: 'Patching existing animation elements without full re-render...' });
-    finalHtml = await editVideoIncrementally(existingHtml!, prompt);
+    finalHtml = await editVideoIncrementally(existingHtml!, prompt, options.signal);
   } else {
     onProgress?.({ phase: 'Creating scene plan', percent: 15, message: 'Generating video storyboard...' });
-    const storyboard = await generateStoryboard(prompt, duration, aspectRatio);
+    const storyboard = await generateStoryboard(prompt, duration, aspectRatio, options.signal);
     onProgress?.({ phase: 'Generating animation code', percent: 35, message: 'Synthesizing GSAP motion code...' });
-    finalHtml = await generateHtmlFromStoryboard(storyboard, aspectRatio);
+    finalHtml = await generateHtmlFromStoryboard(storyboard, aspectRatio, options.signal);
   }
 
   onProgress?.({ phase: 'Rendering MP4 video', percent: 60, message: 'Encoding frames with FFmpeg...' });
@@ -258,11 +273,12 @@ export async function executeVideoAgent(
   if (currentUser?.uid && uploadFileToDrive) {
     try {
       const resp = await fetch(renderResult.url);
+      if (!resp.ok) throw new Error(`Rendered MP4 download returned HTTP ${resp.status}.`);
       const blob = await resp.blob();
       const videoFile = new File([blob], `zulora_video_${Date.now()}.mp4`, { type: 'video/mp4' });
-      await uploadFileToDrive(videoFile, currentUser.uid, 'Videos');
-    } catch {
-      // non-blocking
+      renderResult.driveFile = await uploadFileToDrive(videoFile, 'Generated Media');
+    } catch (error) {
+      console.warn('Rendered video could not be copied to Zulora Drive:', error.message);
     }
   }
 
@@ -273,7 +289,7 @@ export async function executeVideoAgent(
     ``,
     `[📥 **Download MP4 (1080p)**](${renderResult.url}) &nbsp;•&nbsp; [↗️ **Open Video in Full Window**](${renderResult.url})`,
     ``,
-    `*Rendered with full motion graphics and saved to your Zulora Media Library & Drive.*`
+    `*Rendered with full motion graphics and saved to your Zulora Drive.*`
   ].filter(Boolean).join('\n');
 
   return {

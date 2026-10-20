@@ -210,7 +210,7 @@ export async function executeDynamicEmail(options: DynamicEmailOptions): Promise
       subject,
       to,
       htmlContent,
-      confirmation: `Delivered email to ${to}: "${subject}".`
+        confirmation: `Email dispatched successfully to ${to}.`
     };
   } catch (error: any) {
     return {

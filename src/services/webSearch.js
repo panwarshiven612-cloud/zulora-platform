@@ -7,26 +7,49 @@
 const SEARCH_CACHE = new Map();
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
-async function fetchDuckDuckGo(query) {
+function verifiedResult(title, snippet, rawUrl) {
+  try {
+    let url = new URL(String(rawUrl || ''));
+    if (/^(?:www\.)?duckduckgo\.com$/i.test(url.hostname) && url.pathname === '/l/') {
+      const destination = url.searchParams.get('uddg');
+      if (!destination) return null;
+      url = new URL(destination);
+    }
+    const host = url.hostname.toLowerCase();
+    if (!['http:', 'https:'].includes(url.protocol) || !host || host === 'localhost'
+      || host.endsWith('.localhost') || host.endsWith('.local') || /^127\.|^10\.|^192\.168\.|^169\.254\./.test(host)
+      || /^(?:www\.)?duckduckgo\.com$/i.test(host)) return null;
+    return {
+      title: String(title || host).replace(/\s+/g, ' ').trim().slice(0, 180),
+      snippet: String(snippet || '').replace(/\s+/g, ' ').trim().slice(0, 1_200),
+      url: url.href
+    };
+  } catch { return null; }
+}
+
+async function fetchDuckDuckGo(query, signal) {
   const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
-  const res = await fetch(url, { signal: AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined });
+  const timeoutSignal = AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined;
+  const combinedSignal = signal && timeoutSignal && AbortSignal.any ? AbortSignal.any([signal, timeoutSignal]) : signal || timeoutSignal;
+  const res = await fetch(url, { signal: combinedSignal });
   if (!res.ok) throw new Error(`DDG HTTP ${res.status}`);
   const data = await res.json();
   const results = [];
-  if (data.AbstractText && data.AbstractURL) {
-    results.push({ title: data.Heading || query, snippet: data.AbstractText, url: data.AbstractURL });
-  }
-  (data.RelatedTopics || []).slice(0, 5).forEach(topic => {
-    if (topic.FirstURL && topic.Text) {
-      results.push({ title: topic.Text.slice(0, 80), snippet: topic.Text, url: topic.FirstURL });
+  const add = (title, snippet, rawUrl) => {
+    const source = verifiedResult(title, snippet, rawUrl);
+    if (source && !results.some(item => item.url === source.url)) results.push(source);
+  };
+  add(data.Heading || query, data.AbstractText, data.AbstractURL);
+  const visitTopics = topics => {
+    for (const topic of Array.isArray(topics) ? topics : []) {
+      if (topic.FirstURL && topic.Text) add(topic.Text, topic.Text, topic.FirstURL);
+      if (Array.isArray(topic.Topics)) visitTopics(topic.Topics);
+      if (results.length >= 8) return;
     }
-  });
-  (data.Results || []).slice(0, 3).forEach(r => {
-    if (r.FirstURL && r.Text) {
-      results.push({ title: r.Text.slice(0, 80), snippet: r.Text, url: r.FirstURL });
-    }
-  });
-  return results;
+  };
+  visitTopics(data.RelatedTopics);
+  visitTopics(data.Results);
+  return results.slice(0, 8);
 }
 
 /**
@@ -34,7 +57,7 @@ async function fetchDuckDuckGo(query) {
  * results: Array<{ title, snippet, url }>
  * context: string for injecting into LLM prompt
  */
-export async function webSearch(query) {
+export async function webSearch(query, { signal } = {}) {
   const cacheKey = String(query || '').toLowerCase().trim();
   if (!cacheKey) return { results: [], context: '' };
 
@@ -43,8 +66,9 @@ export async function webSearch(query) {
 
   let results = [];
   try {
-    results = await fetchDuckDuckGo(query);
+    results = await fetchDuckDuckGo(query, signal);
   } catch (e) {
+    if (signal?.aborted) throw e;
     console.warn('[WebSearch] DDG failed:', e.message);
   }
 

@@ -64,6 +64,8 @@ import { firestoreService, deriveChatTitle } from '../services/firestoreService'
 import { db } from '../services/firebase';
 import { imageFileToDataUrl, readFileAsDataUrl } from '../services/imageUtils';
 import { uploadToCloudinary } from '../services/cloudinaryService';
+import { uploadGeneratedAssetToDrive } from '../services/zuloraDriveService';
+import { executeVideoAgent } from '../lib/agents/video';
 import { isExplicitBrowserAutomationIntent } from '../services/browserAutomationIntent';
 import { checkExtensionConnected, executeCommand } from '../services/browserAgentEngine';
 import CodeArtifactRunner from './CodeArtifactRunner';
@@ -138,11 +140,24 @@ const attachWebCitations = (content, sources = []) => {
   const text = String(content || '');
   const validSources = sources.filter(source => {
     try { return ['https:', 'http:'].includes(new URL(source.url).protocol); } catch { return false; }
-  });
+  }).slice(0, 8);
   if (!validSources.length) return text;
-  const missing = validSources.filter(source => !text.includes(source.url));
+  const missing = validSources.filter(source => !text.includes(`](${new URL(source.url).href})`));
   if (!missing.length) return text;
-  return `${text.trim()}\n\n${missing.map(source => `Source: [${String(source.title || new URL(source.url).hostname).replace(/[\[\]]/g, '')}](${source.url})`).join('\n')}`;
+  return `${text.trim()}\n\n**Sources**\n${missing.map(source => {
+    const url = new URL(source.url).href;
+    const title = String(source.title || new URL(url).hostname).replace(/[\[\]\\]/g, '').trim();
+    return `- [${title || new URL(url).hostname}](${url})`;
+  }).join('\n')}`;
+};
+
+const COMPLEX_CHAT_INTENT = /\b(?:research|deep dive|latest|recent news|source|citation|compare|benchmark|analy[sz]e|audit|architecture|implement|build|code|script|debug|step by step|multi[- ]step|workflow|automate|gmail|inbox|calendar|spreadsheet|google sheets|google drive|workspace|forms|send email|draft email|upload to drive|generate|create|render|animate|video|image|photo|picture|write me|plan)\b/i;
+const isSimpleChatRequest = (prompt, { attachments = [], webSearch = false } = {}) => {
+  const text = String(prompt || '').trim();
+  if (!text || attachments.length || webSearch || text.length > 360 || isCodeGenerationPrompt(text)
+    || isImageGenIntent(text) || isVideoGenIntent(text) || detectConnectorTask(text)
+    || COMPLEX_CHAT_INTENT.test(text)) return false;
+  return (text.match(/[.!?]+(?=\s|$)/g) || []).length <= 3;
 };
 
 [
@@ -488,6 +503,10 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                 </div>
               </details>}
               <MarkdownContent content={message.content} />
+              {message.emailDispatch?.success && <div role="status" className="mt-3 flex items-start gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-emerald-900 shadow-sm dark:border-emerald-900/70 dark:bg-emerald-950/30 dark:text-emerald-100">
+                <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-emerald-600 text-white"><Check className="h-3.5 w-3.5" /></span>
+                <span className="min-w-0"><span className="block text-xs font-bold">Email dispatched successfully</span><span className="mt-0.5 block break-all text-[11px]">To: {message.emailDispatch.to}</span>{message.emailDispatch.subject && <span className="mt-0.5 block text-[11px] text-emerald-800/80 dark:text-emerald-200/80">Subject: {message.emailDispatch.subject}</span>}</span>
+              </div>}
               {message.generatedVideoUrl && (
                 <div className="mt-3 space-y-2">
                   <div className="overflow-hidden rounded-xl border border-slate-200/80 bg-black dark:border-slate-800 shadow-md">
@@ -724,6 +743,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const thinkingTimerRef = useRef(null);
   const activeStreamCleanupsRef = useRef(new Set());
   const activeRequestsRef = useRef(new Map());
+  const activeGenerationControllerRef = useRef(null);
   const chatMountedRef = useRef(true);
   const modelPreferenceKey = `${CHAT_MODEL_PREFERENCE_KEY}_${currentUser?.uid || 'guest'}`;
   const skipModelPreferenceWriteRef = useRef(false);
@@ -744,7 +764,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     skipModelPreferenceWriteRef.current = true;
     const sessionModel = activeSession?.modelPreference || activeSession?.model;
     const stored = readStoredModelPreference(modelPreferenceKey) || readStoredModelPreference('zulora_chat_model_preference') || 'auto';
-    if (sessionModel && sessionModel !== 'auto') {
+    if (typeof sessionModel === 'string' && sessionModel.trim()) {
       setModelPreference(sessionModel);
     } else {
       setModelPreference(stored);
@@ -778,6 +798,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     return () => {
       chatMountedRef.current = false;
       clearTimeout(thinkingTimerRef.current);
+      activeGenerationControllerRef.current?.abort();
       for (const cleanup of activeStreamCleanupsRef.current) cleanup();
       activeStreamCleanupsRef.current.clear();
     };
@@ -1120,7 +1141,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   }, [messages]);
 
   const sendMessage = useCallback(async (promptOverride = null) => {
-    if (loading || sendingRef.current) return;
+    if (sendingRef.current) return;
     const hasAttachments = attachments.length > 0;
     if (attachments.some(file => isRemoteMediaAttachment(file) && mediaUploadStates.get(file)?.status !== 'complete')) return;
     const basePrompt = String(promptOverride ?? inputPrompt).trim() || (hasAttachments ? 'Please analyze the attached image or document.' : '');
@@ -1128,21 +1149,36 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 
     const codeGenerationRequest = isCodeGenerationPrompt(basePrompt);
     const highTierCodeRequest = codeGenerationRequest && (modelPreference === 'think' || modelPreference === 'pro' || /-pro(?:-|$)/i.test(modelPreference));
+    const simpleQuery = isSimpleChatRequest(basePrompt, { attachments, webSearch: enableWebSearch });
+    const generationController = new AbortController();
+    activeGenerationControllerRef.current = generationController;
+    setLoading(true);
+    const finishPreparation = () => {
+      if (activeGenerationControllerRef.current === generationController) {
+        activeGenerationControllerRef.current = null;
+        setLoading(false);
+      }
+      sendingRef.current = false;
+    };
     sendingRef.current = true;
     let allowance;
     try {
       allowance = currentUser?.uid
-        ? await checkUsage('chat', { skipTokenLimit: highTierCodeRequest })
+        ? simpleQuery
+          ? { allowed: true }
+          : await checkUsage('chat', { skipTokenLimit: highTierCodeRequest })
         : guestGate.check();
     } catch (error) {
-      sendingRef.current = false;
+      finishPreparation();
+      if (generationController.signal.aborted) return;
       if (!currentUser?.uid) setShowGuestUpgrade(true);
       console.warn('Could not check chat usage:', error.message);
       setIsUsageModalOpen(true);
       return;
     }
+    if (generationController.signal.aborted) { finishPreparation(); return; }
     if (!allowance.allowed) {
-      sendingRef.current = false;
+      finishPreparation();
       if (!currentUser?.uid) setShowGuestUpgrade(true);
       return;
     }
@@ -1181,10 +1217,12 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         }
       }
     } catch (error) {
-      sendingRef.current = false;
+      finishPreparation();
+      if (generationController.signal.aborted) return;
       alert(error.message || 'Could not read the attached file. Please choose another file.');
       return;
     }
+    if (generationController.signal.aborted) { finishPreparation(); return; }
 
     const userMsg = {
       id: Date.now().toString(),
@@ -1226,7 +1264,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     let streamedProvider = null;
     let thinkingSteps = [];
     let hasLoggedFirstToken = false;
-    const shouldShowThinkingBox = true;
+    const shouldShowThinkingBox = !simpleQuery;
     const defaultModelLabel = getZuloraEngineLabel(modelPreference);
 
     const publishAssistant = (streaming = true) => {
@@ -1333,31 +1371,34 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     try {
       // Save the user turn before inference so navigation or reloads do not lose it.
       if (currentUser?.uid) {
-        await firestoreService.saveChatSession(currentUser.uid, sessionId, pendingSession);
+        const saveTurn = firestoreService.saveChatSession(currentUser.uid, sessionId, pendingSession);
+        if (simpleQuery) saveTurn.catch(error => console.warn('Chat session save failed:', error.message));
+        else await saveTurn;
         firestoreService.recordUserHistory(currentUser.uid, {
           type: enableWebSearch ? 'search' : 'prompt',
           prompt: basePrompt
         });
       }
       const contextMessages = buildContextMessages();
-      const contextMemory = currentUser?.uid
+      const contextMemory = !simpleQuery && currentUser?.uid
         ? await firestoreService.getRecentActivityContext(currentUser.uid)
         : [];
-      const aiBrain = currentUser?.uid
+      const aiBrain = !simpleQuery && currentUser?.uid
         ? await firestoreService.getAiBrain(currentUser.uid)
         : null;
-      const userVault = currentUser?.uid
+      const userVault = !simpleQuery && currentUser?.uid
         ? await firestoreService.getVault(currentUser.uid)
         : null;
-      pushThinkingStep('Checking active connectors and request context', 'done');
-      const detectedConnector = detectConnectorTask(basePrompt);
+      if (generationController.signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+      if (!simpleQuery) pushThinkingStep('Checking active connectors and request context', 'done');
+      const detectedConnector = simpleQuery ? null : detectConnectorTask(basePrompt);
       const trackEmailAction = detectedConnector === 'gmail'
         && /\b(send|draft|compose)\b/i.test(basePrompt)
         && /\bto\s+[\w.+-]+@[\w.-]+\.[a-z]{2,}/i.test(basePrompt)
         && /\bsubject\b/i.test(basePrompt)
         && /\b(body|message|saying)\b/i.test(basePrompt);
       let browserTask = null;
-      if (isExplicitBrowserAutomationIntent(basePrompt) && !codeGenerationRequest) {
+      if (!simpleQuery && isExplicitBrowserAutomationIntent(basePrompt) && !codeGenerationRequest) {
         if (!await checkExtensionConnected()) {
           browserTask = {
             handled: true,
@@ -1404,7 +1445,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         }
         }
       }
-      const modelToolProvider = ['gmail', 'calendar', 'sheets', 'forms', 'drive'].includes(detectedConnector)
+      const modelToolProvider = !simpleQuery && ['gmail', 'calendar', 'sheets', 'forms', 'drive'].includes(detectedConnector)
         && connectorManager.getActiveGoogleProviders().includes(detectedConnector);
       const executeNativeConnector = () => executeConnectorTask(basePrompt, {
         onStatus: status => {
@@ -1413,7 +1454,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         },
         onLog: entry => pushThinkingStep(entry.label, entry.status, entry.detail)
       });
-      const connectorTask = browserTask?.handled || modelToolProvider || detectedConnector === 'drive' ? null : trackEmailAction
+      const connectorTask = simpleQuery || browserTask?.handled || modelToolProvider || detectedConnector === 'drive' ? null : trackEmailAction
         ? await backgroundTaskManager.runTracked('email', `Gmail action: ${basePrompt.slice(0, 64)}`, async updateProgress => {
           updateProgress(5);
           const result = await executeNativeConnector();
@@ -1421,7 +1462,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           return result;
         }).promise
         : await executeNativeConnector();
-      const driveTask = browserTask?.handled || connectorTask?.handled
+      const driveTask = simpleQuery || browserTask?.handled || connectorTask?.handled
         ? null
         : await executeDriveChatIntent(basePrompt, { files: attachments });
       const directTask = browserTask?.handled
@@ -1484,8 +1525,22 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       if (imageGenRequest) {
         pushThinkingStep('Generating image with AI 🎨', 'running');
         try {
-          const imgResult = await apiRouter.generateImage(basePrompt, { currentUser, referenceImage: hasImageAttach ? attachmentPayloads[0]?.base64 : null });
+          const imgResult = await apiRouter.generateImage(basePrompt, { currentUser, referenceImage: hasImageAttach ? attachmentPayloads[0]?.base64 : null, signal: generationController.signal });
           const imgUrl = imgResult?.url || imgResult?.imageUrl;
+          if (!imgUrl) throw new Error('Image generation returned no downloadable image.');
+          let assetNotice = '';
+          if (currentUser?.uid) {
+            await firestoreService.saveAsset(currentUser.uid, { type: 'image', url: imgUrl, prompt: basePrompt, provider: imgResult.provider || 'Zulora AI' })
+              .catch(error => console.warn('Generated image could not be added to the Library:', error.message));
+          }
+          if (driveAuth.currentUser) {
+            try {
+              const driveFile = await uploadGeneratedAssetToDrive({ type: 'image', url: imgUrl, fileName: `zulora-image-${Date.now()}.png`, folderPath: 'Generated Media' });
+              assetNotice = `\n\nSaved to your Zulora Library and Drive as ${driveFile.name || 'a generated image'}.`;
+            } catch (error) {
+              assetNotice = `\n\nAdded to your Zulora Library. Drive sync failed: ${error.message}`;
+            }
+          } else if (currentUser?.uid) assetNotice = '\n\nAdded to your Zulora Library.';
           const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
           setQueryTime(elapsed);
           pushThinkingStep('Image ready', 'done');
@@ -1497,6 +1552,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             generatedImageUrl: imgUrl, queryTime: elapsed,
             thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps] : undefined
           };
+          aiMsg.content += assetNotice;
           const finalMessages = [...newMessages.filter(message => message.id !== assistantId), aiMsg];
           if (isRequestCurrent()) setMessages(previous => [...previous.filter(message => message.id !== assistantId), aiMsg]);
           await recordUsage('image', false, 0);
@@ -1506,6 +1562,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           if (isRequestCurrent()) onUpdateSession?.({ id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: modelPreference, modelPreference, pending: false });
           return;
         } catch (imgErr) {
+          if (generationController.signal.aborted) throw imgErr;
           pushThinkingStep('Image could not be generated', 'error', imgErr.message);
           // fall through to LLM
         }
@@ -1522,11 +1579,14 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
               pushThinkingStep('Rendering video', 'running', `${videoProgress}%`);
             }, 1_500);
             try {
-              return await apiRouter.generateVideo(basePrompt, {
+              return await executeVideoAgent(basePrompt, {
                 currentUser,
+                signal: generationController.signal,
+                duration: 8,
+                aspectRatio: '16:9',
                 onProgress: progress => {
                   const phase = String(progress?.phase || '').toLowerCase();
-                  const phaseProgress = phase.includes('ready') ? 100 : phase.includes('playback') ? 92 : phase.includes('another provider') ? 36 : phase.includes('generating') ? 18 : 6;
+                  const phaseProgress = phase.includes('done') || phase.includes('ready') ? 100 : phase.includes('upload') ? 92 : phase.includes('render') ? 65 : phase.includes('generating') ? 35 : 6;
                   videoProgress = Math.max(videoProgress, Number(progress?.percent) || phaseProgress);
                   updateProgress(videoProgress);
                   pushThinkingStep('Rendering video frames', 'running', `${videoProgress}%`);
@@ -1538,6 +1598,25 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           });
           const vidResult = await videoTask.promise;
           const vidUrl = vidResult?.url || vidResult?.videoUrl;
+          if (!vidUrl) throw new Error('Video generation returned no playable MP4.');
+          let assetNotice = '';
+          if (currentUser?.uid) {
+            await firestoreService.saveAsset(currentUser.uid, {
+              type: 'video', url: vidUrl, prompt: basePrompt, provider: 'HTML Motion Renderer', model: 'Playwright + FFmpeg', fileType: 'video/mp4'
+            }).catch(error => console.warn('Generated video could not be added to the Library:', error.message));
+          }
+          if (driveAuth.currentUser) {
+            if (vidResult.driveFile) {
+              assetNotice = `\n\nSaved to your Zulora Library and Drive as ${vidResult.driveFile.name || 'a generated video'}.`;
+            } else {
+              try {
+                const driveFile = await uploadGeneratedAssetToDrive({ type: 'video', url: vidUrl, fileType: 'video/mp4', fileName: `zulora-video-${Date.now()}.mp4`, folderPath: 'Generated Media' });
+                assetNotice = `\n\nSaved to your Zulora Library and Drive as ${driveFile.name || 'a generated video'}.`;
+              } catch (error) {
+                assetNotice = `\n\nAdded to your Zulora Library. Drive sync failed: ${error.message}`;
+              }
+            }
+          } else if (currentUser?.uid) assetNotice = '\n\nAdded to your Zulora Library.';
           const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
           setQueryTime(elapsed);
           pushThinkingStep('Video ready', 'done', '100%');
@@ -1549,6 +1628,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             generatedVideoUrl: vidUrl, queryTime: elapsed,
             thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps] : undefined
           };
+          aiMsg.content = `Here's your HTML-rendered AI video!\n\n[Download MP4](${vidUrl})${assetNotice}\n\n*Rendered with Playwright and FFmpeg.*`;
           const finalMessages = [...newMessages.filter(message => message.id !== assistantId), aiMsg];
           if (isRequestCurrent()) setMessages(previous => [...previous.filter(message => message.id !== assistantId), aiMsg]);
           await recordUsage('video', false, 0);
@@ -1558,6 +1638,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           if (isRequestCurrent()) onUpdateSession?.({ id: sessionId, title: sessionTitle, messages: finalMessages, updatedAt: Date.now(), model: modelPreference, modelPreference, pending: false });
           return;
         } catch (vidErr) {
+          if (generationController.signal.aborted) throw vidErr;
           pushThinkingStep('Video could not be generated', 'error', vidErr.message);
         }
       }
@@ -1568,6 +1649,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           model: browserTask?.handled ? 'Computer Plugin' : connectorTask?.handled ? 'Zulora Connectors' : 'Zulora Drive',
           provider: browserTask?.handled ? 'Browser Automation' : connectorTask?.handled ? 'Native API Connectors' : 'Zulora Drive Tools',
           connectorData: directTask.data,
+          emailDispatch: directTask.emailDispatch,
           connectorBadge: directTask.executed === true
             ? browserTask?.handled ? '💻 Computer Agent Plugin'
               : directTask.provider === 'gmail' ? '📧 Gmail Connector'
@@ -1584,13 +1666,15 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           model: modelPreference,
           modelPreference: modelPreference,
           webSearch: enableWebSearch,
+          simpleQuery,
+          signal: generationController.signal,
           userId: currentUser?.uid,
           currentUser,
           contextMemory,
           aiBrain,
           userVault,
           guestMode: Boolean(guestMode && !currentUser?.uid),
-          connectorContext,
+          connectorContext: simpleQuery ? '' : connectorContext,
           attachments: [...attachmentPayloads, ...(driveTask?.attachments || [])],
           onProgress: entry => pushThinkingStep(entry.label, entry.status, entry.detail),
           onToken: token => {
@@ -1668,7 +1752,22 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       thinkingSteps = thinkingSteps.map(step => step.status === 'running' ? { ...step, status: 'done' } : step);
       let rawResponseText = result.text || streamedText || 'I encountered an issue generating a response. Please try again.';
 
-      const responseText = attachWebCitations(rawResponseText, result.sources || []);
+      const sentEmail = (result.connectorData || []).find(item =>
+        item?.executionVerified === true
+        && /^(?:gmail_send_email|send_email|send_gmail|send_rich_email)$/.test(item.name || '')
+        && item.result?.verified === true
+        && item.result?.id && item.result?.threadId
+      );
+      const emailDispatch = result.emailDispatch || (sentEmail ? {
+        success: true,
+        to: sentEmail.result.to || sentEmail.result.recipient || '',
+        subject: sentEmail.result.subject || '',
+        messageId: sentEmail.result.id,
+        threadId: sentEmail.result.threadId
+      } : null);
+      const responseText = emailDispatch?.success
+        ? `Email dispatched successfully to ${emailDispatch.to}.`
+        : attachWebCitations(rawResponseText, result.sources || []);
 
       const aiMsg = {
         id: assistantId,
@@ -1689,6 +1788,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         // MODULE 2: Dynamic connector badge from real API execution
         connectorBadge: result.connectorBadge || '',
         connectorData: result.connectorData || [],
+        emailDispatch: emailDispatch?.success ? emailDispatch : undefined,
       };
 
       if (!isRequestCurrent() && currentUser?.uid) {
@@ -1748,6 +1848,15 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       const error = err && typeof err === 'object'
         ? err
         : new Error(String(err || 'Unknown error'));
+      if (generationController.signal.aborted || error.name === 'AbortError') {
+        if (isRequestCurrent()) setMessages(previous => previous.flatMap(message => {
+          if (message.id !== assistantId) return [message];
+          return message.content
+            ? [{ ...message, streaming: false, thinkingSteps: undefined }]
+            : [];
+        }));
+        return;
+      }
       console.error('Chat error:', error);
       if (error.status === 429 || (error.payload?.upgradeRequired && error.payload?.usage?.blocked)) {
         if (isRequestCurrent()) setMessages(prev => prev.filter(m => m.id !== assistantId));
@@ -1786,6 +1895,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     } finally {
       clearTimeout(thinkingTimerRef.current);
       activeRequestsRef.current.delete(assistantId);
+      if (activeGenerationControllerRef.current === generationController) activeGenerationControllerRef.current = null;
       const activeSessionId = lastActiveSessionIdRef.current;
       const sessionStillProcessing = Array.from(activeRequestsRef.current.values()).includes(activeSessionId);
       if (isRequestCurrent()) setShowThinking(sessionStillProcessing);
@@ -1875,7 +1985,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           fileInputRef={fileInputRef}
           cameraInputRef={cameraInputRef}
           onFileSelect={handleFileSelect}
-          isSendDisabled={loading || hasPendingMediaUpload}
+          isSendDisabled={hasPendingMediaUpload}
+          isGenerating={loading}
+          onStopGeneration={() => activeGenerationControllerRef.current?.abort()}
           mediaUploadProgress={mediaUploadProgress}
           showMoreTools={showMoreTools}
           onToggleMoreTools={() => setShowMoreTools(value => !value)}

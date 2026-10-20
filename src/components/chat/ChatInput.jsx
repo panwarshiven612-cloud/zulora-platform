@@ -4,6 +4,7 @@ import {
   MicOff, 
   Radio, 
   Send, 
+  StopCircle,
   Paperclip, 
   Camera, 
   Globe, 
@@ -34,7 +35,9 @@ export default function ChatInput({
   mediaUploadProgress = null,
   enableWebSearch = false,
   onToggleWebSearch,
-  onOpenConnectors
+  onOpenConnectors,
+  isGenerating = false,
+  onStopGeneration
 }) {
   const textareaRef = useRef(null);
 
@@ -262,17 +265,19 @@ export default function ChatInput({
         <div className="shrink-0 flex items-center">
           <button
             type="button"
-            onClick={() => onSendMessage()}
-            disabled={!canSend}
-            aria-label="Send message"
-            title="Send message"
-            className={`h-8 w-8 sm:h-8.5 sm:w-8.5 flex items-center justify-center rounded-xl font-semibold transition-all duration-200 ${
-              canSend
-                ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-md shadow-sky-500/25 hover:from-sky-600 hover:to-blue-700 active:scale-95'
-                : 'cursor-not-allowed bg-slate-100 dark:bg-slate-800/50 text-slate-400 dark:text-slate-600'
+            onClick={() => isGenerating ? onStopGeneration?.() : onSendMessage()}
+            disabled={isGenerating ? false : !canSend}
+            aria-label={isGenerating ? 'Stop generation' : 'Send message'}
+            title={isGenerating ? 'Stop generation' : 'Send message'}
+            className={`h-9 w-9 sm:h-9 sm:w-9 flex items-center justify-center rounded-full font-semibold transition-all duration-200 ${
+              isGenerating
+                ? 'animate-pulse bg-rose-500 text-white shadow-md shadow-rose-500/30 hover:bg-rose-600 active:scale-90'
+                : canSend
+                  ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-md shadow-sky-500/25 hover:from-sky-600 hover:to-blue-700 active:scale-95'
+                  : 'cursor-not-allowed bg-slate-100 dark:bg-slate-800/50 text-slate-400 dark:text-slate-600'
             }`}
           >
-            <Send className="h-4 w-4 shrink-0" />
+            {isGenerating ? <StopCircle className="h-5 w-5 shrink-0" /> : <Send className="h-4 w-4 shrink-0" />}
           </button>
         </div>
       </div>

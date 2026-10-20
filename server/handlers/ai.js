@@ -178,17 +178,26 @@ function firestoreAdminCredentials() {
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 20_000) {
   const controller = new AbortController();
+  const externalSignal = options.signal;
+  const abortFromCaller = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) controller.abort(externalSignal.reason);
+  else externalSignal?.addEventListener('abort', abortFromCaller, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try { return await fetch(url, { ...options, signal: controller.signal }); }
-  finally { clearTimeout(timer); }
+  finally {
+    clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', abortFromCaller);
+  }
 }
 
 async function fetchProviderWithRetry(url, options, timeoutMs = 16_000, maxAttempts = 3) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
     let response;
     try {
       response = await fetchWithTimeout(url, options, timeoutMs);
     } catch (error) {
+      if (options.signal?.aborted) throw error;
       if (attempt === maxAttempts - 1) throw error;
       await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
       continue;
@@ -736,7 +745,7 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
         }
       }
       const response = await fetchProviderWithRetry(config.url, {
-        method: 'POST', headers,
+        method: 'POST', headers, signal: options.signal,
         body: JSON.stringify(requestBody)
       }, options.stream ? 12_000 : 15_000, 1);
       if (response.ok) {
@@ -758,6 +767,7 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
       console.warn(`${config.label} text request failed with HTTP ${response.status}.`);
       apiKeyPool.failed(provider, index, parseRetryAfter(response));
     } catch (error) {
+      if (options.signal?.aborted) throw error;
       console.warn(`${config.label} text request failed:`, error.message);
       apiKeyPool.failed(provider, index);
       if (options.stream && options.streamState?.sent) {
@@ -788,7 +798,7 @@ async function tryGemini(messages, options = {}) {
       const model = options.model || GEMINI_FLASH_MODEL_ID;
       const endpoint = options.stream ? 'streamGenerateContent?alt=sse' : 'generateContent';
       const response = await fetchProviderWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${model}:${endpoint}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key }, signal: options.signal,
         body: JSON.stringify({
           contents,
           ...(systemPrompt ? { system_instruction: { parts: [{ text: systemPrompt }] } } : {}),
@@ -825,6 +835,7 @@ async function tryGemini(messages, options = {}) {
         apiKeyPool.failed('gemini', index, parseRetryAfter(response));
       } else apiKeyPool.advance('gemini', index);
     } catch (error) {
+      if (options.signal?.aborted) throw error;
       console.warn('Google Gemini text request failed:', error.message);
       apiKeyPool.failed('gemini', index);
       if (options.stream && options.streamState?.sent) {
@@ -857,7 +868,7 @@ async function tryPollinationsText(messages, options = {}) {
     const combined = sysPrompt ? `${sysPrompt}\n\nUser: ${userPrompt}` : userPrompt;
     if (!combined.trim()) return null;
     const url = `https://text.pollinations.ai/${encodeURIComponent(combined.slice(0, 3500))}?model=mistral`;
-    const res = await fetchWithTimeout(url, { method: 'GET' }, options.stream ? 12_000 : 15_000);
+    const res = await fetchWithTimeout(url, { method: 'GET', signal: options.signal }, options.stream ? 12_000 : 15_000);
     if (res.ok) {
       const text = await res.text();
       if (typeof text === 'string' && text.trim()) {
@@ -871,6 +882,7 @@ async function tryPollinationsText(messages, options = {}) {
       }
     }
   } catch (err) {
+    if (options.signal?.aborted) throw err;
     console.warn('[Pollinations safety net failed]:', err?.message || 'network timeout');
   }
   return null;
@@ -924,11 +936,12 @@ function chooseChatOrder(preference) {
 
 async function generateChat(body, streamOptions = {}) {
   const requestedPreference = normalizeModelPreference(body.modelPreference || body.model);
+  const simpleQuery = body.simpleQuery === true;
   const flagship = requestedPreference === 'gemini-2.5-pro' || requestedPreference === 'think';
   const latestUserPrompt = [...(Array.isArray(body.messages) ? body.messages : [])].reverse().find(message => message?.role === 'user')?.content || '';
   let searchResults = Array.isArray(body.searchResults) ? body.searchResults : [];
   if (body.enableWebSearch && !searchResults.length && latestUserPrompt) {
-    try { searchResults = (await webSearch(latestUserPrompt)).results || []; }
+    try { searchResults = (await webSearch(latestUserPrompt, { signal: streamOptions.signal })).results || []; }
     catch (error) { console.warn('[Chat] Research search failed:', error?.message || 'search unavailable'); }
   }
   searchResults = searchResults.filter(source => {
@@ -944,7 +957,7 @@ async function generateChat(body, streamOptions = {}) {
     : '';
   const systemPrompt = [
     buildSystemPrompt(body.contextMemory, new Date(), body.aiBrain, body.userVault),
-    activeWorkspaceSystemContext(body.activeConnectorProviders),
+    simpleQuery ? '' : activeWorkspaceSystemContext(body.activeConnectorProviders),
     flagship ? FLAGSHIP_SYSTEM_PROMPT : '',
     body.studioMode ? AI_STUDIO_SYSTEM_PROMPT : '',
     researchContext
@@ -980,6 +993,7 @@ async function generateChat(body, streamOptions = {}) {
         });
       if (result) return { ...result, ...(body.enableWebSearch ? { sources: searchResults } : {}) };
     } catch (error) {
+      if (streamOptions.signal?.aborted) throw error;
       console.warn(`${provider} chat generation failed; trying the next fallback:`, error?.message || 'provider error');
       if (streamOptions.stream && streamOptions.streamState?.sent) {
         streamOptions.onReset?.();
@@ -995,6 +1009,7 @@ async function generateChat(body, streamOptions = {}) {
       return { ...pollinationsResult, ...(body.enableWebSearch ? { sources: searchResults } : {}) };
     }
   } catch (error) {
+    if (streamOptions.signal?.aborted) throw error;
     console.warn('[Pollinations safety net fallback failed]:', error?.message);
   }
 
@@ -1528,7 +1543,7 @@ export default async function handler(req, res) {
     try { uid = await verifyUser(req); }
     catch { return safeError(res, 503, 'Could not verify sign-in. Please retry.'); }
     if (!uid) return safeError(res, 401, 'Your sign-in session has expired. Sign in again.');
-    if (type === 'chat' && Array.isArray(body.activeConnectorProviders) && body.activeConnectorProviders.length) {
+    if (type === 'chat' && body.simpleQuery !== true && Array.isArray(body.activeConnectorProviders) && body.activeConnectorProviders.length) {
       try {
         const session = await loadGoogleSession(uid, token, String(req.headers.cookie || ''));
         body = { ...body, activeConnectorProviders: googleSessionStatus(session).enabledProviders };
@@ -1629,7 +1644,14 @@ export default async function handler(req, res) {
       res.setHeader('X-Accel-Buffering', 'no');
       const activeProvider = { provider: 'Zulora AI', model: clientVisibleEngine };
       let announcedProvider = '';
+      const requestController = new AbortController();
+      const abortDisconnectedRequest = () => {
+        if (!res.writableEnded) requestController.abort(new DOMException('The client disconnected.', 'AbortError'));
+      };
+      req.once('aborted', abortDisconnectedRequest);
+      res.once('close', abortDisconnectedRequest);
       const sendEvent = (name, data) => {
+        if (requestController.signal.aborted || res.destroyed || res.writableEnded) return;
         try {
           if (!res.headersSent) res.flushHeaders?.();
           res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -1643,6 +1665,7 @@ export default async function handler(req, res) {
       try {
         const output = await generateChat(body, {
           stream: true,
+          signal: requestController.signal,
           streamState,
           onProvider: () => {
             activeProvider.provider = 'Zulora AI';
@@ -1662,6 +1685,7 @@ export default async function handler(req, res) {
           },
           onReset: () => sendEvent('reset', {})
         });
+        if (requestController.signal.aborted) return res.end();
         let usage = { type, tracked: false };
         if (usageTrackingAvailable) {
           try {
@@ -1673,10 +1697,14 @@ export default async function handler(req, res) {
         }
         sendEvent('done', { ...maskClientChatMetadata(output, preference), usage });
       } catch (error) {
+        if (requestController.signal.aborted) return res.end();
         console.warn('Top-level SSE catch triggered; recovering gracefully:', error?.message);
         const fallbackText = "I encountered a brief connection spike with the primary server, but I am ready. Please re-send your message to reconnect immediately.";
         sendEvent('token', { token: fallbackText });
         sendEvent('done', { text: fallbackText, provider: 'Zulora Resilient Fallback', model: 'fallback-cluster', usage: { type, tracked: false } });
+      } finally {
+        req.off('aborted', abortDisconnectedRequest);
+        res.off('close', abortDisconnectedRequest);
       }
       return res.end();
     }

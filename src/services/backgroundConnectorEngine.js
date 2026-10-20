@@ -324,7 +324,15 @@ export async function executeConnectorTask(prompt, { onStatus = () => {} } = {})
           return { handled: true, executed: true, provider, data: draft, text: `Created a Gmail draft to ${to} with the subject “${subject}”.` };
         }
         const sent = await connectorManager.sendGmailMessage({ to, subject, body });
-        return { handled: true, executed: sent.verified === true && Boolean(sent.id && sent.threadId), provider, data: sent, text: `Sent the email to ${to} with the subject “${subject}”.` };
+        const verified = sent.verified === true && Boolean(sent.id && sent.threadId);
+        return {
+          handled: true,
+          executed: verified,
+          provider,
+          data: sent,
+          emailDispatch: verified ? { success: true, to, subject, messageId: sent.id, threadId: sent.threadId } : undefined,
+          text: verified ? `Email dispatched successfully to ${to}.` : 'Gmail did not confirm delivery; the email was not reported as sent.'
+        };
       }
       const allToday = /\ball\b.{0,30}\btoday\b|\btoday\b.{0,30}\ball\b/i.test(request);
       const emails = await readRecentGmail(extractMessageCount(request), gmailQueryFromPrompt(request), allToday);
