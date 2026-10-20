@@ -61,7 +61,7 @@ import { driveAuth } from '../config/firebaseDrive';
 import { isCodeGenerationPrompt, isImageGenIntent } from '../services/aiModels';
 import { firestoreService, deriveChatTitle } from '../services/firestoreService';
 import { db } from '../services/firebase';
-import { imageFileToDataUrl, readFileAsDataUrl } from '../services/imageUtils';
+import { readFileAsDataUrl } from '../services/imageUtils';
 import { uploadGeneratedAssetToDrive } from '../services/zuloraDriveService';
 import { executeVideoAgent } from '../lib/agents/video';
 import { isExplicitBrowserAutomationIntent } from '../services/browserAutomationIntent';
@@ -137,62 +137,7 @@ const requestedVideoDuration = prompt => {
 const isImageEditIntent = (prompt, hasImageAttachment) => hasImageAttachment && IMAGE_EDIT_REGEX.test(String(prompt || ''));
 const isVideoGenIntent = prompt => VIDEO_GEN_REGEX.test(String(prompt || ''));
 const isVideoEditIntent = prompt => /\b(?:caption|subtitle|kinetic|motion graphics?|transcribe|edit|trim|crop|add text|overlay|remove audio|replace audio)\b/i.test(String(prompt || ''));
-const createAbortError = () => new DOMException('The operation was aborted.', 'AbortError');
-const waitForMediaEvent = (target, eventName, signal) => new Promise((resolve, reject) => {
-  const cleanup = () => {
-    target.removeEventListener(eventName, onReady);
-    target.removeEventListener('error', onError);
-    signal?.removeEventListener('abort', onAbort);
-  };
-  const onReady = () => { cleanup(); resolve(); };
-  const onError = () => { cleanup(); reject(new Error('The selected video could not be decoded.')); };
-  const onAbort = () => { cleanup(); reject(createAbortError()); };
-  if (signal?.aborted) return onAbort();
-  target.addEventListener(eventName, onReady, { once: true });
-  target.addEventListener('error', onError, { once: true });
-  signal?.addEventListener('abort', onAbort, { once: true });
-});
-
-async function videoFileToFrameDataUrls(file, signal) {
-  const objectUrl = URL.createObjectURL(file);
-  const video = document.createElement('video');
-  video.preload = 'metadata';
-  video.muted = true;
-  video.playsInline = true;
-  try {
-    video.src = objectUrl;
-    await waitForMediaEvent(video, 'loadedmetadata', signal);
-    if (video.readyState < 2) await waitForMediaEvent(video, 'loadeddata', signal);
-    if (signal?.aborted) throw createAbortError();
-    const duration = Number(video.duration);
-    if (!Number.isFinite(duration) || duration <= 0) throw new Error('The selected video has no readable frames.');
-    const frameTimes = [...new Set([0.08, 0.34, 0.66, 0.92].map(fraction => Math.max(0, Math.min(duration - 0.05, duration * fraction))))];
-    const canvas = document.createElement('canvas');
-    const scale = Math.min(1, 1024 / Math.max(video.videoWidth || 1, video.videoHeight || 1));
-    canvas.width = Math.max(1, Math.round((video.videoWidth || 1) * scale));
-    canvas.height = Math.max(1, Math.round((video.videoHeight || 1) * scale));
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('Could not prepare video frames for analysis.');
-    const frames = [];
-    for (const time of frameTimes) {
-      if (signal?.aborted) throw createAbortError();
-      if (Math.abs(video.currentTime - time) > 0.01) {
-        const seeked = waitForMediaEvent(video, 'seeked', signal);
-        video.currentTime = time;
-        await seeked;
-      }
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
-      frames.push({ mimeType: 'image/jpeg', base64: canvas.toDataURL('image/jpeg', 0.78), time });
-    }
-    return frames;
-  } finally {
-    video.pause();
-    video.removeAttribute('src');
-    video.load();
-    video.remove();
-    URL.revokeObjectURL(objectUrl);
-  }
-}
+const MAX_INLINE_ATTACHMENT_BYTES = 2_700_000;
 const safeChatError = error => {
   const message = String(error?.message || 'The response could not be completed. Please try again.');
   return /(?:Gemini|Groq|Cerebras|OpenRouter|Mistral|ElevenLabs|provider|HTTP\s*\d{3}|\b(?:401|403|408|425|429|500|503)\b|API key|rate.?limit|timeout|timed out|network|fetch failed|overloaded|generation failed)/i.test(message)
@@ -853,6 +798,17 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     }
   }, [activeSession, modelPreferenceKey, onUpdateSession]);
 
+  const stopGeneration = useCallback(() => {
+    const controller = activeGenerationControllerRef.current;
+    if (!controller) return;
+    controller.abort();
+    activeGenerationControllerRef.current = null;
+    sendingRef.current = false;
+    setLoading(false);
+    setShowThinking(false);
+    setMediaAnalysisStatus('');
+  }, []);
+
   useEffect(() => {
     chatMountedRef.current = true;
     return () => {
@@ -1085,9 +1041,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       if (isPdfAttachment(file) && file.size > 3 * 1024 * 1024) {
         pending = Promise.reject(new Error('PDFs must be 3 MB or smaller to attach. Save a smaller copy and try again.'));
       } else {
-        pending = isImageAttachment(file)
-          ? imageFileToDataUrl(file, { maxDimension: 1536, maxBytes: 1_200_000, signal })
-          : readFileAsDataUrl(file, signal);
+        // Keep original image/video bytes; native multimodal input avoids
+        // canvas resizing and frame extraction before the model request.
+        pending = readFileAsDataUrl(file, signal);
       }
       preparedAttachmentDataRef.current.set(file, pending);
       pending.catch(() => preparedAttachmentDataRef.current.delete(file));
@@ -1149,19 +1105,15 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     const simpleQuery = isSimpleChatRequest(basePrompt, { attachments, webSearch: enableWebSearch });
     const generationController = new AbortController();
     activeGenerationControllerRef.current = generationController;
-    setMediaAnalysisStatus(attachments.some(file => isImageAttachment(file))
-      ? 'Analysing the image...'
-      : attachments.some(file => attachmentMimeType(file).startsWith('video/'))
-        ? 'Analysing the video...'
-        : '');
+    setMediaAnalysisStatus('');
     setLoading(true);
     const finishPreparation = () => {
       if (activeGenerationControllerRef.current === generationController) {
         activeGenerationControllerRef.current = null;
         setLoading(false);
+        setMediaAnalysisStatus('');
+        sendingRef.current = false;
       }
-      setMediaAnalysisStatus('');
-      sendingRef.current = false;
     };
     sendingRef.current = true;
     let allowance;
@@ -1173,7 +1125,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         : guestGate.check();
     } catch (error) {
       finishPreparation();
-      setMediaAnalysisStatus('');
       if (generationController.signal.aborted) return;
       if (!currentUser?.uid) setShowGuestUpgrade(true);
       console.warn('Could not check chat usage:', error.message);
@@ -1183,7 +1134,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     if (generationController.signal.aborted) { finishPreparation(); return; }
     if (!allowance.allowed) {
       finishPreparation();
-      setMediaAnalysisStatus('');
       if (!currentUser?.uid) setShowGuestUpgrade(true);
       return;
     }
@@ -1200,7 +1150,15 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         const videoFiles = attachments.filter(file => attachmentMimeType(file).startsWith('video/'));
         const textFiles = attachments.filter(file => !isImageAttachment(file) && !isPdfAttachment(file) && !attachmentMimeType(file).startsWith('video/'));
         const shouldRenderVideoEdit = videoFiles.length > 0 && isVideoEditIntent(basePrompt);
-        if (videoFiles.length) setMediaAnalysisStatus(shouldRenderVideoEdit ? 'Analysing the video...' : 'Splitting the video into key frames...');
+        const directVideoFiles = shouldRenderVideoEdit ? [] : videoFiles;
+        if (imageFiles.some(file => !/^image\/(?:png|jpe?g|webp|gif|heic|heif)$/i.test(attachmentMimeType(file)))) {
+          throw new Error('Direct image analysis supports PNG, JPEG, WebP, GIF, HEIC, and HEIF.');
+        }
+        const inlineFiles = [...imageFiles, ...pdfFiles, ...directVideoFiles];
+        const inlineBytes = inlineFiles.reduce((total, file) => total + Number(file.size || 0), 0);
+        if (inlineBytes > MAX_INLINE_ATTACHMENT_BYTES) {
+          throw new Error('For direct in-chat analysis, keep attached images, videos, and PDFs under 2.7 MB total.');
+        }
         const inlineAttachments = await Promise.all([...imageFiles, ...pdfFiles].map(async file => {
           if (isPdfAttachment(file) && file.size > 3 * 1024 * 1024) {
             throw new Error('PDFs must be 3 MB or smaller to attach. Save a smaller copy and try again.');
@@ -1209,24 +1167,18 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           const mimeType = base64.match(/^data:([^;]+);base64,/)?.[1] || attachmentMimeType(file);
           return { name: file.name, mimeType, base64 };
         }));
-        const videoFrames = shouldRenderVideoEdit ? [] : await Promise.all(videoFiles.map(async file => {
-          const frames = await videoFileToFrameDataUrls(file, generationController.signal);
-          return frames.map((frame, index) => ({
-            name: `${file.name} frame ${index + 1}`,
-            mimeType: frame.mimeType,
-            base64: frame.base64,
-            timestampSeconds: frame.time
-          }));
-        }));
-        attachmentPayloads = [...inlineAttachments, ...videoFrames.flat()];
+        const inlineVideos = await Promise.all(directVideoFiles.map(async file => ({
+          name: file.name,
+          mimeType: attachmentMimeType(file),
+          base64: await getAttachmentDataUrl(file, generationController.signal)
+        })));
+        attachmentPayloads = [...inlineAttachments, ...inlineVideos];
         if (pdfFiles.length) {
           fullPrompt += `\n\nAttached PDF document${pdfFiles.length === 1 ? '' : 's'}: ${pdfFiles.map(file => file.name).join(', ')}. Use the document content to answer the user's question.`;
         }
-        if (videoFiles.length && !shouldRenderVideoEdit) {
-          const frameTimeline = videoFrames.flatMap(frames => frames.map(frame => `${frame.name} at ${Number(frame.timestampSeconds).toFixed(1)}s`)).join(', ');
-          fullPrompt += `\n\nVideo key frames were extracted on this device from: ${videoFiles.map(file => file.name).join(', ')}. Analyze the supplied frames in timestamp order (${frameTimeline}).`;
-          setMediaAnalysisStatus('Analysing the video...');
-        } else if (imageFiles.length) setMediaAnalysisStatus('Analysing the image...');
+        if (directVideoFiles.length) {
+          fullPrompt += `\n\nThe original video file${directVideoFiles.length === 1 ? ' is' : 's are'} attached as native multimodal input. Analyze the video content directly.`;
+        }
         if (textFiles.length > 0) {
           const fileContents = await Promise.all(textFiles.map(async file => {
             const content = await apiRouter.readFileContent(file);
@@ -1594,7 +1546,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       if (imageGenRequest) {
         pushThinkingStep('Generating image with AI 🎨', 'running');
         try {
-          const imgResult = await apiRouter.generateImage(basePrompt, { currentUser, referenceImage: hasImageAttach ? attachmentPayloads[0]?.base64 : null, signal: generationController.signal });
+          const referenceImage = attachmentPayloads.find(item => item.mimeType?.startsWith('image/'))?.base64 || null;
+          const imgResult = await apiRouter.generateImage(basePrompt, { currentUser, referenceImage: hasImageAttach ? referenceImage : null, signal: generationController.signal });
           const imgUrl = imgResult?.url || imgResult?.imageUrl;
           if (!imgUrl) throw new Error('Image generation returned no downloadable image.');
           let assetNotice = '';
@@ -1931,6 +1884,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         ? err
         : new Error(String(err || 'Unknown error'));
       if (generationController.signal.aborted || error.name === 'AbortError') {
+        const requestCanCommitStop = activeGenerationControllerRef.current === generationController
+          || activeGenerationControllerRef.current === null;
+        if (!requestCanCommitStop) return;
         clearTimeout(streamSnapshotTimer);
         const partialText = displayedText || streamedText;
         const stoppedAssistant = partialText ? {
@@ -2009,12 +1965,14 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       clearTimeout(streamSnapshotTimer);
       setMediaAnalysisStatus('');
       activeRequestsRef.current.delete(assistantId);
-      if (activeGenerationControllerRef.current === generationController) activeGenerationControllerRef.current = null;
-      const activeSessionId = lastActiveSessionIdRef.current;
-      const sessionStillProcessing = Array.from(activeRequestsRef.current.values()).includes(activeSessionId);
-      if (isRequestCurrent()) setShowThinking(sessionStillProcessing);
-      setLoading(sessionStillProcessing);
-      sendingRef.current = false;
+      if (activeGenerationControllerRef.current === generationController) {
+        activeGenerationControllerRef.current = null;
+        const activeSessionId = lastActiveSessionIdRef.current;
+        const sessionStillProcessing = Array.from(activeRequestsRef.current.values()).includes(activeSessionId);
+        if (isRequestCurrent()) setShowThinking(sessionStillProcessing);
+        setLoading(sessionStillProcessing);
+        sendingRef.current = false;
+      }
     }
   }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, buildContextMessages, getAttachmentDataUrl, isPro, checkUsage, recordUsage, setIsUsageModalOpen, setIsPricingModalOpen, onUpdateSession, connectorContext]);
 
@@ -2102,7 +2060,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           attachmentPreviewUrls={attachmentPreviewUrls}
           isSendDisabled={false}
           isGenerating={loading}
-          onStopGeneration={() => activeGenerationControllerRef.current?.abort()}
+          onStopGeneration={stopGeneration}
           mediaAnalysisStatus={mediaAnalysisStatus}
           showMoreTools={showMoreTools}
           onToggleMoreTools={() => setShowMoreTools(value => !value)}

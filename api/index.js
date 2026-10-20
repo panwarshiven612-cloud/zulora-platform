@@ -13,7 +13,10 @@ import voiceTokenHandler from '../server/handlers/voice-token.js';
 import voicesHandler from '../server/handlers/voices.js';
 
 export const maxDuration = 300;
-export const config = { maxDuration };
+export const config = {
+  maxDuration,
+  api: { bodyParser: { sizeLimit: '4mb' } }
+};
 
 const ROUTES = Object.freeze({
   ai: aiHandler,

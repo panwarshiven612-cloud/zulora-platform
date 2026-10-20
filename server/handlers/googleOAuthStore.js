@@ -43,8 +43,10 @@ function firestoreRoot() {
 
 const sessionDocumentPath = uid => `${firestoreRoot()}/users/${encodeURIComponent(uid)}/connectors/${SESSION_DOCUMENT_ID}`;
 
+const GOOGLE_OAUTH_CLIENT_ID = '79125936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com';
+
 function googleClientId() {
-  return readServerEnv('GOOGLE_CLIENT_ID') || '79125936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com';
+  return GOOGLE_OAUTH_CLIENT_ID;
 }
 
 function googleClientSecret() {
@@ -262,6 +264,18 @@ async function exchangeToken(params) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.access_token) {
+    if (data.error === 'invalid_client') {
+      throw Object.assign(
+        new Error('Google rejected the OAuth client credentials. Verify the server-side client secret matches the configured Google Web OAuth client.'),
+        { code: 'GOOGLE_OAUTH_CLIENT_INVALID' }
+      );
+    }
+    if (data.error === 'invalid_grant') {
+      throw Object.assign(
+        new Error('OAuth Permission Required: The Google authorization expired or was revoked. Reconnect Google Workspace.'),
+        { code: 'OAUTH_REQUIRED' }
+      );
+    }
     throw new Error(data.error_description || data.error || `Google OAuth token request failed (HTTP ${response.status}).`);
   }
   return data;
@@ -322,7 +336,15 @@ export async function refreshGoogleSession(uid, idToken, cookieHeader = '', res 
   const session = current || await loadGoogleSession(uid, idToken, cookieHeader);
   if (!session?.refreshToken) throw new Error('OAuth Permission Required: Connect Google Workspace to authorize this service.');
   if (!force && Number(session.expiresAt) > Date.now() + 60_000 && session.accessToken) return session;
-  const response = await exchangeToken({ grant_type: 'refresh_token', refresh_token: session.refreshToken });
+  let response;
+  try {
+    response = await exchangeToken({ grant_type: 'refresh_token', refresh_token: session.refreshToken });
+  } catch (error) {
+    if (error?.code === 'OAUTH_REQUIRED') {
+      await deleteGoogleSession(uid, idToken, res).catch(() => {});
+    }
+    throw error;
+  }
   const refreshed = {
     ...session,
     uid,

@@ -102,8 +102,16 @@ export default async function googleConnector(req, res) {
     return res.end();
   } catch (error) {
     const aborted = error?.name === 'AbortError';
-    return respond(res, aborted ? 504 : 502, {
-      error: { message: aborted ? 'Google API request timed out.' : 'Google API could not be reached.' }
+    const reconnectRequired = error?.code === 'OAUTH_REQUIRED';
+    const oauthClientInvalid = error?.code === 'GOOGLE_OAUTH_CLIENT_INVALID';
+    const status = aborted ? 504 : reconnectRequired ? 401 : oauthClientInvalid ? 503 : 502;
+    return respond(res, status, {
+      ...(reconnectRequired ? { code: 'GOOGLE_OAUTH_REQUIRED' } : oauthClientInvalid ? { code: 'GOOGLE_OAUTH_CLIENT_INVALID' } : {}),
+      error: {
+        message: aborted ? 'Google API request timed out.'
+          : reconnectRequired || oauthClientInvalid ? error.message
+            : 'Google API could not be reached.'
+      }
     });
   } finally {
     clearTimeout(timeout);
