@@ -57,9 +57,13 @@ export default async function googleOAuth(req, res) {
         || redirect.hash || redirect.search || (!redirectMatchesOrigin && !redirectMatchesConfigured && !redirectUsesDashboardPath)) {
         return respond(res, 400, { error: { message: 'Google OAuth origin validation failed.' } });
       }
-      const allowedOrigins = String(process.env.GOOGLE_OAUTH_ALLOWED_ORIGINS || '')
-        .split(',').map(value => value.trim()).filter(Boolean);
-      if (allowedOrigins.length && !allowedOrigins.includes(origin)) {
+      const allowedOrigins = new Set([
+        'https://zulora.in',
+        'http://localhost:5173',
+        ...String(process.env.GOOGLE_OAUTH_ALLOWED_ORIGINS || '')
+          .split(',').map(value => value.trim()).filter(Boolean)
+      ]);
+      if (!allowedOrigins.has(origin)) {
         return respond(res, 403, { error: { message: 'This application origin is not allowed to connect Google Workspace.' } });
       }
       if (typeof body.code !== 'string' || body.code.length < 10 || body.code.length > 4096) {

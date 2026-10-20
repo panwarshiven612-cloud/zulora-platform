@@ -1,19 +1,10 @@
 import { onAuthStateChanged } from 'firebase/auth';
 import { deleteDoc, doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
+import { GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_REDIRECT_URI } from '../lib/config/env';
 
-const processEnv = typeof process !== 'undefined' && process.env ? process.env : {};
-const GOOGLE_CLIENT_ID = String(
-  processEnv.GOOGLE_CLIENT_ID
-  || processEnv.VITE_GOOGLE_CLIENT_ID
-  || import.meta.env?.VITE_GOOGLE_CLIENT_ID
-  || '791256936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com'
-).trim();
-const GOOGLE_REDIRECT_URI = String(
-  processEnv.VITE_GOOGLE_REDIRECT_URI
-  || import.meta.env?.VITE_GOOGLE_REDIRECT_URI
-  || 'https://zulora.in/dashboard'
-).trim();
+const GOOGLE_CLIENT_ID = GOOGLE_OAUTH_CLIENT_ID;
+const GOOGLE_REDIRECT_URI = GOOGLE_OAUTH_REDIRECT_URI;
 const GOOGLE_IDENTITY_SCRIPT = 'https://accounts.google.com/gsi/client';
 const TOKEN_REFRESH_MARGIN_MS = 60_000;
 const TOKEN_STORAGE_KEY = 'zulora_oauth_token';

@@ -728,7 +728,7 @@ async function runGeminiConnectorToolProvider({ key, keyIndex, prompt, contextMe
         contents,
         system_instruction: { parts: [{ text: `${providerSystemPrompt({ ...options, connectorProviders: [...new Set(declarations.map(item => getGoogleConnectorFunctionProvider(item.name)))] })}\n\nIf a connector action is requested, call its function. Never claim an action succeeded unless the returned function result confirms it.` }] },
         tools: [{ functionDeclarations: declarations.map(toGeminiFunctionDeclaration) }],
-        toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
+        toolConfig: { functionCallingConfig: { mode: options.requireConnectorTool && round === 0 ? 'ANY' : 'AUTO' } },
         generationConfig: { maxOutputTokens: Math.min(options.coding || options.flagship ? 16_384 : (MODEL_TIERS[options.tier]?.maxTokens || 8192), 2048), temperature: 0.4 }
     };
     const { response, data } = await postConnectorModelRequest(endpoint, { 'Content-Type': 'application/json' }, requestBody, options, 18_000, 'Google Gemini', {
@@ -909,7 +909,8 @@ async function tryGoogleConnectorToolWaterfall(prompt, contextMessages, model, o
   if (!declarations.length) return null;
   const connectorOptions = {
     ...options,
-    connectorProviders: activeProviders
+    connectorProviders: activeProviders,
+    requireConnectorTool: true
   };
   const candidates = [{ provider: 'Universal Tool Adapter', key: '', keyIndex: 0, model }];
   for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {

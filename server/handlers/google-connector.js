@@ -1,5 +1,5 @@
 import { verifyUser } from './ai.js';
-import { getValidGoogleSession, googleScopeAllowed } from './googleOAuthStore.js';
+import { getValidGoogleSession, googleScopeAllowed, refreshGoogleSession } from './googleOAuthStore.js';
 
 export const config = { maxDuration: 30 };
 
@@ -66,16 +66,24 @@ export default async function googleConnector(req, res) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20_000);
   try {
-    const upstream = await fetch(url, {
+    const fetchGoogleApi = currentSession => fetch(url, {
       method,
       signal: controller.signal,
       redirect: 'error',
       headers: {
-        Authorization: `Bearer ${session.accessToken}`,
+        Authorization: `Bearer ${currentSession.accessToken}`,
         ...(googleRequest.body ? { 'Content-Type': 'application/json' } : {})
       },
       ...(googleRequest.body && method !== 'GET' && method !== 'HEAD' ? { body: googleRequest.body } : {})
     });
+    let upstream = await fetchGoogleApi(session);
+    if (upstream.status === 401) {
+      // Google can revoke an access token before its advertised expiry. Force
+      // one server-side refresh and replay the request once to avoid stale-token
+      // failures bubbling up as an empty connector result.
+      session = await refreshGoogleSession(uid, bearer(req), String(req.headers.cookie || ''), res, session, true);
+      upstream = await fetchGoogleApi(session);
+    }
     const responseType = String(googleRequest.responseType || 'json');
     if (responseType === 'base64' && upstream.ok) {
       const bytes = Buffer.from(await upstream.arrayBuffer());
