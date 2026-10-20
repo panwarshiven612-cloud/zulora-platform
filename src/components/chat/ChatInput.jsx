@@ -137,12 +137,6 @@ export default function ChatInput({
         </div>
       )}
 
-      {mediaAnalysisStatus && (
-        <div className="mx-3 my-2 inline-flex items-center gap-2 rounded-xl border border-sky-100 bg-sky-50/80 px-3 py-2 text-[11px] font-medium text-sky-800 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-200" role="status" aria-live="polite">
-          <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-sky-500" aria-hidden="true" />
-          <span>{mediaAnalysisStatus}</span>
-        </div>
-      )}
 
       {/* Main Textarea Area */}
       <div className="w-full px-3.5 pt-3 pb-1">

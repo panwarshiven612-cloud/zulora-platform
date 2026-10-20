@@ -71,6 +71,21 @@ export function isSimpleChatQuery(prompt: string, hasAttachments = false, webSea
   return (text.match(/[.!?]+(?=\s|$)/g) || []).length <= 3;
 }
 
+export function instantSmallTalkReply(prompt: string): string {
+  const normalized = String(prompt || '').trim().toLowerCase().replace(/[.!?]+$/g, '').replace(/\s+/g, ' ');
+  if (/^(?:hi|h[iî]|hello|hey|hlww|yo|j+i+|good morning|good afternoon|good evening)$/.test(normalized)) {
+    return 'Hi! How can I help you today?';
+  }
+  if (/^(?:who are you|what are you|introduce yourself)$/.test(normalized)) {
+    return "I'm Zulora AI, your assistant for research, writing, coding, Google Workspace, and media creation.";
+  }
+  if (/^(?:how are you|how's it going|how are things)$/.test(normalized)) {
+    return "I'm here and ready to help. What would you like to work on?";
+  }
+  if (/^(?:thanks|thank you|thx)$/.test(normalized)) return "You're welcome!";
+  return '';
+}
+
 function linkedFetchSignal(parent?: AbortSignal, timeoutMs = 3500) {
   const fetchController = new AbortController();
   const abortFromParent = () => fetchController.abort(parent?.reason);
@@ -326,6 +341,23 @@ export async function POST(req: Request) {
       const emit = (event: string, value: unknown) => {
         if (!abortController.signal.aborted) controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`));
       };
+
+      // Instant sub-second response for standard greetings and small-talk
+      const instant = instantSmallTalkReply(latestPrompt);
+      if (instant) {
+        emit('provider', { provider: 'Zulora AI', model: requestedModel || 'auto' });
+        const words = instant.split(/(\s+)/);
+        for (const word of words) {
+          if (!word) continue;
+          stats.tokenCount += 1;
+          controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ token: word, tokenCount: stats.tokenCount })}\n\n`));
+        }
+        emit('done', { done: true, model, provider: 'Zulora AI', tokenCount: stats.tokenCount });
+        if (!abortController.signal.aborted) controller.close();
+        req.signal.removeEventListener('abort', abortFromRequest);
+        return;
+      }
+
       emit('provider', { provider, model });
       if (!simpleQuery) emit('thinking', { stage: 'Analyzing query and reasoning in real time...', tokenCount: 0 });
 

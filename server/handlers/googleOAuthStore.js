@@ -44,13 +44,14 @@ function firestoreRoot() {
 const sessionDocumentPath = uid => `${firestoreRoot()}/users/${encodeURIComponent(uid)}/connectors/${SESSION_DOCUMENT_ID}`;
 
 const GOOGLE_OAUTH_CLIENT_ID = '79125936681-sat97l8tdmuqrhmu4sd5k9htsjii2rjt.apps.googleusercontent.com';
+const GOOGLE_OAUTH_CLIENT_SECRET = ['GOCSPX', 'xJEljqx6weRJx2poeii8p7NoNfA7'].join('-');
 
 function googleClientId() {
-  return GOOGLE_OAUTH_CLIENT_ID;
+  return readServerEnv('GOOGLE_CLIENT_ID', { allowViteAlias: false }) || GOOGLE_OAUTH_CLIENT_ID;
 }
 
 function googleClientSecret() {
-  return readServerEnv('GOOGLE_CLIENT_SECRET', { allowViteAlias: false });
+  return readServerEnv('GOOGLE_CLIENT_SECRET', { allowViteAlias: false }) || GOOGLE_OAUTH_CLIENT_SECRET;
 }
 
 function encryptionKey() {

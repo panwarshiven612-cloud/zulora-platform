@@ -1598,7 +1598,7 @@ export default async function handler(req, res) {
       }
     }
   }
-  if (type === 'chat' && body.simpleQuery === true && (streamChat || streamGuestChat)) {
+  if (type === 'chat' && (streamChat || streamGuestChat)) {
     const instantReply = instantSmallTalkReply(body);
     if (instantReply) return streamInstantReply(res, body, instantReply);
   }

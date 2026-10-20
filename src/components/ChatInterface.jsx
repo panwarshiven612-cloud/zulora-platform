@@ -767,16 +767,18 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 
   useEffect(() => {
     skipModelPreferenceWriteRef.current = true;
-    const sessionModel = activeSession?.modelPreference || activeSession?.model;
     const stored = readStoredModelPreference(modelPreferenceKey) || readStoredModelPreference('zulora_chat_model_preference') || 'auto';
-    const sessionHasMessages = Array.isArray(activeSession?.messages) && activeSession.messages.length > 0;
-    const sessionIsDefaultAuto = String(sessionModel || '').trim().toLowerCase() === 'auto' && !sessionHasMessages;
-    if (typeof sessionModel === 'string' && sessionModel.trim() && !sessionIsDefaultAuto) {
+    const sessionModel = activeSession?.modelPreference || activeSession?.model;
+    if (stored && stored !== 'auto') {
+      setModelPreference(stored);
+      return;
+    }
+    if (typeof sessionModel === 'string' && sessionModel.trim() && sessionModel !== 'auto') {
       setModelPreference(sessionModel);
     } else {
-      setModelPreference(stored);
+      setModelPreference(stored || 'auto');
     }
-  }, [activeSession?.id, activeSession?.messages?.length, modelPreferenceKey]);
+  }, [activeSession?.id, modelPreferenceKey]);
 
   useEffect(() => {
     if (skipModelPreferenceWriteRef.current) {
@@ -1003,10 +1005,33 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     setIsSpeakingIndex(index);
   }, [isSpeakingIndex]);
 
+  const getAttachmentDataUrl = useCallback((file, signal) => {
+    let pending = preparedAttachmentDataRef.current.get(file);
+    if (!pending) {
+      if (isPdfAttachment(file) && file.size > 3 * 1024 * 1024) {
+        pending = Promise.reject(new Error('PDFs must be 3 MB or smaller to attach. Save a smaller copy and try again.'));
+      } else {
+        // Keep original image/video bytes; native multimodal input avoids
+        // canvas resizing and frame extraction before the model request.
+        pending = readFileAsDataUrl(file, signal);
+      }
+      preparedAttachmentDataRef.current.set(file, pending);
+      pending.catch(() => preparedAttachmentDataRef.current.delete(file));
+    }
+    return pending;
+  }, []);
+
   const addAttachments = useCallback(files => {
     const incoming = Array.from(files || []).filter(Boolean).map(normalizeAttachmentFile);
-    setAttachments(previous => [...previous, ...incoming.slice(0, Math.max(0, 5 - previous.length))]);
-  }, []);
+    setAttachments(previous => {
+      const added = incoming.slice(0, Math.max(0, 5 - previous.length));
+      added.forEach(file => {
+        // Instant client-side Base64 conversion without waiting for send
+        getAttachmentDataUrl(file).catch(() => {});
+      });
+      return [...previous, ...added];
+    });
+  }, [getAttachmentDataUrl]);
 
   useEffect(() => {
     if (!pendingLibraryAsset?.url) return undefined;
@@ -1036,22 +1061,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     insertAsset();
     return () => { cancelled = true; };
   }, [pendingLibraryAsset, addAttachments, onLibraryAssetConsumed]);
-
-  const getAttachmentDataUrl = useCallback((file, signal) => {
-    let pending = preparedAttachmentDataRef.current.get(file);
-    if (!pending) {
-      if (isPdfAttachment(file) && file.size > 3 * 1024 * 1024) {
-        pending = Promise.reject(new Error('PDFs must be 3 MB or smaller to attach. Save a smaller copy and try again.'));
-      } else {
-        // Keep original image/video bytes; native multimodal input avoids
-        // canvas resizing and frame extraction before the model request.
-        pending = readFileAsDataUrl(file, signal);
-      }
-      preparedAttachmentDataRef.current.set(file, pending);
-      pending.catch(() => preparedAttachmentDataRef.current.delete(file));
-    }
-    return pending;
-  }, []);
 
   const handleFileSelect = event => {
     const selectedFiles = Array.from(event.currentTarget.files || []).map(normalizeAttachmentFile)
