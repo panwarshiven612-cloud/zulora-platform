@@ -124,6 +124,15 @@ const getZuloraEngineLabel = (model = '', provider = '') => {
 // MODULE 2: In-chat media generation intent detection
 const IMAGE_EDIT_REGEX = /\b(?:edit|modify|change|update|transform|enhance|improve|fix|crop|resize|adjust|remove|add)\s+(?:this\s+)?(?:image|photo|picture|background)\b/i;
 const VIDEO_GEN_REGEX = /\b(?:generate|create|make|produce|render|animate|show me)\s+(?:a\s+)?(?:video|animation|clip|motion|reel|short|cinematic|film|movie|timelapse)\b/i;
+const requestedVideoAspectRatio = prompt => {
+  if (/\b(?:16\s*:\s*9|landscape|widescreen|horizontal)\b/i.test(prompt)) return '16:9';
+  if (/\b(?:1\s*:\s*1|square)\b/i.test(prompt)) return '1:1';
+  return '9:16';
+};
+const requestedVideoDuration = prompt => {
+  const match = String(prompt || '').match(/\b(\d{1,2})\s*(?:seconds?|secs?|s)\b/i);
+  return match ? Math.max(5, Math.min(60, Number(match[1]))) : 8;
+};
 
 const isImageEditIntent = (prompt, hasImageAttachment) => hasImageAttachment && IMAGE_EDIT_REGEX.test(String(prompt || ''));
 const isVideoGenIntent = prompt => VIDEO_GEN_REGEX.test(String(prompt || ''));
@@ -578,7 +587,7 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <a
-                      href={message.generatedVideoUrl}
+                      href={message.generatedVideoDownloadUrl || message.generatedVideoUrl}
                       download="zulora_video.mp4"
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-600 text-white text-xs font-semibold shadow-xs transition"
                     >
@@ -595,6 +604,14 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                       Open Full Screen
                     </a>
                   </div>
+                  {Array.isArray(message.videoStoryboard?.scenes) && message.videoStoryboard.scenes.length > 0 && <details className="rounded-lg border border-slate-200/80 px-3 py-2 text-xs dark:border-slate-700/70">
+                    <summary className="cursor-pointer font-semibold text-slate-600 dark:text-slate-300">Storyboard · {message.videoStoryboard.totalDuration || message.videoStoryboard.scenes.at(-1)?.end || '?'}s</summary>
+                    <ol className="mt-2 space-y-1.5 text-slate-500 dark:text-slate-400">
+                      {message.videoStoryboard.scenes.map((scene, sceneIndex) => <li key={`${scene.id || sceneIndex}-${scene.start}`}>
+                        <span className="font-semibold">{scene.start}–{scene.end}s</span> · {scene.caption || scene.text || scene.hero || 'Scene'}
+                      </li>)}
+                    </ol>
+                  </details>}
                 </div>
               )}
               {message.generatedImageUrl && (
@@ -1636,8 +1653,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
               return await executeVideoAgent(basePrompt, {
                 currentUser,
                 signal: generationController.signal,
-                duration: 8,
-                aspectRatio: '16:9',
+                duration: requestedVideoDuration(basePrompt),
+                aspectRatio: requestedVideoAspectRatio(basePrompt),
                 onProgress: progress => {
                   const phase = String(progress?.phase || '').toLowerCase();
                   const phaseProgress = phase.includes('done') || phase.includes('ready') ? 100 : phase.includes('upload') ? 92 : phase.includes('render') ? 65 : phase.includes('generating') ? 35 : 6;
@@ -1664,7 +1681,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
               assetNotice = `\n\nSaved to your Zulora Library and Drive as ${vidResult.driveFile.name || 'a generated video'}.`;
             } else {
               try {
-                const driveFile = await uploadGeneratedAssetToDrive({ type: 'video', url: vidUrl, fileType: 'video/mp4', fileName: `zulora-video-${Date.now()}.mp4`, folderPath: 'Generated Media' });
+                const driveFile = await uploadGeneratedAssetToDrive({ type: 'video', url: vidUrl, fileType: 'video/mp4', fileName: `zulora-video-${Date.now()}.mp4`, folderPath: 'Generated Media' }, { signal: generationController.signal });
                 assetNotice = `\n\nSaved to your Zulora Library and Drive as ${driveFile.name || 'a generated video'}.`;
               } catch (error) {
                 assetNotice = `\n\nAdded to your Zulora Library. Drive sync failed: ${error.message}`;
@@ -1679,7 +1696,10 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             content: `Here's your AI-generated video! 🎬\n\n*Zulora Video Engine*`,
             timestamp: Date.now(), model: 'Zulora Video Engine',
             provider: 'Zulora AI',
-            generatedVideoUrl: vidUrl, queryTime: elapsed,
+            generatedVideoUrl: vidUrl,
+            generatedVideoDownloadUrl: vidResult.downloadUrl || vidUrl,
+            videoStoryboard: vidResult.storyboard,
+            queryTime: elapsed,
             thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps] : undefined
           };
           aiMsg.content = `Here's your HTML-rendered AI video!\n\n[Download MP4](${vidUrl})${assetNotice}\n\n*Rendered with Playwright and FFmpeg.*`;

@@ -224,7 +224,7 @@ const requiredText = (args, key) => {
   return value;
 };
 
-export async function executeGoogleConnectorFunction(name, args = {}, { onProgress } = {}) {
+export async function executeGoogleConnectorFunction(name, args = {}, { onProgress, signal } = {}) {
   const provider = getGoogleConnectorFunctionProvider(name);
   onProgress?.({ label: `Authenticating ${provider || 'Google'} API`, status: 'running' });
   try {
@@ -265,7 +265,8 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
         result = await connectorManager.sendGmailMessage({
           to: recipient,
           subject: requiredText(args, 'subject'),
-          body: emailBody
+          body: emailBody,
+          signal
         }); break;
       }
       case 'reply_and_draft':
@@ -287,7 +288,7 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
       case 'search_threads':
         result = await connectorManager.searchGmailThreads({ query: String(args.query || 'in:inbox'), max_results: args.max_results }); break;
       case 'calendar_create_event': case 'create_event': case 'create_calendar_event':
-        result = await connectorManager.createCalendarEvent({ title: requiredText(args, 'title'), start_time: requiredText(args, 'start_time'), end_time: requiredText(args, 'end_time'), description: String(args.description || '') }); break;
+        result = await connectorManager.createCalendarEvent({ title: requiredText(args, 'title'), start_time: requiredText(args, 'start_time'), end_time: requiredText(args, 'end_time'), description: String(args.description || ''), signal }); break;
       case 'computer_scan_system':
         result = await scanComputerSystem(); break;
       case 'schedule_events':
@@ -296,7 +297,8 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
           title: args.title,
           start_time: args.start_time,
           end_time: args.end_time,
-          description: args.description
+          description: args.description,
+          signal
         }); break;
       case 'analyze_calendar':
         {
@@ -313,14 +315,14 @@ export async function executeGoogleConnectorFunction(name, args = {}, { onProgre
       case 'sheets_append_data': case 'append_row': case 'append_sheet_row': {
         const values = Array.isArray(args.values) ? args.values : [];
         if (!values.length) throw new Error('At least one row of values is required.');
-        result = await connectorManager.appendSheetRow({ spreadsheet_id: requiredText(args, 'spreadsheet_id'), range: requiredText(args, 'range'), values }); break;
+        result = await connectorManager.appendSheetRow({ spreadsheet_id: requiredText(args, 'spreadsheet_id'), range: requiredText(args, 'range'), values, signal }); break;
       }
       case 'read_range': case 'read_sheet_data':
         result = await connectorManager.readSheetData({ spreadsheet_id: requiredText(args, 'spreadsheet_id'), range: requiredText(args, 'range') }); break;
       case 'sheets_create_spreadsheet': case 'create_sheet':
-        result = await connectorManager.createSpreadsheet({ title: requiredText(args, 'title'), folder_id: String(args.folder_id || '').trim() }); break;
+        result = await connectorManager.createSpreadsheet({ title: requiredText(args, 'title'), folder_id: String(args.folder_id || '').trim(), signal }); break;
       case 'sheets_create_and_populate':
-        result = await connectorManager.createAndPopulateSpreadsheet({ title: requiredText(args, 'title'), rows: Array.isArray(args.rows) ? args.rows : [] });
+        result = await connectorManager.createAndPopulateSpreadsheet({ title: requiredText(args, 'title'), rows: Array.isArray(args.rows) ? args.rows : [], signal });
         result = { ...result, confirmation: `Created and populated [${result.spreadsheet.title}](${result.spreadsheet.url}).` };
         break;
       case 'drive_create_folder': case 'create_drive_folder':

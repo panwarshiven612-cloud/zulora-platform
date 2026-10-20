@@ -104,9 +104,17 @@ export default function ModelSelector({
 }: ModelSelectorProps) {
   // Normalize model ID to match available engines
   const normalizedId = (() => {
-    const cur = modelPreference || 'auto';
-    if (cur === 'pro_ultra' || cur === 'think' || cur === 'pro' || cur === 'gemini-2.5-pro') return 'pro_ultra';
-    if (cur === 'gemini' || cur === 'flash' || (String(cur).startsWith('gemini-') && cur !== 'gemini-2.5-pro')) return 'gemini';
+    const raw = String(modelPreference || 'auto').trim();
+    const cur = raw.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+    if (cur === 'zulora auto' || cur === 'auto') return 'auto';
+    if (cur === 'zulora fast' || cur === 'fast') return 'gemini';
+    if (cur === 'zulora ultra speed' || cur === 'ultra speed') return 'cerebras';
+    if (cur === 'zulora 3.1 pro ultra' || cur === 'pro ultra') return 'pro_ultra';
+    if (cur === 'zulora lpu speed' || cur === 'zulora lpu') return 'groq';
+    if (cur === 'zulora global engine') return 'openrouter';
+    if (cur === 'zulora reasoning') return 'mistral';
+    if (cur === 'pro ultra' || cur === 'think' || cur === 'pro' || cur === 'gemini 2.5 pro') return 'pro_ultra';
+    if (cur === 'gemini' || cur === 'flash' || cur.startsWith('gemini ')) return 'gemini';
     if (cur === 'groq') return 'groq';
     if (cur === 'cerebras') return 'cerebras';
     if (cur === 'openrouter') return 'openrouter';

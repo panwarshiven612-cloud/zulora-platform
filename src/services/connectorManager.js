@@ -1099,24 +1099,26 @@ export const connectorManager = {
     };
   },
 
-  async createCalendarEvent({ title, start_time, end_time, description = '' }) {
+  async createCalendarEvent({ title, start_time, end_time, description = '', signal }) {
     const event = await this.apiFetch('calendar', 'https://www.googleapis.com/calendar/v3/calendars/primary/events', {
-      method: 'POST', body: JSON.stringify({ summary: title, description, start: { dateTime: start_time }, end: { dateTime: end_time }, reminders: { useDefault: true } })
+      method: 'POST', body: JSON.stringify({ summary: title, description, start: { dateTime: start_time }, end: { dateTime: end_time }, reminders: { useDefault: true } }), signal
     });
     if (!event?.id) throw new Error('Google Calendar did not return an event ID. The event is not reported as created.');
     return { ...event, eventUrl: event.htmlLink || '', confirmation: event.htmlLink ? `Created “${event.summary || title}”: ${event.htmlLink}` : `Created “${event.summary || title}” (event ${event.id}).`, verified: true };
   },
 
-  async scheduleEvents({ events = [], title, start_time, end_time, description = '' } = {}) {
+  async scheduleEvents({ events = [], title, start_time, end_time, description = '', signal } = {}) {
     if (Array.isArray(events) && events.length > 0) {
       const created = [];
       for (const [index, ev] of events.entries()) {
+        if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
         try {
           const res = await this.createCalendarEvent({
             title: ev.title || ev.summary,
             start_time: ev.start_time || ev.start,
             end_time: ev.end_time || ev.end,
-            description: ev.description || ''
+            description: ev.description || '',
+            signal
           });
           created.push(res);
         } catch (error) {
@@ -1127,7 +1129,7 @@ export const connectorManager = {
       return { success: true, count: created.length, events: created, confirmation: created.map(event => event.confirmation).join('\n') };
     }
     if (title && start_time && end_time) {
-      const res = await this.createCalendarEvent({ title, start_time, end_time, description });
+      const res = await this.createCalendarEvent({ title, start_time, end_time, description, signal });
       return { success: true, count: 1, event: res };
     }
     throw new Error('Provide event details (title, start_time, end_time) or a list of events to schedule.');

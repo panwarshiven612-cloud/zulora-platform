@@ -14,7 +14,7 @@ export async function generateVideo(arg1, arg2 = {}) {
     motionSpeed: options.motionSpeed,
     cameraAngle: options.cameraAngle,
     duration,
-    aspectRatio: options.aspectRatio || '16:9'
+    aspectRatio: options.aspectRatio || '9:16'
   };
 
   const allowance = await checkGenerationAllowance('video', options.currentUser);

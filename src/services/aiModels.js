@@ -92,3 +92,9 @@ export function isCodeGenerationPrompt(value) {
   if (isImageGenIntent(value)) return false;
   return /(?:\bcode\b|\bhtml\b|\bcss\b|\bjavascript\b|\btypescript\b|\breact\b|\bfunction\b|\bfrontend\b|\bweb development\b|\bbuild\s+(?:a\s+)?(?:mobile\s+)?(?:website|web app|application|app|site|ui|tool|dashboard)\b|\bwebsite\b|\bwebpage\b|\bweb app\b|\blanding page\b|\binteractive app\b|\bcomplete application\b|\bportfolio site\b)/i.test(String(value || ''));
 }
+
+export function isWebsiteGenerationPrompt(value) {
+  const prompt = String(value || '');
+  return /\b(?:build|create|make|design|develop|generate|code)\b.{0,80}\b(?:website|web\s*site|webpage|landing\s+page|web\s+app|site)\b/i.test(prompt)
+    || /\b(?:website|webpage|landing\s+page)\b.{0,70}\b(?:from\s+scratch|with\s+html|single[- ]file|responsive|interactive)\b/i.test(prompt);
+}

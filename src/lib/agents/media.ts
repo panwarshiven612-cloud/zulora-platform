@@ -36,6 +36,7 @@ export interface VideoGenerationOptions {
 export interface VideoGenerationResult {
   success: boolean;
   url: string;
+  downloadUrl?: string;
   prompt: string;
   markdownCard: string;
   jobId?: string;
@@ -89,7 +90,7 @@ export async function generateImageDirectly(options: ImageGenerationOptions): Pr
  * Direct motion video generation: renders high quality MP4 with direct chat download.
  */
 export async function generateVideoDirectly(options: VideoGenerationOptions): Promise<VideoGenerationResult> {
-  const { prompt, currentUser, duration = 6, aspectRatio = '16:9', existingHtml, onProgress } = options;
+  const { prompt, currentUser, duration = 8, aspectRatio = '9:16', existingHtml, onProgress } = options;
   if (!prompt || !prompt.trim()) {
     throw new Error('Please provide a video prompt description.');
   }
@@ -108,6 +109,7 @@ export async function generateVideoDirectly(options: VideoGenerationOptions): Pr
     return {
       success: res.success,
       url: res.url,
+      downloadUrl: res.downloadUrl,
       jobId: res.jobId,
       html: res.html,
       prompt: cleanPrompt,

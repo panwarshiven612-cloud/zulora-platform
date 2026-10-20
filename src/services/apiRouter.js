@@ -17,7 +17,8 @@ import { generateVideo as generateVideoWithProviders } from './videoService';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from './systemPrompt';
 import { webSearch, formatCitations } from './webSearch';
 import { AI_STUDIO_SYSTEM_PROMPT } from './aiStudioPrompt';
-import { GEMINI_FLASH_MODEL_ID, GEMINI_MODELS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from './aiModels';
+import { GEMINI_FLASH_MODEL_ID, GEMINI_MODELS, GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, isWebsiteGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from './aiModels';
+import { WEBSITE_BUILD_SYSTEM_PROMPT } from './websiteBuildPrompt';
 import { isExplicitBrowserAutomationIntent } from './browserAutomationIntent';
 import { buildImagePrompt } from './imageGen';
 import connectorManager from './connectorManager';
@@ -64,6 +65,7 @@ const CODE_GENERATION_MAX_TOKENS = 32_768;
 const providerSystemPrompt = options => [
   buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault),
   options.studioMode ? AI_STUDIO_SYSTEM_PROMPT : '',
+  options.websiteBuild ? WEBSITE_BUILD_SYSTEM_PROMPT : '',
   getGoogleConnectorToolInstructions(options.connectorProviders || []),
   options.connectorContext ? `NATIVE CONNECTORS CONTEXT:\n${options.connectorContext}` : '',
   // MODULE 7: Inject web search grounding
@@ -776,7 +778,7 @@ async function runGeminiConnectorToolProvider({ key, keyIndex, prompt, contextMe
       } else {
         try {
           options.onProgress?.({ label: `Executing ${name.replaceAll('_', ' ')}`, status: 'running' });
-          result = await executeGoogleConnectorFunction(name, args, { onProgress: options.onProgress });
+          result = await executeGoogleConnectorFunction(name, args, { onProgress: options.onProgress, signal: options.signal });
           verifyConnectorToolResult(name, result, args);
           executedCalls.set(signature, result);
         } catch (error) {
@@ -878,7 +880,7 @@ async function runConnectorToolProvider({ provider, key, keyIndex, prompt, conte
       if (!executedCalls.has(signature)) {
         try {
           options.onProgress?.({ label: `Executing ${name.replaceAll('_', ' ')}`, status: 'running' });
-          result = await executeGoogleConnectorFunction(name, args, { onProgress: options.onProgress });
+          result = await executeGoogleConnectorFunction(name, args, { onProgress: options.onProgress, signal: options.signal });
           verifyConnectorToolResult(name, result, args);
         }
         catch (error) {
@@ -1067,6 +1069,7 @@ export const apiRouter = {
     const requestedTier = normalizeModelPreference(options.model);
     const vision = (options.attachments || []).some(item => String(item.mimeType || '').startsWith('image/'));
     const coding = isCodingPrompt(prompt);
+    const websiteBuild = isWebsiteGenerationPrompt(prompt);
     const simpleQuery = Boolean(options.simpleQuery);
     const complex = !simpleQuery && isComplexPrompt(prompt);
     const directGeminiModel = String(requestedTier).startsWith('gemini-');
@@ -1077,7 +1080,7 @@ export const apiRouter = {
       ? directGeminiModel ? requestedTier : (geminiSelected ? 'gemini' : requestedTier === 'think' || requestedTier === 'pro' ? 'gemini-2.5-pro' : 'gemini-3.8-flash')
       : requestedTier === 'auto' ? (coding ? 'gemini-2.5-pro' : complex ? 'gemini-2.5-pro' : 'gemini-3.8-flash') : requestedTier;
     const highTierCodeRequest = coding && (flagship || requestedTier === 'pro' || (directGeminiModel && /pro/i.test(requestedTier)));
-    options = { ...options, coding, flagship: highTierCodeRequest, maxTokens: coding ? CODE_GENERATION_MAX_TOKENS : options.maxTokens, tier, preferBestKey: flagship || highTierCodeRequest, streamState: options.streamState || { sent: false } };
+    options = { ...options, coding, websiteBuild, flagship: highTierCodeRequest, maxTokens: coding ? CODE_GENERATION_MAX_TOKENS : options.maxTokens, tier, preferBestKey: flagship || highTierCodeRequest, streamState: options.streamState || { sent: false } };
     const errors = [];
     let webCitations = [];
     // MODULE 7: Web search injection for grounding
@@ -1098,12 +1101,14 @@ export const apiRouter = {
       ? GEMINI_FLASH_MODEL
       : directGeminiModel ? requestedTier : geminiSelected ? intentGeminiModel : flagship ? GEMINI_PRO_MODEL_ID : (MODEL_TIERS[tier]?.geminiModel || 'gemini-3.8-flash');
 
-    await ensureGenerationAllowance('chat', options.currentUser, {
-      modelPreference: requestedTier,
-      messages,
-      coding,
-      skipTokenLimit: highTierCodeRequest
-    });
+    if (!simpleQuery) {
+      await ensureGenerationAllowance('chat', options.currentUser, {
+        modelPreference: requestedTier,
+        messages,
+        coding,
+        skipTokenLimit: highTierCodeRequest
+      });
+    }
 
     const activeConnectorProviders = simpleQuery ? [] : await connectorManager.restoreSession();
     options = { ...options, connectorProviders: activeConnectorProviders };

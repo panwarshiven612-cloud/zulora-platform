@@ -8,7 +8,7 @@ import { chromium as playwrightChromium } from 'playwright-core';
 import ffmpegPath from 'ffmpeg-static';
 
 export const config = {
-  maxDuration: 60,
+  maxDuration: 300,
   api: { bodyParser: { sizeLimit: '1mb' } }
 };
 
@@ -47,12 +47,14 @@ async function uploadMp4ToCloudinary(filePath, jobId, signal) {
   if (!response.ok || !data.secure_url) {
     throw renderError(data.error?.message || `Generated MP4 could not be stored (Cloudinary HTTP ${response.status}).`, 502);
   }
-  return { url: data.secure_url, bytes: Number(data.bytes) || bytes.length };
+  const downloadUrl = new URL(data.secure_url);
+  downloadUrl.pathname = downloadUrl.pathname.replace('/video/upload/', `/video/upload/fl_attachment:zulora-${jobId}.mp4/`);
+  return { url: data.secure_url, downloadUrl: downloadUrl.href, bytes: Number(data.bytes) || bytes.length };
 }
 
 async function renderHtmlVideo({ html, aspectRatio, fps, duration, crf, signal }) {
   if (!ffmpegPath) throw renderError('The FFmpeg encoder is not available on this server.', 503);
-  const dimensions = ASPECT_RATIOS[aspectRatio] || ASPECT_RATIOS['16:9'];
+  const dimensions = ASPECT_RATIOS[aspectRatio] || ASPECT_RATIOS['9:16'];
   const frameCount = Math.ceil(duration * fps);
   const directory = await mkdtemp(join(tmpdir(), 'zulora-video-'));
   const outputPath = join(directory, 'render.mp4');
@@ -76,11 +78,7 @@ async function renderHtmlVideo({ html, aspectRatio, fps, duration, crf, signal }
     await page.route('**/*', route => {
       const requestUrl = route.request().url();
       if (/^(?:about:|data:|blob:)/i.test(requestUrl)) return route.continue();
-      try {
-        const url = new URL(requestUrl);
-        if (url.protocol === 'https:' && url.hostname === 'cdnjs.cloudflare.com'
-          && url.pathname === '/ajax/libs/gsap/3.12.2/gsap.min.js') return route.continue();
-      } catch { /* Abort malformed and untrusted external asset URLs. */ }
+      // Generated animations must be self-contained and render reproducibly offline.
       return route.abort('blockedbyclient');
     });
     await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15_000 });
@@ -149,13 +147,13 @@ export default async function handler(req, res) {
 
   const requestedDuration = Number(body.duration) || 8;
   const requestedFps = Number(body.fps) || 30;
-  const duration = Math.min(12, Math.max(2, requestedDuration));
+  const duration = Math.min(60, Math.max(5, requestedDuration));
   const fps = Math.min(30, Math.max(24, Math.round(requestedFps)));
   const crf = Math.min(28, Math.max(16, Math.round(Number(body.crf) || 18)));
-  const aspectRatio = Object.hasOwn(ASPECT_RATIOS, body.aspectRatio) ? body.aspectRatio : '16:9';
+  const aspectRatio = Object.hasOwn(ASPECT_RATIOS, body.aspectRatio) ? body.aspectRatio : '9:16';
   const jobId = `zulora-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const controller = new AbortController();
-  const deadline = setTimeout(() => controller.abort(new DOMException('The MP4 render timed out.', 'TimeoutError')), 54_000);
+  const deadline = setTimeout(() => controller.abort(new DOMException('The MP4 render timed out.', 'TimeoutError')), 294_000);
   const abortOnDisconnect = () => { if (!res.writableEnded) controller.abort(); };
   req.once('aborted', abortOnDisconnect);
   res.once('close', abortOnDisconnect);
@@ -171,7 +169,8 @@ export default async function handler(req, res) {
       fps,
       fileType: 'video/mp4',
       bytes: rendered.bytes,
-      url: rendered.url
+      url: rendered.url,
+      downloadUrl: rendered.downloadUrl
     });
   } catch (error) {
     if (controller.signal.aborted || res.destroyed) return;

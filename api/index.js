@@ -12,7 +12,7 @@ import voiceHandler from '../server/handlers/voice.js';
 import voiceTokenHandler from '../server/handlers/voice-token.js';
 import voicesHandler from '../server/handlers/voices.js';
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 export const config = { maxDuration };
 
 const ROUTES = Object.freeze({

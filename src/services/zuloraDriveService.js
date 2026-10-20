@@ -75,7 +75,8 @@ export const zuloraDriveService = {
     await signOut(driveAuth);
   },
 
-  async uploadFileToDrive(file, folderPath = '', { onProgress } = {}) {
+  async uploadFileToDrive(file, folderPath = '', { onProgress, signal } = {}) {
+    if (signal?.aborted) throw new DOMException('The upload was cancelled.', 'AbortError');
     const blobLike = typeof Blob !== 'undefined' && file instanceof Blob;
     const fileLike = file && Number.isFinite(Number(file.size)) && typeof file.arrayBuffer === 'function';
     if (!blobLike && !fileLike) throw new Error('Choose a file to upload to Zulora Drive.');
@@ -101,14 +102,24 @@ export const zuloraDriveService = {
         task.cancel();
         reject(new Error('Upload timed out. Check your connection and try again.'));
       }, 180_000);
+      const onAbort = () => {
+        task.cancel();
+        reject(new DOMException('The upload was cancelled.', 'AbortError'));
+      };
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener('abort', onAbort, { once: true });
+      const clearUploadHandlers = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+      };
       task.on('state_changed', snapshot => {
         const ratio = snapshot.totalBytes ? snapshot.bytesTransferred / snapshot.totalBytes : 0;
         onProgress?.({ percent: Math.min(100, Math.round(ratio * 100)), bytesTransferred: snapshot.bytesTransferred, totalBytes: snapshot.totalBytes });
       }, error => {
-        clearTimeout(timer);
+        clearUploadHandlers();
         reject(error);
       }, () => {
-        clearTimeout(timer);
+        clearUploadHandlers();
         resolve();
       });
     });
@@ -297,18 +308,18 @@ export const zuloraDriveService = {
   }
 };
 
-export async function uploadGeneratedAssetToDrive(asset) {
+export async function uploadGeneratedAssetToDrive(asset, { signal } = {}) {
   if (!driveAuth.currentUser) throw new Error('Connect Zulora Drive in the Connectors panel to sync generated media.');
   const url = String(asset?.url || asset?.fileUrl || '').trim();
   if (!url) throw new Error('The generated file has no download URL.');
-  const response = await fetch(url);
+  const response = await fetch(url, { signal });
   if (!response.ok) throw new Error(`Could not fetch generated media for Drive upload (HTTP ${response.status}).`);
   const blob = await response.blob();
   const mimeType = blob.type || asset.fileType || (asset.type === 'video' ? 'video/webm' : 'image/png');
   const extension = mimeType.includes('webm') ? 'webm' : mimeType.includes('mp4') ? 'mp4' : mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('pdf') ? 'pdf' : 'png';
   const fileName = safeFileName(asset.fileName || asset.name || `zulora-${asset.type || 'asset'}-${Date.now()}.${extension}`);
   const file = new File([blob], fileName, { type: mimeType });
-  return zuloraDriveService.uploadFileToDrive(file, asset.folderPath || 'Generated Media');
+  return zuloraDriveService.uploadFileToDrive(file, asset.folderPath || 'Generated Media', { signal });
 }
 
 export const uploadFileToDrive = (...args) => zuloraDriveService.uploadFileToDrive(...args);

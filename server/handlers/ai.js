@@ -2,7 +2,8 @@ import { createHash, createPublicKey, createSign, verify as verifySignature } fr
 import { apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from '../../src/services/systemPrompt.js';
 import { AI_STUDIO_SYSTEM_PROMPT } from '../../src/services/aiStudioPrompt.js';
-import { GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from '../../src/services/aiModels.js';
+import { GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, isWebsiteGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from '../../src/services/aiModels.js';
+import { WEBSITE_BUILD_SYSTEM_PROMPT } from '../../src/services/websiteBuildPrompt.js';
 import { buildImagePrompt } from '../../src/services/imageGen.js';
 import { refineVideoPrompt } from '../../src/services/videoPrompt.js';
 import { webSearch } from '../../src/services/webSearch.js';
@@ -939,6 +940,7 @@ async function generateChat(body, streamOptions = {}) {
   const simpleQuery = body.simpleQuery === true;
   const flagship = requestedPreference === 'gemini-2.5-pro' || requestedPreference === 'think';
   const latestUserPrompt = [...(Array.isArray(body.messages) ? body.messages : [])].reverse().find(message => message?.role === 'user')?.content || '';
+  const websiteBuild = isWebsiteGenerationPrompt(latestUserPrompt);
   let searchResults = Array.isArray(body.searchResults) ? body.searchResults : [];
   if (body.enableWebSearch && !searchResults.length && latestUserPrompt) {
     try { searchResults = (await webSearch(latestUserPrompt, { signal: streamOptions.signal })).results || []; }
@@ -960,6 +962,7 @@ async function generateChat(body, streamOptions = {}) {
     simpleQuery ? '' : activeWorkspaceSystemContext(body.activeConnectorProviders),
     flagship ? FLAGSHIP_SYSTEM_PROMPT : '',
     body.studioMode ? AI_STUDIO_SYSTEM_PROMPT : '',
+    websiteBuild ? WEBSITE_BUILD_SYSTEM_PROMPT : '',
     researchContext
   ].filter(Boolean).join('\n\n');
   const messages = plainMessages(body.messages, systemPrompt);
@@ -977,7 +980,7 @@ async function generateChat(body, streamOptions = {}) {
     : requestedPreference === 'gemini' ? 'gemini-3.8-flash'
       : flagship || useProModel ? GEMINI_PRO_MODEL_ID : 'gemini-3.8-flash';
   const groqModel = 'llama-3.3-70b-versatile';
-  const order = vision ? ['gemini'] : chooseChatOrder(preference);
+  const order = vision ? ['gemini'] : simpleQuery && requestedPreference === 'auto' ? chooseChatOrder('groq') : chooseChatOrder(preference);
   for (const provider of order) {
     try {
       const result = provider === 'gemini'
@@ -1513,6 +1516,48 @@ function estimatedReservationTokens(body) {
     : Math.min(40_000, Math.max(9_000, inputEstimate + 8_192));
 }
 
+function instantSmallTalkReply(body) {
+  const prompt = [...(Array.isArray(body?.messages) ? body.messages : [])]
+    .reverse()
+    .find(message => message?.role === 'user')?.content;
+  const normalized = String(prompt || '').trim().toLowerCase().replace(/[.!?]+$/g, '').replace(/\s+/g, ' ');
+  if (/^(?:hi|h[iî]|hello|hey|hlww|yo|good morning|good afternoon|good evening)$/.test(normalized)) {
+    return 'Hi! How can I help you today?';
+  }
+  if (/^(?:who are you|what are you|introduce yourself)$/.test(normalized)) {
+    return "I'm Zulora AI, your assistant for research, writing, coding, Google Workspace, and media creation.";
+  }
+  if (/^(?:how are you|how's it going|how are things)$/.test(normalized)) {
+    return "I'm here and ready to help. What would you like to work on?";
+  }
+  if (/^(?:thanks|thank you|thx)$/.test(normalized)) return "You're welcome!";
+  return '';
+}
+
+async function streamInstantReply(res, body, text) {
+  const preference = normalizeModelPreference(body.modelPreference || body.model);
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+  const send = (event, data) => {
+    if (res.destroyed || res.writableEnded) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    res.flush?.();
+  };
+  send('status', { status: 'connected' });
+  send('provider', { provider: 'Zulora AI', model: getZuloraEngineLabel(preference) });
+  for (const part of text.match(/\S+\s*/g) || [text]) {
+    if (res.destroyed || res.writableEnded) return;
+    send('token', { token: part });
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  send('done', { text, status: 'success', provider: 'Zulora AI', model: getZuloraEngineLabel(preference), usage: { type: 'chat', tracked: false, source: 'instant-response' } });
+  return res.end();
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return safeError(res, 405, 'Method not allowed.');
   let body = req.body;
@@ -1552,6 +1597,10 @@ export default async function handler(req, res) {
         body = { ...body, activeConnectorProviders: [] };
       }
     }
+  }
+  if (type === 'chat' && body.simpleQuery === true && (streamChat || streamGuestChat)) {
+    const instantReply = instantSmallTalkReply(body);
+    if (instantReply) return streamInstantReply(res, body, instantReply);
   }
   const preference = normalizeModelPreference(body.modelPreference || body.model);
   const clientVisibleEngine = getZuloraEngineLabel(preference);
