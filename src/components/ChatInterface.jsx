@@ -769,12 +769,14 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     skipModelPreferenceWriteRef.current = true;
     const sessionModel = activeSession?.modelPreference || activeSession?.model;
     const stored = readStoredModelPreference(modelPreferenceKey) || readStoredModelPreference('zulora_chat_model_preference') || 'auto';
-    if (typeof sessionModel === 'string' && sessionModel.trim()) {
+    const sessionHasMessages = Array.isArray(activeSession?.messages) && activeSession.messages.length > 0;
+    const sessionIsDefaultAuto = String(sessionModel || '').trim().toLowerCase() === 'auto' && !sessionHasMessages;
+    if (typeof sessionModel === 'string' && sessionModel.trim() && !sessionIsDefaultAuto) {
       setModelPreference(sessionModel);
     } else {
       setModelPreference(stored);
     }
-  }, [activeSession?.id, activeSession?.model, activeSession?.modelPreference, modelPreferenceKey]);
+  }, [activeSession?.id, activeSession?.messages?.length, modelPreferenceKey]);
 
   useEffect(() => {
     if (skipModelPreferenceWriteRef.current) {

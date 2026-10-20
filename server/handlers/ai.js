@@ -1521,7 +1521,7 @@ function instantSmallTalkReply(body) {
     .reverse()
     .find(message => message?.role === 'user')?.content;
   const normalized = String(prompt || '').trim().toLowerCase().replace(/[.!?]+$/g, '').replace(/\s+/g, ' ');
-  if (/^(?:hi|h[iî]|hello|hey|hlww|yo|good morning|good afternoon|good evening)$/.test(normalized)) {
+  if (/^(?:hi|h[iî]|hello|hey|hlww|yo|j+i+|good morning|good afternoon|good evening)$/.test(normalized)) {
     return 'Hi! How can I help you today?';
   }
   if (/^(?:who are you|what are you|introduce yourself)$/.test(normalized)) {
