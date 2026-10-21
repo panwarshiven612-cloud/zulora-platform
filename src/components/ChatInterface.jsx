@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
+﻿import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -74,6 +74,7 @@ import GuestGateModal from './GuestGateModal';
 import { guestGate } from '../services/guestGate';
 import { backgroundTaskManager } from '../services/backgroundTaskManager';
 import { runFullVideoPipeline } from '../services/videoEditAgent';
+import { MotionArtifact, detectMotionArtifact } from './chat/MotionArtifact';
 
 /* ============================================================
    CONSTANTS
@@ -529,7 +530,11 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                   </div>)}
                 </div>
               </details>}
-              <MarkdownContent content={message.content} />
+              {(() => {
+                const art = !message.streaming && message.role === 'assistant' ? detectMotionArtifact(message.content) : null;
+                if (art && art.hasArtifact) return React.createElement(React.Fragment, null, React.createElement(MotionArtifact, { htmlCode: art.htmlCode, title: art.title }), React.createElement(MarkdownContent, { content: art.cleanedText }));
+                return React.createElement(MarkdownContent, { content: message.content });
+              })()}
               {message.emailDispatch?.success && <div role="status" className="mt-3 flex items-start gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-emerald-900 shadow-sm dark:border-emerald-900/70 dark:bg-emerald-950/30 dark:text-emerald-100">
                 <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-emerald-600 text-white"><Check className="h-3.5 w-3.5" /></span>
                 <span className="min-w-0"><span className="block text-xs font-bold">Email dispatched successfully</span><span className="mt-0.5 block break-all text-[11px]">To: {message.emailDispatch.to}</span>{message.emailDispatch.subject && <span className="mt-0.5 block text-[11px] text-emerald-800/80 dark:text-emerald-200/80">Subject: {message.emailDispatch.subject}</span>}</span>
@@ -781,6 +786,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const activeRequestsRef = useRef(new Map());
   const activeGenerationControllerRef = useRef(null);
   const chatMountedRef = useRef(true);
+  // App-switch stream persistence: tracks page visibility without aborting active streams
+  const isHiddenRef = useRef(false);
   const modelPreferenceKey = `${CHAT_MODEL_PREFERENCE_KEY}_${currentUser?.uid || 'guest'}`;
   const skipModelPreferenceWriteRef = useRef(false);
 
@@ -930,6 +937,14 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       setMessages([]);
     }
   }, [activeSession?.id, activeSession?.messages]);
+
+  // App-switch stream persistence: track page visibility so we can suppress
+  // spurious AbortError disconnects when the user backgrounds the browser tab
+  useEffect(() => {
+    const onVisibilityChange = () => { isHiddenRef.current = document.hidden; };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
 
   // Scroll to bottom when messages update
   useEffect(() => {
@@ -1895,6 +1910,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         const requestCanCommitStop = activeGenerationControllerRef.current === generationController
           || activeGenerationControllerRef.current === null;
         if (!requestCanCommitStop) return;
+        // If page was backgrounded (app-switch) and abort came from network drop, silently discard
+        if (isHiddenRef.current && displayedText) return;
         clearTimeout(streamSnapshotTimer);
         const partialText = displayedText || streamedText;
         const stoppedAssistant = partialText ? {
