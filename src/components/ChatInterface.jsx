@@ -1410,7 +1410,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     setLoading(true);
     setShowThinking(true);
     clearTimeout(thinkingTimerRef.current);
-    thinkingTimerRef.current = setTimeout(() => setShowThinking(false), 7000);
+    thinkingTimerRef.current = setTimeout(() => setShowThinking(false), 500);
     setIsAtBottom(true);
     setQueryTime(null);
     pushThinkingStep('Preparing request');
@@ -1738,13 +1738,17 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             persistGenerationSnapshot();
             updateCodeTaskProgress(Math.min(95, Math.max(5, Math.floor(streamedText.length / 100))));
             if (!isRequestCurrent()) return;
-            scheduleStreamRender();
             if (!hasLoggedFirstToken) {
               hasLoggedFirstToken = true;
               pushThinkingStep('Streaming response at ultra-fast speed', 'running');
+              clearTimeout(thinkingTimerRef.current);
+              setShowThinking(false);
+              flushStreamImmediately();
+            } else {
+              clearTimeout(thinkingTimerRef.current);
+              setShowThinking(false);
+              scheduleStreamRender();
             }
-            clearTimeout(thinkingTimerRef.current);
-            setShowThinking(false);
           },
           onProvider: route => {
             streamedProvider = { provider: route?.provider || 'Zulora AI', model: route?.model || modelPreference };
@@ -1774,7 +1778,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             clearTimeout(thinkingTimerRef.current);
             if (isRequestCurrent()) {
               setShowThinking(true);
-              thinkingTimerRef.current = setTimeout(() => setShowThinking(false), 7000);
+              thinkingTimerRef.current = setTimeout(() => setShowThinking(false), 500);
             }
             pushThinkingStep('Retrying with the next available provider');
           },
