@@ -34,35 +34,77 @@ const AppLoading = ({ label = 'Opening your workspace...' }) => (
   </main>
 );
 
+/**
+ * AppErrorBoundary — self-healing boundary.
+ * On first crash: purges corrupted session localStorage keys, then auto-resets
+ * state after 50 ms so the component tree re-renders fresh without any error UI.
+ * Only shows a visible fallback UI if the second render also crashes (recovered===true).
+ */
 export class AppErrorBoundary extends React.Component {
-  state = { hasError: false };
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, recovered: false };
+  }
 
   static getDerivedStateFromError() {
     return { hasError: true };
   }
 
   componentDidCatch(error, errorInfo) {
-    console.error('Zulora AI could not render this view:', error, errorInfo);
+    console.error('Zulora AI caught a render error — auto-recovering:', error, errorInfo);
+    // Purge all corrupted localStorage chat/session keys so next render starts clean
+    try {
+      const keysToRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (
+          key &&
+          (key.startsWith('zulora_active_chat') ||
+            key.startsWith('zulora_session') ||
+            key === 'zulora_active_chat')
+        ) {
+          keysToRemove.push(key);
+        }
+      }
+      keysToRemove.forEach(k => {
+        try { localStorage.removeItem(k); } catch (e) { /* ignore */ }
+      });
+    } catch (lsErr) {
+      console.warn('Could not clear corrupted localStorage on recovery:', lsErr);
+    }
+    // Auto-attempt recovery — reset error state so the tree re-renders fresh
+    if (!this.state.recovered) {
+      setTimeout(() => {
+        this.setState({ hasError: false, recovered: true });
+      }, 80);
+    }
   }
 
   render() {
     if (this.state.hasError) {
+      // Show a brief spinner while auto-recovery fires (usually < 100 ms)
       return (
-        <main role="alert" className="min-h-screen grid place-items-center bg-slate-50 px-6 text-slate-800 dark:bg-[#070b14] dark:text-slate-100">
-          <section className="max-w-md rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-xl dark:border-slate-800 dark:bg-slate-900">
-            <img src={LOGO_URL} alt="Zulora AI" className="mx-auto mb-5 h-12 w-12 rounded-2xl object-cover" />
-            <h1 className="text-xl font-bold">This view hit a snag</h1>
-            <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
-              Zulora AI caught a rendering error. Reload the workspace to try again.
-            </p>
-            <button
-              type="button"
-              onClick={() => window.location.reload()}
-              className="mt-6 rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-600"
-            >
-              Reload workspace
-            </button>
-          </section>
+        <main
+          role="status"
+          aria-live="polite"
+          className="min-h-screen grid place-items-center bg-slate-50 dark:bg-[#070b14]"
+        >
+          <div className="flex flex-col items-center gap-4 rounded-2xl border border-slate-200 bg-white/90 px-8 py-6 shadow-xl dark:border-slate-800 dark:bg-slate-900/90">
+            <img src={LOGO_URL} alt="Zulora AI" className="h-12 w-12 rounded-2xl object-cover" />
+            <span className="h-6 w-6 animate-spin rounded-full border-2 border-sky-500 border-t-transparent" />
+            <span className="text-sm font-medium text-slate-600 dark:text-slate-300">
+              Restoring your workspace…
+            </span>
+            {this.state.recovered && (
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="mt-2 rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-600"
+              >
+                Reload workspace
+              </button>
+            )}
+          </div>
         </main>
       );
     }

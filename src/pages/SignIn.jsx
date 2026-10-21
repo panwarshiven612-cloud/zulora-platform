@@ -11,8 +11,11 @@ export const SignIn = ({ onAuthenticated }) => {
   const [consent, setConsent] = useState(false);
   const [consentError, setConsentError] = useState(false);
 
+  // If auth state changes to authenticated while on this page, redirect immediately
   useEffect(() => {
-    if (!loading && isAuthenticated) onAuthenticated?.();
+    if (!loading && isAuthenticated) {
+      try { onAuthenticated?.(); } catch (e) { console.warn('onAuthenticated callback failed:', e); }
+    }
   }, [isAuthenticated, loading, onAuthenticated]);
 
   // Persist consent in localStorage so we don't re-ask on auth redirect return
@@ -22,6 +25,18 @@ export const SignIn = ({ onAuthenticated }) => {
       if (saved === 'true') setConsent(true);
     } catch (storageError) {
       console.warn('Could not read saved sign-in consent:', storageError);
+    }
+    // Clear any corrupted active-chat session keys on the login page
+    // so that after sign-in the dashboard always starts fresh
+    try {
+      const keysToRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('zulora_active_chat')) keysToRemove.push(key);
+      }
+      keysToRemove.forEach(k => { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } });
+    } catch (e) {
+      console.warn('Could not pre-clear session keys on login page:', e);
     }
   }, []);
 
@@ -37,8 +52,11 @@ export const SignIn = ({ onAuthenticated }) => {
     setError('');
     try {
       const result = await signInWithGoogle();
-      if (!result.success) setError(result.error || 'Unable to complete Google sign-in.');
-      else if (result.user) onAuthenticated?.();
+      if (!result.success) {
+        setError(result.error || 'Unable to complete Google sign-in.');
+      } else if (result.user) {
+        try { onAuthenticated?.(); } catch (e) { console.warn('onAuthenticated callback failed:', e); }
+      }
     } catch (signInError) {
       setError(signInError.message || 'Unable to complete Google sign-in.');
     } finally {

@@ -18,6 +18,54 @@ import { firestoreService } from '../services/firestoreService';
 
 const AIStudio = lazy(() => import('./AIStudio'));
 
+// ─────────────────────────────────────────────────────────────
+// DashboardErrorBoundary — catches any crash inside a workspace
+// tab and silently resets the chat session state so the user
+// always sees the clean starter-cards screen instead of a crash.
+// ─────────────────────────────────────────────────────────────
+class DashboardErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error, info) {
+    console.error('[Dashboard] Caught render error — purging session and recovering:', error, info);
+    // Purge any corrupted active-chat keys from localStorage
+    try {
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && (k.startsWith('zulora_active_chat') || k === 'zulora_active_chat')) keys.push(k);
+      }
+      keys.forEach(k => { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } });
+    } catch (e) {
+      console.warn('[Dashboard] Could not clear localStorage on error:', e);
+    }
+    // Auto-reset after 80 ms — re-renders the tab with null session
+    setTimeout(() => this.setState({ hasError: false }), 80);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex-1 min-h-0 grid place-items-center bg-[#f8fafc] dark:bg-[#070b14]"
+        >
+          <span className="h-8 w-8 animate-spin rounded-full border-2 border-sky-500 border-t-transparent" />
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export const Dashboard = ({
   initialTab = 'chat',
   onNavigate,
@@ -53,7 +101,7 @@ export const Dashboard = ({
     }
   }, [initialTab]);
 
-  // Load / Restore active chat session
+  // Load / Restore active chat session — with full defensive guards
   useEffect(() => {
     if (!currentUser?.uid) return;
     let active = true;
@@ -62,25 +110,33 @@ export const Dashboard = ({
     try {
       sessionId = localStorage.getItem(activeChatKey);
     } catch (e) {
-      console.warn('LocalStorage error:', e);
+      console.warn('LocalStorage read error:', e);
     }
 
-    if (sessionId && sessionId.length <= 150 && !sessionId.includes('/')) {
+    // Validate sessionId to avoid Firestore path-injection or corrupt values
+    if (sessionId && typeof sessionId === 'string' && sessionId.length <= 150 && !sessionId.includes('/') && !sessionId.startsWith('{')) {
       firestoreService.getChatSession(currentUser.uid, sessionId).then(session => {
-        if (active && session && typeof session === 'object' && typeof session.id === 'string') {
+        if (
+          active &&
+          session &&
+          typeof session === 'object' &&
+          typeof session.id === 'string'
+        ) {
           setActiveSession({
             ...session,
             messages: Array.isArray(session.messages)
-              ? session.messages.filter(message => message && typeof message === 'object')
+              ? session.messages.filter(m => m && typeof m === 'object' && typeof m.role === 'string')
               : []
           });
         }
       }).catch(err => {
         console.warn('Could not restore chat session:', err);
+        // Clear invalid key so next load starts fresh
+        try { localStorage.removeItem(activeChatKey); } catch (e) { /* ignore */ }
       });
     } else if (sessionId) {
-      try { localStorage.removeItem(activeChatKey); }
-      catch (error) { console.warn('Could not remove invalid active chat state:', error); }
+      // Invalid value — remove it
+      try { localStorage.removeItem(activeChatKey); } catch (e) { /* ignore */ }
     }
     return () => { active = false; };
   }, [currentUser?.uid]);
@@ -105,7 +161,7 @@ export const Dashboard = ({
     if (currentUser?.uid) {
       try {
         localStorage.setItem(`zulora_active_chat_${currentUser.uid}`, newChatId);
-      } catch {}
+      } catch (e) { /* ignore */ }
     }
     setActiveSession(freshSession);
     setActiveTab('chat');
@@ -117,12 +173,12 @@ export const Dashboard = ({
     if (currentUser?.uid && session?.id) {
       try {
         localStorage.setItem(`zulora_active_chat_${currentUser.uid}`, String(session.id));
-      } catch {}
+      } catch (e) { /* ignore */ }
     }
     setActiveSession({
       ...session,
       messages: Array.isArray(session.messages)
-        ? session.messages.filter(message => message && typeof message === 'object')
+        ? session.messages.filter(m => m && typeof m === 'object')
         : []
     });
     setActiveTab('chat');
@@ -134,7 +190,7 @@ export const Dashboard = ({
     if (currentUser?.uid && updatedSession?.id) {
       try {
         localStorage.setItem(`zulora_active_chat_${currentUser.uid}`, String(updatedSession.id));
-      } catch {}
+      } catch (e) { /* ignore */ }
     }
     setActiveSession(previous => previous?.id === updatedSession.id ? { ...previous, ...updatedSession } : previous || updatedSession);
   }, [currentUser?.uid]);
@@ -200,33 +256,35 @@ export const Dashboard = ({
           onOpenComputerPlugin={guestMode ? undefined : () => setIsComputerPluginOpen(true)}
         />
 
-        {/* Main Interactive Area */}
-        <main aria-label={`${safeDisplayName}'s Zulora AI workspace`} className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden relative">
-          {activeTab === 'chat' && (
-            <ChatInterface
-              activeSession={activeSession}
-              onUpdateSession={handleUpdateSession}
-              onNewChat={handleNewChat}
-              onOpenVoiceAssistant={guestMode ? undefined : () => setIsVoiceModalOpen(true)}
-              pendingLibraryAsset={pendingLibraryAsset}
-              onLibraryAssetConsumed={() => setPendingLibraryAsset(null)}
-              guestMode={guestMode}
-              onNavigate={onNavigate}
-            />
-          )}
+        {/* Main Interactive Area — wrapped in DashboardErrorBoundary */}
+        <DashboardErrorBoundary>
+          <main aria-label={`${safeDisplayName}'s Zulora AI workspace`} className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden relative">
+            {activeTab === 'chat' && (
+              <ChatInterface
+                activeSession={activeSession}
+                onUpdateSession={handleUpdateSession}
+                onNewChat={handleNewChat}
+                onOpenVoiceAssistant={guestMode ? undefined : () => setIsVoiceModalOpen(true)}
+                pendingLibraryAsset={pendingLibraryAsset}
+                onLibraryAssetConsumed={() => setPendingLibraryAsset(null)}
+                guestMode={guestMode}
+                onNavigate={onNavigate}
+              />
+            )}
 
-          {activeTab === 'image' && <ImageGenerator />}
-          {activeTab === 'video' && <VideoGenerator />}
-          {activeTab === 'brain' && <AiBrain />}
-          {activeTab === 'vault' && <UserVault />}
-          {activeTab === 'library' && <Library onInsertIntoChat={asset => { setPendingLibraryAsset(asset); handleSelectTab('chat'); }} />}
+            {activeTab === 'image' && <ImageGenerator />}
+            {activeTab === 'video' && <VideoGenerator />}
+            {activeTab === 'brain' && <AiBrain />}
+            {activeTab === 'vault' && <UserVault />}
+            {activeTab === 'library' && <Library onInsertIntoChat={asset => { setPendingLibraryAsset(asset); handleSelectTab('chat'); }} />}
 
-          {activeTab === 'studio' && (
-            <Suspense fallback={<div className="min-h-full grid place-items-center bg-[#070914] text-slate-300">Loading AI Studio...</div>}>
-              <AIStudio onExitDashboard={() => handleSelectTab('chat')} />
-            </Suspense>
-          )}
-        </main>
+            {activeTab === 'studio' && (
+              <Suspense fallback={<div className="min-h-full grid place-items-center bg-[#070914] text-slate-300">Loading AI Studio...</div>}>
+                <AIStudio onExitDashboard={() => handleSelectTab('chat')} />
+              </Suspense>
+            )}
+          </main>
+        </DashboardErrorBoundary>
       </div>
 
       {/* Voice Assistant Modal Overlay */}
