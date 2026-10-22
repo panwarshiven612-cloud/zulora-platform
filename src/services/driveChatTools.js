@@ -33,7 +33,7 @@ function dataUrlToAttachment(file, dataUrl) {
 
 async function downloadDriveAttachment(file) {
   if (!file.downloadURL) return null;
-  if (Number(file.size) > 3 * 1024 * 1024) throw new Error(`${file.name} is too large to send to the model (maximum 3 MB).`);
+  if (Number(file.size) > 50 * 1024 * 1024) throw new Error(`${file.name} is too large to send to the model (maximum 50 MB).`);
   const response = await fetch(file.downloadURL);
   if (!response.ok) throw new Error(`Could not download ${file.name} from Zulora Drive.`);
   const blob = await response.blob();
@@ -46,7 +46,7 @@ async function downloadDriveAttachment(file) {
 
 async function extractDriveDocumentText(file) {
   if (!file.downloadURL) return '';
-  if (Number(file.size) > 3 * 1024 * 1024) throw new Error(`${file.name} is too large to read in chat (maximum 3 MB).`);
+  if (Number(file.size) > 50 * 1024 * 1024) throw new Error(`${file.name} is too large to read in chat (maximum 50 MB).`);
   const response = await fetch(file.downloadURL);
   if (!response.ok) throw new Error(`Could not download ${file.name} from Zulora Drive.`);
   const blob = await response.blob();

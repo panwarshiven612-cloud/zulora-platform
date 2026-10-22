@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import ModelSelector from './ModelSelector';
 
+export const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB max file size
+
 export default function ChatInput({
   inputPrompt = '',
   setInputPrompt,

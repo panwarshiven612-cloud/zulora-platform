@@ -1,9 +1,9 @@
 /**
- * workspace.ts — Google Workspace Agent & Dispatcher for Zulora AI
+ * workspace.ts — Google Workspace & Zulora Drive Agent Dispatcher
  * =================================================================
  * Provides seamless, strongly-typed execution for Google Workspace services:
- * Gmail, Google Sheets, Google Calendar, Google Forms, and Google Drive.
- * Aligned with official Google OAuth 2.0 credentials and error handling.
+ * Gmail (send, draft, search, read, and inbox analysis), Google Sheets,
+ * Google Calendar, Google Forms, and full Zulora Drive Firestore/Storage synchronization.
  */
 
 import {
@@ -13,6 +13,7 @@ import {
   GOOGLE_WORKSPACE_SCOPES
 } from '../config/google';
 import connectorManager from '../../services/connectorManager';
+import { zuloraDriveService } from '../../services/zuloraDriveService';
 
 export {
   GOOGLE_CLIENT_ID,
@@ -106,6 +107,44 @@ export async function searchGmailMessages(query: string, maxResults = 10): Promi
   }
 }
 
+/**
+ * Live Gmail reader: fetches recent emails with snippet, sender, subject, date
+ */
+export async function readGmailEmails(options: {
+  query?: string;
+  maxResults?: number;
+  allResults?: boolean;
+} = {}): Promise<WorkspaceResponse> {
+  try {
+    const emails = await connectorManager.readEmails({
+      query: options.query || 'in:inbox',
+      max_results: options.maxResults || 5,
+      all_results: Boolean(options.allResults)
+    });
+    return { success: true, data: emails };
+  } catch (err: any) {
+    return handleWorkspaceError(err);
+  }
+}
+
+/**
+ * Live Gmail inbox analysis: aggregates unread counts, top senders, and recent threads
+ */
+export async function analyzeGmailInbox(options: {
+  query?: string;
+  maxResults?: number;
+} = {}): Promise<WorkspaceResponse> {
+  try {
+    const analysis = await connectorManager.analyzeInbox({
+      query: options.query || 'in:inbox',
+      max_results: options.maxResults || 10
+    });
+    return { success: true, data: analysis };
+  } catch (err: any) {
+    return handleWorkspaceError(err);
+  }
+}
+
 // ==========================================
 // 2. GOOGLE SHEETS AGENT HANDLERS
 // ==========================================
@@ -194,7 +233,7 @@ export async function deleteCalendarEvent(eventId: string): Promise<WorkspaceRes
 }
 
 // ==========================================
-// 4. GOOGLE DRIVE AGENT HANDLERS
+// 4. GOOGLE DRIVE & ZULORA DRIVE HANDLERS
 // ==========================================
 
 export async function searchDriveFiles(query = '', pageSize = 20): Promise<WorkspaceResponse> {
@@ -216,6 +255,49 @@ export async function createDriveFolder(name: string, parentFolderId?: string): 
     };
   } catch (err: any) {
     return handleWorkspaceError(err);
+  }
+}
+
+/**
+ * Saves uploaded image, generated MP4, or file artifact directly to Zulora Drive Storage & Firestore
+ */
+export async function saveToZuloraDrive(
+  fileOrBlob: File | Blob,
+  folderPath = 'AI Generated',
+  fileName?: string
+): Promise<WorkspaceResponse> {
+  try {
+    const file = fileOrBlob instanceof File
+      ? fileOrBlob
+      : new File([fileOrBlob], fileName || `artifact_${Date.now()}`, { type: fileOrBlob.type || 'application/octet-stream' });
+    const uploaded = await zuloraDriveService.uploadFileToDrive(file, folderPath);
+    return {
+      success: true,
+      data: uploaded,
+      url: uploaded?.downloadURL || uploaded?.url
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || 'Failed to save to Zulora Drive',
+      code: 'ZULORA_DRIVE_UPLOAD_FAILED'
+    };
+  }
+}
+
+/**
+ * Retrieves files from Zulora Drive for current user
+ */
+export async function listZuloraDriveFiles(folderPath = ''): Promise<WorkspaceResponse> {
+  try {
+    const files = await zuloraDriveService.listFiles(folderPath);
+    return { success: true, data: files };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || 'Failed to list Zulora Drive files',
+      code: 'ZULORA_DRIVE_LIST_FAILED'
+    };
   }
 }
 
@@ -252,6 +334,10 @@ export async function executeWorkspaceAction(action: string, params: Record<stri
       return createGmailDraft({ to: params.to, subject: params.subject, body: params.body });
     case 'gmail_search':
       return searchGmailMessages(params.query, params.maxResults);
+    case 'gmail_read':
+      return readGmailEmails({ query: params.query, maxResults: params.maxResults, allResults: params.allResults });
+    case 'gmail_analyze':
+      return analyzeGmailInbox({ query: params.query, maxResults: params.maxResults });
     case 'sheets_create':
       return createGoogleSheet(params.title, params.headers, params.initialRows);
     case 'sheets_read':
@@ -268,6 +354,10 @@ export async function executeWorkspaceAction(action: string, params: Record<stri
       return searchDriveFiles(params.query, params.pageSize);
     case 'drive_create_folder':
       return createDriveFolder(params.name, params.parentFolderId);
+    case 'zulora_drive_save':
+      return saveToZuloraDrive(params.file, params.folderPath, params.fileName);
+    case 'zulora_drive_list':
+      return listZuloraDriveFiles(params.folderPath);
     case 'forms_create':
       return createGoogleForm(params.title, params.description, params.questions);
     default:
@@ -283,6 +373,8 @@ export default {
   sendGmailEmail,
   createGmailDraft,
   searchGmailMessages,
+  readGmailEmails,
+  analyzeGmailInbox,
   createGoogleSheet,
   readGoogleSheet,
   appendGoogleSheetData,
@@ -291,6 +383,8 @@ export default {
   deleteCalendarEvent,
   searchDriveFiles,
   createDriveFolder,
+  saveToZuloraDrive,
+  listZuloraDriveFiles,
   createGoogleForm,
   executeWorkspaceAction,
   GOOGLE_CLIENT_ID,
@@ -298,4 +392,3 @@ export default {
   GOOGLE_DEFAULT_REDIRECT_URI,
   GOOGLE_WORKSPACE_SCOPES
 };
-

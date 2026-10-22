@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -157,11 +157,11 @@ const requestedVideoDuration = prompt => {
 const isImageEditIntent = (prompt, hasImageAttachment) => hasImageAttachment && IMAGE_EDIT_REGEX.test(String(prompt || ''));
 const isVideoGenIntent = prompt => VIDEO_GEN_REGEX.test(String(prompt || ''));
 const isVideoEditIntent = prompt => /\b(?:caption|subtitle|kinetic|motion graphics?|transcribe|edit|trim|crop|add text|overlay|remove audio|replace audio)\b/i.test(String(prompt || ''));
-const MAX_INLINE_ATTACHMENT_BYTES = 2_700_000;
+const MAX_INLINE_ATTACHMENT_BYTES = 50 * 1024 * 1024; // 50 MB
 const safeChatError = error => {
-  const message = String(error?.message || 'The response could not be completed. Please try again.');
+  const message = String(error?.message || 'Connection interrupted. Please try again.');
   return /(?:Gemini|Groq|Cerebras|OpenRouter|Mistral|ElevenLabs|provider|HTTP\s*\d{3}|\b(?:401|403|408|425|429|500|503)\b|API key|rate.?limit|timeout|timed out|network|fetch failed|overloaded|generation failed)/i.test(message)
-    ? 'The response could not be completed. Please try again.'
+    ? 'Connection interrupted. Please try again.'
     : message;
 };
 const attachWebCitations = (content, sources = []) => {
@@ -619,7 +619,7 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
               {message.streaming && (
                 <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-sky-200/50 bg-sky-50/50 px-2.5 py-1 text-[10px] font-semibold text-sky-600 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-400">
                   <span className="animate-pulse">⚡</span>
-                  <span>Generating ({message.streamMetrics ? `~${message.streamMetrics.tokens} tokens | ~${message.streamMetrics.tokensPerSec} tokens/sec` : 'tokens...'})</span>
+                  <span>Thinking / Generating ({message.streamMetrics ? `~${message.streamMetrics.tokens} tokens | ~${message.streamMetrics.tokensPerSec} tokens/sec` : "tokens..."})</span>
                   <span aria-hidden="true" className="inline-block h-3 ml-0.5 align-middle border-r-2 border-sky-500 animate-pulse" />
                 </div>
               )}
@@ -1181,11 +1181,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         const inlineFiles = [...imageFiles, ...pdfFiles, ...directVideoFiles];
         const inlineBytes = inlineFiles.reduce((total, file) => total + Number(file.size || 0), 0);
         if (inlineBytes > MAX_INLINE_ATTACHMENT_BYTES) {
-          throw new Error('For direct in-chat analysis, keep attached images, videos, and PDFs under 2.7 MB total.');
+          throw new Error('For direct in-chat analysis, keep attached files under 50 MB total.');
         }
         const inlineAttachments = await Promise.all([...imageFiles, ...pdfFiles].map(async file => {
-          if (isPdfAttachment(file) && file.size > 3 * 1024 * 1024) {
-            throw new Error('PDFs must be 3 MB or smaller to attach. Save a smaller copy and try again.');
+          if (isPdfAttachment(file) && file.size > 50 * 1024 * 1024) {
+            throw new Error('PDFs must be 50 MB or smaller to attach. Save a smaller copy and try again.');
           }
           const base64 = await getAttachmentDataUrl(file, generationController.signal);
           const mimeType = base64.match(/^data:([^;]+);base64,/)?.[1] || attachmentMimeType(file);
@@ -1965,7 +1965,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       const errorMsg = {
         id: assistantId,
         role: 'assistant',
-        content: `⚠️ **This response could not be completed**: ${userError}`,
+        content: streamedText || (userError || "Connection interrupted. Please try again."),
         timestamp: Date.now(),
         model: 'Error',
         thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps.map(step => step.status === 'running' ? { ...step, status: 'done' } : step), { label: 'Request completed with warnings', status: 'done', detail: userError }] : undefined,

@@ -2,13 +2,13 @@ import React from 'react';
 import { 
   Sparkles, 
   Zap, 
-  Brain, 
   Gauge, 
   Check, 
   ChevronDown,
   Cpu,
   Layers,
-  Flame
+  Flame,
+  Brain
 } from 'lucide-react';
 
 export interface ModelOption {
@@ -26,16 +26,16 @@ export const MODEL_OPTIONS: ModelOption[] = [
     id: 'auto',
     label: 'Auto',
     shortLabel: 'Auto',
-    description: 'Smart Route — best model selected per query',
+    description: 'Smart Route — LPU for simple, Gemini for code & research',
     icon: Sparkles,
     color: 'text-sky-500',
     badge: 'Smart'
   },
   {
     id: 'gemini',
-    label: 'Gemini',
+    label: 'Gemini Flash',
     shortLabel: 'Gemini',
-    description: 'Gemini 2.5 / 3.8 Flash & Pro Pool',
+    description: 'Gemini 2.5 / 3.8 Flash — 40k token high-speed execution',
     icon: Zap,
     color: 'text-amber-500',
     badge: 'Flash'
@@ -44,7 +44,7 @@ export const MODEL_OPTIONS: ModelOption[] = [
     id: 'groq',
     label: 'Groq LPU',
     shortLabel: 'Groq LPU',
-    description: 'Ultra-fast Llama 3.3 70B on LPU hardware',
+    description: 'Ultra-fast LPU hardware acceleration',
     icon: Gauge,
     color: 'text-orange-500',
     badge: 'LPU'
@@ -53,7 +53,7 @@ export const MODEL_OPTIONS: ModelOption[] = [
     id: 'cerebras',
     label: 'Cerebras Ultra Speed',
     shortLabel: 'Cerebras',
-    description: 'Wafer-scale accelerated Llama 3.1 70B',
+    description: 'Wafer-scale accelerated ultra-low latency',
     icon: Cpu,
     color: 'text-rose-500',
     badge: 'Wafer'
@@ -71,7 +71,7 @@ export const MODEL_OPTIONS: ModelOption[] = [
     id: 'mistral',
     label: 'Mistral AI',
     shortLabel: 'Mistral',
-    description: 'Mistral Small & Large — deep synthesis',
+    description: 'Mistral Small & Large deep synthesis',
     icon: Flame,
     color: 'text-red-500',
     badge: 'Mistral'
@@ -102,22 +102,17 @@ export default function ModelSelector({
   onToggle,
   onClose
 }: ModelSelectorProps) {
-  // Normalize model ID to match available engines — supports both legacy Zulora names and raw IDs
+  // Normalize model ID to match available engines
   const normalizedId = (() => {
     const raw = String(modelPreference || 'auto').trim();
     const cur = raw.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
     if (cur === 'auto' || cur === 'zulora auto') return 'auto';
-    if (cur === 'gemini' || cur === 'flash' || cur === 'zulora fast' || cur === 'fast' || cur.startsWith('gemini ')) return 'gemini';
+    if (cur === 'gemini' || cur === 'gemini flash' || cur === 'flash' || cur.startsWith('gemini ')) return 'gemini';
     if (cur === 'groq' || cur === 'groq lpu' || cur === 'zulora lpu speed' || cur === 'zulora lpu') return 'groq';
-    if (cur === 'cerebras' || cur === 'cerebras ultra speed' || cur === 'zulora ultra speed' || cur === 'ultra speed') return 'cerebras';
-    if (cur === 'openrouter' || cur === 'openrouter multi provider' || cur === 'zulora global engine') return 'openrouter';
-    if (cur === 'mistral' || cur === 'mistral ai' || cur === 'zulora reasoning') return 'mistral';
+    if (cur === 'cerebras' || cur === 'cerebras ultra speed' || cur === 'ultra speed') return 'cerebras';
+    if (cur === 'openrouter' || cur === 'openrouter multi provider' || cur === 'openrouter multi-provider') return 'openrouter';
+    if (cur === 'mistral' || cur === 'mistral ai') return 'mistral';
     if (cur === 'pro ultra' || cur === 'zulora 3.1 pro ultra' || cur === 'think' || cur === 'pro' || cur === 'gemini 2.5 pro') return 'pro_ultra';
-    if (cur === 'gemini' || cur === 'flash' || cur.startsWith('gemini ')) return 'gemini';
-    if (cur === 'groq') return 'groq';
-    if (cur === 'cerebras') return 'cerebras';
-    if (cur === 'openrouter') return 'openrouter';
-    if (cur === 'mistral') return 'mistral';
     return cur || 'auto';
   })();
 
@@ -130,7 +125,7 @@ export default function ModelSelector({
     try {
       localStorage.setItem('zulora_chat_model_preference', modelId);
     } catch {
-      // storage unavailable
+      // storage fallback
     }
     onModelChange?.(modelId);
     onClose?.();

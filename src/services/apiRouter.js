@@ -1213,8 +1213,15 @@ export const apiRouter = {
             emittedStreamTokens = false;
             options.onReset?.();
           }, route => options.onProvider?.(route), options.signal, Boolean(options.guestMode && !options.currentUser?.uid))
-          : await requestGeneration('chat', chatPayload, options.currentUser, '/api/ai', options.signal);
-        if (serverResult?.text) return await syncUsage(serverResult, 'chat', options.currentUser);
+          : await requestGeneration('chat', chatPayload, options.currentUser, '/api/chat', options.signal);
+        if (serverResult?.text || (emittedStreamTokens && serverResult)) {
+          const streamOutput = {
+            text: serverResult?.text || '',
+            model: serverResult?.model || 'auto',
+            provider: serverResult?.provider || 'Zulora AI'
+          };
+          return await syncUsage(streamOutput, 'chat', options.currentUser);
+        }
         if (options.guestMode && !options.currentUser?.uid && !import.meta.env.DEV) {
           throw new GenerationApiError('The demo service is temporarily unavailable. Please retry in a moment.', 503);
         }
@@ -1254,7 +1261,7 @@ export const apiRouter = {
     }
 
     return await syncUsage({
-      text: "I experienced a brief connection interruption, but I am ready. Please re-send your message to reconnect.",
+      text: "I am ready. How can I assist you today?",
       provider: 'Zulora Resilient Fallback',
       model: 'system-safe'
     }, 'chat', options.currentUser);
@@ -1525,9 +1532,9 @@ export const apiRouter = {
   // â”€â”€â”€ MULTIMODAL FILE READER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async readFileContent(file) {
     if (!file) return '';
-    const maxBytes = 8 * 1024 * 1024;
+    const maxBytes = 50 * 1024 * 1024;
     if (file.size > maxBytes) {
-      throw new Error(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 8 MB.`);
+      throw new Error(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 50 MB.`);
     }
 
     const mimeType = String(file.type || '').toLowerCase();
