@@ -373,7 +373,7 @@ export const AccountSettings = ({ onClose }) => {
                 className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-sky-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
               >
                 {voiceOptions.filter(voice => voice.tier === 'free' || tier !== 'free').map(voice => (
-                  <option key={voice.id} value={voice.id}>{voice.name} Â· {voice.gender}{voice.tier === 'pro' ? ' Â· Pro' : ''}</option>
+                  <option key={voice.id} value={voice.id}>{voice.name} · {voice.gender}{voice.tier === 'pro' ? ' · Pro' : ''}</option>
                 ))}
               </select>
               {tier === 'free' && <p className="mt-2 text-[10px] text-slate-500 dark:text-slate-400">Upgrade to Pro for two additional studio voices.</p>}
@@ -415,7 +415,7 @@ export const AccountSettings = ({ onClose }) => {
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
                     Permanently removes your account, all chat sessions, usage data, and personal information from Zulora AI's databases.
                     This action is <strong>irreversible</strong> and complies with your Right to Erasure under the{' '}
-                    <span className="text-sky-500 font-semibold">DPDP Act 2023 Â§17</span>.
+                    <span className="text-sky-500 font-semibold">DPDP Act 2023 §17</span>.
                   </p>
                 </div>
 
@@ -449,7 +449,7 @@ export const AccountSettings = ({ onClose }) => {
                 <a href="https://zulora.in/terms.html" target="_blank" rel="noopener noreferrer" className="text-sky-600 underline dark:text-sky-400">Terms of Service</a>
               </div>
               <p className="mt-2 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
-                24/7 support for Zulora AI & Zulora Drive: <a href="mailto:zulora.help@gmail.com" className="text-sky-600 underline dark:text-sky-400">zulora.help@gmail.com</a> Â· <a href="https://wa.me/916395211325" target="_blank" rel="noopener noreferrer" className="text-sky-600 underline dark:text-sky-400">WhatsApp +91 6395211325</a>
+                24/7 support for Zulora AI & Zulora Drive: <a href="mailto:zulora.help@gmail.com" className="text-sky-600 underline dark:text-sky-400">zulora.help@gmail.com</a> · <a href="https://wa.me/916395211325" target="_blank" rel="noopener noreferrer" className="text-sky-600 underline dark:text-sky-400">WhatsApp +91 6395211325</a>
               </p>
             </section>
           </div>

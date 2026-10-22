@@ -12,8 +12,28 @@ import {
   GOOGLE_DEFAULT_REDIRECT_URI,
   GOOGLE_WORKSPACE_SCOPES
 } from '../config/google';
-import connectorManager from '../../services/connectorManager';
+import rawConnectorManager from '../../services/connectorManager';
 import { zuloraDriveService } from '../../services/zuloraDriveService';
+
+export interface ConnectorManager {
+  sendEmail(options: any): Promise<any>;
+  createDraft(options: any): Promise<any>;
+  searchMessages(query: string, maxResults?: number): Promise<any>;
+  readEmails(options?: any): Promise<any>;
+  analyzeInbox(options?: any): Promise<any>;
+  createSpreadsheet(title: any, headers?: any[], initialRows?: any[]): Promise<any>;
+  readSheetData(options: any): Promise<any>;
+  appendSheetRows(options: any): Promise<any>;
+  listEvents(options?: any): Promise<any>;
+  createEvent(options: any): Promise<any>;
+  deleteEvent(eventId: any): Promise<any>;
+  searchFiles(query?: string, pageSize?: number): Promise<any>;
+  createFolder(name: string, parentFolderId?: string): Promise<any>;
+  createForm(options: any): Promise<any>;
+  [key: string]: any;
+}
+
+const connectorManager: ConnectorManager = rawConnectorManager as any;
 
 export {
   GOOGLE_CLIENT_ID,

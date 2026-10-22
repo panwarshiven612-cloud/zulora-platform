@@ -240,7 +240,7 @@ export async function extractAndPopulateSheetFromVision(options: SheetExtraction
 
   try {
     // Populate with chunking handled in createAndPopulateSpreadsheet
-    const populated = await connectorManager.createAndPopulateSpreadsheet({ title, rows });
+    const populated = await (connectorManager as any).createAndPopulateSpreadsheet({ title, rows });
     return {
       success: true,
       spreadsheet: populated.spreadsheet,

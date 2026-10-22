@@ -192,7 +192,7 @@ export async function executeDynamicEmail(options: DynamicEmailOptions): Promise
     });
 
     if (isDraft) {
-      const res = await connectorManager.createGmailDraft({
+      const res = await (connectorManager as any).createGmailDraft({
         to,
         subject,
         body: htmlContent
@@ -208,7 +208,7 @@ export async function executeDynamicEmail(options: DynamicEmailOptions): Promise
       };
     }
 
-    const res = await connectorManager.sendGmailMessage({
+    const res = await (connectorManager as any).sendGmailMessage({
       to,
       subject,
       body: htmlContent,

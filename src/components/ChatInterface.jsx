@@ -574,10 +574,10 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                     </a>
                   </div>
                   {Array.isArray(message.videoStoryboard?.scenes) && message.videoStoryboard.scenes.length > 0 && <details className="rounded-lg border border-slate-200/80 px-3 py-2 text-xs dark:border-slate-700/70">
-                    <summary className="cursor-pointer font-semibold text-slate-600 dark:text-slate-300">Storyboard Â· {message.videoStoryboard.totalDuration || message.videoStoryboard.scenes.at(-1)?.end || '?'}s</summary>
+                    <summary className="cursor-pointer font-semibold text-slate-600 dark:text-slate-300">Storyboard · {message.videoStoryboard.totalDuration || message.videoStoryboard.scenes.at(-1)?.end || '?'}s</summary>
                     <ol className="mt-2 space-y-1.5 text-slate-500 dark:text-slate-400">
                       {message.videoStoryboard.scenes.map((scene, sceneIndex) => <li key={`${scene.id || sceneIndex}-${scene.start}`}>
-                        <span className="font-semibold">{scene.start}â€“{scene.end}s</span> Â· {scene.caption || scene.text || scene.hero || 'Scene'}
+                        <span className="font-semibold">{scene.start}â€“{scene.end}s</span> · {scene.caption || scene.text || scene.hero || 'Scene'}
                       </li>)}
                     </ol>
                   </details>}

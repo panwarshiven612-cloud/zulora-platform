@@ -1241,17 +1241,45 @@ export const connectorManager = {
     return result;
   },
 
-  async createSpreadsheet({ title, folder_id = '', signal }) {
+  async createSpreadsheet(titleOrOpts, headers = [], initialRows = []) {
+    let title = '';
+    let folder_id = '';
+    let signal = undefined;
+    if (typeof titleOrOpts === 'object' && titleOrOpts !== null) {
+      title = titleOrOpts.title;
+      folder_id = titleOrOpts.folder_id || '';
+      signal = titleOrOpts.signal;
+    } else {
+      title = titleOrOpts;
+    }
     const safeTitle = String(title || '').trim();
     if (!safeTitle) throw new Error('A spreadsheet title is required.');
     const spreadsheet = await this.apiFetch('sheets', 'https://sheets.googleapis.com/v4/spreadsheets', {
       method: 'POST', body: JSON.stringify({ properties: { title: safeTitle } }), expectedStatus: 200, signal
     });
     if (!spreadsheet?.spreadsheetId) throw new Error('Google Sheets did not return the new spreadsheet ID.');
-    if (!String(folder_id || '').trim()) return spreadsheet;
+
+    // If headers or initialRows are provided, append them
+    const allRows = [];
+    if (Array.isArray(headers) && headers.length > 0) allRows.push(headers);
+    if (Array.isArray(initialRows) && initialRows.length > 0) allRows.push(...initialRows);
+    if (allRows.length > 0) {
+      try {
+        await this.appendSheetRow({
+          spreadsheet_id: spreadsheet.spreadsheetId,
+          range: 'Sheet1!A1',
+          values: allRows
+        });
+      } catch (err) {
+        console.warn('Could not add initial rows to spreadsheet:', err);
+      }
+    }
+
+    const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheet.spreadsheetId}/edit`;
+    if (!String(folder_id || '').trim()) return { ...spreadsheet, spreadsheetUrl };
     const folder = normalizeSpreadsheetId(folder_id);
     const file = await this.moveDriveFileToFolder({ file_id: spreadsheet.spreadsheetId, folder_id: folder });
-    return { ...spreadsheet, driveFile: file };
+    return { ...spreadsheet, driveFile: file, spreadsheetUrl };
   },
 
   async createDriveFolder({ name }) {
@@ -1446,6 +1474,59 @@ export const connectorManager = {
     const a1Range = normalizeSheetRange(range);
     const result = await this.apiFetch('sheets', `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(id)}/values/${encodeURIComponent(a1Range)}`);
     return result.values || [];
+  },
+
+  async sendEmail(toOrOpts, subject, body, options = {}) {
+    if (typeof toOrOpts === 'object' && toOrOpts !== null) {
+      return this.sendGmailMessage(toOrOpts);
+    }
+    return this.sendGmailMessage({ to: toOrOpts, subject, body, ...options });
+  },
+
+  async createDraft(toOrOpts, subject, body) {
+    if (typeof toOrOpts === 'object' && toOrOpts !== null) {
+      return this.createGmailDraft(toOrOpts);
+    }
+    return this.createGmailDraft({ to: toOrOpts, subject, body });
+  },
+
+  async searchMessages(query = 'in:inbox', maxResults = 10) {
+    return this.searchGmailThreads({ query, max_results: maxResults });
+  },
+
+  async appendSheetRows({ spreadsheetId, spreadsheet_id = spreadsheetId, range = 'Sheet1!A1', values = [], signal } = {}) {
+    return this.appendSheetRow({ spreadsheet_id, range, values, signal });
+  },
+
+  async searchFiles(query = '', pageSize = 20) {
+    return this.listGoogleDriveFiles({ query, max_results: pageSize });
+  },
+
+  async createFolder(name, parentFolderId) {
+    return this.createDriveFolder({ name, parentFolderId });
+  },
+
+  async listEvents({ timeMin, timeMax, maxResults = 50 } = {}) {
+    return this.getCalendarEvents({ time_min: timeMin, time_max: timeMax, max_results: maxResults });
+  },
+
+  async createEvent(event = {}) {
+    return this.createCalendarEvent({
+      title: event.summary || event.title,
+      start_time: event.start,
+      end_time: event.end,
+      description: event.description || '',
+      attendees: event.attendees,
+      location: event.location
+    });
+  },
+
+  async deleteEvent(eventId) {
+    return this.deleteCalendarEvent({ event_id: eventId });
+  },
+
+  async createForm(options = {}) {
+    return this.createGoogleForm(options);
   }
 };
 
