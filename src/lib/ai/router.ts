@@ -86,7 +86,7 @@ export function resolveModelRoute(
 
   // 1. Explicit User Selection Overrides
   if (raw === 'gemini' || raw === 'gemini flash' || raw === 'flash') {
-    return { provider: 'gemini', model: 'gemini-2.5-flash', isAuto: false, maxTokens: 16384, taskType: 'general' };
+    return { provider: 'gemini', model: 'gemini-3.8-flash', isAuto: false, maxTokens: 40000, taskType: 'general' };
   }
   if (raw === 'pro_ultra' || raw === 'gemini-2.5-pro' || raw === 'pro') {
     return { provider: 'gemini', model: 'gemini-2.5-pro', isAuto: false, maxTokens: 32768, taskType: 'research' };
@@ -107,11 +107,11 @@ export function resolveModelRoute(
   // 2. Smart Auto Waterfall
   const taskType = classifyTaskType(prompt, hasAttachments);
 
-  // Coding & Video -> Gemini with 40,000 token execution budget
+  // Coding & Video -> Gemini 3.8 Flash with 40,000 token execution budget
   if (taskType === 'coding' || taskType === 'video') {
     return {
       provider: 'gemini',
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       isAuto: true,
       maxTokens: 40000,
       taskType

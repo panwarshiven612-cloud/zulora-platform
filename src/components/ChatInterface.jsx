@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
+﻿import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -511,7 +511,7 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                 ))}
               </div>}
               {message.needsReconnect && <button type="button" onClick={onReconnect} className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-amber-200/70 bg-amber-50/95 px-3 py-1.5 text-xs font-semibold text-amber-800 shadow-sm hover:bg-amber-100">
-                🔑 Please reconnect your Google Account to use Gmail/Calendar features.
+                ðŸ”‘ Please reconnect your Google Account to use Gmail/Calendar features.
               </button>}
             </>
           ) : (
@@ -519,13 +519,13 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
               {message.thinkingSteps?.length > 0 && <details className="zulora-thinking-box mb-3 overflow-hidden rounded-xl border border-violet-200/70 bg-violet-50/70 text-violet-950 dark:border-violet-900/60 dark:bg-violet-950/25 dark:text-violet-100 shadow-sm" open={Boolean(message.streaming || message.thinkingSteps.some(s => s.status === 'running'))}>
                 <summary className="cursor-pointer list-none px-3 py-2 text-xs font-semibold flex items-center justify-between">
                   <span className="flex items-center gap-1.5">
-                    <span>⚡</span>
+                    <span>âš¡</span>
                     <span>Response process ({message.thinkingSteps.filter(s => s.status === 'done').length}/{message.thinkingSteps.length} complete)</span>
                   </span>
                 </summary>
                 <div className="step-log space-y-1.5 border-t border-violet-200/60 px-3 py-2 dark:border-violet-900/50">
                   {message.thinkingSteps.map((step, stepIndex) => <div key={`${step.label}-${stepIndex}`} className="flex items-start gap-2 text-[11px] leading-relaxed">
-                    <span aria-hidden="true" className="mt-0.5 shrink-0">{step.status === 'done' ? '✅' : step.status === 'error' ? '⚠️' : '🔄'}</span>
+                    <span aria-hidden="true" className="mt-0.5 shrink-0">{step.status === 'done' ? 'âœ…' : step.status === 'error' ? 'âš ï¸' : 'ðŸ”„'}</span>
                     <span className="min-w-0"><span className="font-semibold">Step {stepIndex + 1}: {step.label}</span>{step.status === 'done' ? <span className="ml-1 text-emerald-600 dark:text-emerald-400 font-bold">[DONE]</span> : step.status === 'error' ? <span className="ml-1 text-rose-600 dark:text-rose-400 font-bold">[FAILED]</span> : <span className="ml-1 text-violet-600 dark:text-violet-400 font-medium">[IN PROGRESS]</span>}{step.detail && <span className="ml-1.5 text-slate-500 dark:text-slate-400">({step.detail})</span>}</span>
                   </div>)}
                 </div>
@@ -574,10 +574,10 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                     </a>
                   </div>
                   {Array.isArray(message.videoStoryboard?.scenes) && message.videoStoryboard.scenes.length > 0 && <details className="rounded-lg border border-slate-200/80 px-3 py-2 text-xs dark:border-slate-700/70">
-                    <summary className="cursor-pointer font-semibold text-slate-600 dark:text-slate-300">Storyboard · {message.videoStoryboard.totalDuration || message.videoStoryboard.scenes.at(-1)?.end || '?'}s</summary>
+                    <summary className="cursor-pointer font-semibold text-slate-600 dark:text-slate-300">Storyboard Â· {message.videoStoryboard.totalDuration || message.videoStoryboard.scenes.at(-1)?.end || '?'}s</summary>
                     <ol className="mt-2 space-y-1.5 text-slate-500 dark:text-slate-400">
                       {message.videoStoryboard.scenes.map((scene, sceneIndex) => <li key={`${scene.id || sceneIndex}-${scene.start}`}>
-                        <span className="font-semibold">{scene.start}–{scene.end}s</span> · {scene.caption || scene.text || scene.hero || 'Scene'}
+                        <span className="font-semibold">{scene.start}â€“{scene.end}s</span> Â· {scene.caption || scene.text || scene.hero || 'Scene'}
                       </li>)}
                     </ol>
                   </details>}
@@ -614,11 +614,11 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                 </div>
               )}
               {message.needsReconnect && <button type="button" onClick={onReconnect} className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-amber-200/70 bg-amber-50/95 px-3 py-1.5 text-xs font-semibold text-amber-800 shadow-sm hover:bg-amber-100">
-                🔑 Please reconnect your Google Account to use connected features.
+                ðŸ”‘ Please reconnect your Google Account to use connected features.
               </button>}
               {message.streaming && (
                 <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-sky-200/50 bg-sky-50/50 px-2.5 py-1 text-[10px] font-semibold text-sky-600 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-400">
-                  <span className="animate-pulse">⚡</span>
+                  <span className="animate-pulse">âš¡</span>
                   <span>Thinking / Generating ({message.streamMetrics ? `~${message.streamMetrics.tokens} tokens | ~${message.streamMetrics.tokensPerSec} tokens/sec` : "tokens..."})</span>
                   <span aria-hidden="true" className="inline-block h-3 ml-0.5 align-middle border-r-2 border-sky-500 animate-pulse" />
                 </div>
@@ -647,12 +647,12 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
               title="Edit and resend this prompt"
             >
               <Pencil className="h-3.5 w-3.5" />
-              <span>✏️ Edit Prompt</span>
+              <span>âœï¸ Edit Prompt</span>
             </button>
           </div>
         )}
 
-        {/* Action Bar — AI messages only */}
+        {/* Action Bar â€” AI messages only */}
         {!isUser && (
           <div className={`flex items-center gap-1 px-1 transition-opacity duration-200 ${showActions ? 'opacity-100' : 'opacity-0'}`}>
             <button
@@ -1365,7 +1365,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             role: 'assistant',
             content: displayedText,
             timestamp: Date.now(),
-            model: streamedProvider?.model || 'Generating…',
+            model: streamedProvider?.model || 'Generatingâ€¦',
             provider: streamedProvider?.provider,
             thinkingSteps: [...thinkingSteps],
             streaming: true,
@@ -1434,6 +1434,23 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           firestoreService.getVault(currentUser.uid)
         ])
         : [[], null, null];
+
+      // Build personal memory context string from Brain + Vault for API injection
+      let personalMemoryContext = '';
+      if (!simpleQuery && (aiBrain || userVault)) {
+        const memParts = [];
+        const style = (aiBrain?.talkStyle || userVault?.preferences || '').trim();
+        if (style) memParts.push(`- Communication Style & Tone: ${style}`);
+        const instructions = [aiBrain?.customInstructions, userVault?.customInstructions].filter(Boolean).map(s => s?.trim()).filter(Boolean);
+        if (instructions.length) memParts.push(`- Custom Instructions:\n  * ${instructions.join('\n  * ')}`);
+        const domain = (aiBrain?.domainContext || '').trim();
+        if (domain) memParts.push(`- Domain Context: ${domain}`);
+        const keyFacts = (userVault?.keyFacts || '').trim();
+        if (keyFacts) memParts.push(`- Key Facts & Background: ${keyFacts}`);
+        if (memParts.length) {
+          personalMemoryContext = `==================================================\nPERSONAL BRAIN & ZULORA VAULT CONTEXT\n==================================================\n${memParts.join('\n')}\n==================================================`;
+        }
+      }
       if (generationController.signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
       if (!simpleQuery) pushThinkingStep('Checking active connectors and request context', 'done');
       const detectedConnector = simpleQuery ? null : detectConnectorTask(basePrompt);
@@ -1544,7 +1561,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           const aiMsg = {
             id: assistantId,
             role: 'assistant',
-            content: `Here is your edited video with synced kinetic captions and motion graphics! 🎬\n\n* **Canvas:** 1080x1920 (9:16 Vertical Reel)\n* **Audio/Speech:** Synced Hinglish Roman script captions\n* **Status:** Saved to Zulora Drive & Media Library\n\nYou can play it directly, download using the button below, or ask to tweak fonts, colors, or pacing!`,
+            content: `Here is your edited video with synced kinetic captions and motion graphics! ðŸŽ¬\n\n* **Canvas:** 1080x1920 (9:16 Vertical Reel)\n* **Audio/Speech:** Synced Hinglish Roman script captions\n* **Status:** Saved to Zulora Drive & Media Library\n\nYou can play it directly, download using the button below, or ask to tweak fonts, colors, or pacing!`,
             timestamp: Date.now(),
             model: 'Zulora Video Studio',
             provider: 'Video Motion Engine',
@@ -1569,7 +1586,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       }
 
       if (imageGenRequest) {
-        pushThinkingStep('Generating image with AI 🎨', 'running');
+        pushThinkingStep('Generating image with AI ðŸŽ¨', 'running');
         try {
           const referenceImage = attachmentPayloads.find(item => item.mimeType?.startsWith('image/'))?.base64 || null;
           const imgResult = await apiRouter.generateImage(basePrompt, { currentUser, referenceImage: hasImageAttach ? referenceImage : null, signal: generationController.signal });
@@ -1593,7 +1610,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           pushThinkingStep('Image ready', 'done');
           const aiMsg = {
             id: assistantId, role: 'assistant',
-            content: `Here's your AI-generated image! 🎨\n\n![${basePrompt}](${imgUrl})\n\n[📥 **Download File**](${imgUrl}) &nbsp;•&nbsp; [↗️ **Open Full Resolution**](${imgUrl})\n\n*Generated by Zulora AI*`,
+            content: `Here's your AI-generated image! ðŸŽ¨\n\n![${basePrompt}](${imgUrl})\n\n[ðŸ“¥ **Download File**](${imgUrl}) &nbsp;â€¢&nbsp; [â†—ï¸ **Open Full Resolution**](${imgUrl})\n\n*Generated by Zulora AI*`,
             timestamp: Date.now(), model: 'Zulora Image AI',
             provider: 'Zulora AI',
             generatedImageUrl: imgUrl, queryTime: elapsed,
@@ -1618,7 +1635,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       }
 
       if (videoGenRequest) {
-        pushThinkingStep('Generating video with AI 🎬', 'running', '0%');
+        pushThinkingStep('Generating video with AI ðŸŽ¬', 'running', '0%');
         try {
           let videoProgress = 3;
           const videoTask = backgroundTaskManager.runTracked('video', `Video generation: ${basePrompt.slice(0, 64)}`, async updateProgress => {
@@ -1671,7 +1688,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           pushThinkingStep('Video ready', 'done', '100%');
           const aiMsg = {
             id: assistantId, role: 'assistant',
-            content: `Here's your AI-generated video! 🎬\n\n*Zulora Video Engine*`,
+            content: `Here's your AI-generated video! ðŸŽ¬\n\n*Zulora Video Engine*`,
             timestamp: Date.now(), model: 'Zulora Video Engine',
             provider: 'Zulora AI',
             generatedVideoUrl: vidUrl,
@@ -1704,9 +1721,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           connectorData: directTask.data,
           emailDispatch: directTask.emailDispatch,
           connectorBadge: directTask.executed === true
-            ? browserTask?.handled ? '💻 Computer Agent Plugin'
-              : directTask.provider === 'gmail' ? '📧 Gmail Connector'
-                : directTask.provider === 'calendar' ? '📅 Google Calendar Connector' : ''
+            ? browserTask?.handled ? 'ðŸ’» Computer Agent Plugin'
+              : directTask.provider === 'gmail' ? 'ðŸ“§ Gmail Connector'
+                : directTask.provider === 'calendar' ? 'ðŸ“… Google Calendar Connector' : ''
             : '',
           usage: { tracked: false, processedTokens: 0 },
           tokenUsage: { totalTokens: 0 }
@@ -1761,7 +1778,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
                 role: 'assistant',
                 content: displayedText,
                 timestamp: Date.now(),
-                model: route.model || 'Generating…',
+                model: route.model || 'Generatingâ€¦',
                 provider: route.provider,
                 thinkingSteps: [...thinkingSteps],
                 streaming: true,
@@ -2062,7 +2079,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         </button>
       )}
 
-      {/* ─── Input Area ─── */}
+      {/* â”€â”€â”€ Input Area â”€â”€â”€ */}
       <div className="chat-composer-wrapper shrink-0 border-t border-slate-200/70 bg-white/80 px-2.5 pt-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] backdrop-blur-xl dark:border-slate-800/70 dark:bg-[#070b14]/90 sm:px-4 sm:py-4 sm:pb-4 md:px-6">
 
         {/* Input Box */}
@@ -2120,3 +2137,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 };
 
 export default ChatInterface;
+
+
+

@@ -1,4 +1,19 @@
 User-agent: *
 Allow: /
+Disallow: /admin
+Disallow: /api/
+Disallow: /_next/
+Disallow: /dist/
 
+# Allow major crawlers full access
+User-agent: Googlebot
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+User-agent: Slurp
+Allow: /
+
+# Sitemaps
 Sitemap: https://zulora.in/sitemap.xml

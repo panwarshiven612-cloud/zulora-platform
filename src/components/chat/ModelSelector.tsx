@@ -26,7 +26,7 @@ export const MODEL_OPTIONS: ModelOption[] = [
     id: 'auto',
     label: 'Auto',
     shortLabel: 'Auto',
-    description: 'Smart Route — LPU for simple, Gemini for code & research',
+    description: 'Smart Route — LPU for simple, Gemini 3.8 for code & video',
     icon: Sparkles,
     color: 'text-sky-500',
     badge: 'Smart'
@@ -35,7 +35,7 @@ export const MODEL_OPTIONS: ModelOption[] = [
     id: 'gemini',
     label: 'Gemini Flash',
     shortLabel: 'Gemini',
-    description: 'Gemini 2.5 / 3.8 Flash — 40k token high-speed execution',
+    description: 'Gemini 3.8 / 2.5 Flash — 40k token high-speed execution',
     icon: Zap,
     color: 'text-amber-500',
     badge: 'Flash'
@@ -75,15 +75,6 @@ export const MODEL_OPTIONS: ModelOption[] = [
     icon: Flame,
     color: 'text-red-500',
     badge: 'Mistral'
-  },
-  {
-    id: 'pro_ultra',
-    label: 'Zulora 3.1 Pro Ultra',
-    shortLabel: 'Pro Ultra',
-    description: 'Flagship reasoning model — Gemini 2.5 Pro',
-    icon: Brain,
-    color: 'text-purple-500',
-    badge: 'Flagship'
   }
 ];
 

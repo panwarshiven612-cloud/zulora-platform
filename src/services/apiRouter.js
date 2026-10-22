@@ -1,5 +1,5 @@
-/**
- * ZULORA AI â€” Client-Side API Waterfall Router
+﻿/**
+ * ZULORA AI Ã¢â‚¬â€ Client-Side API Waterfall Router
  * =============================================
  * Complete Multi-Engine Resilience & Dynamic Fallback Pool
  * 
@@ -10,7 +10,7 @@
  * - Video Studio delegates to the Pollinations-first server video router, with Fal AI / Replicate fallbacks
  * - Returns both `url` and `imageUrl`/`videoUrl` so all studio consumers work seamlessly
  *
- * Founded & Created by Shiven Panwar â€” Zulora AI
+ * Founded & Created by Shiven Panwar Ã¢â‚¬â€ Zulora AI
  */
 import { requestConnectorModel, requestGeneration, requestGenerationStream, trackSuccessfulUsage, checkGenerationAllowance, GenerationApiError } from './generationApi';
 import { generateVideo as generateVideoWithProviders } from './videoService';
@@ -25,7 +25,7 @@ import connectorManager from './connectorManager';
 import { checkExtensionConnected } from './browserAgentEngine';
 import { classifyGoogleConnectorIntents, executeGoogleConnectorFunction, getGoogleConnectorFunctionDeclarations, getGoogleConnectorFunctionProvider, getGoogleConnectorToolInstructions, isGoogleReconnectError, isWorkspaceMetricsWorkflowRequest, normalizeGoogleConnectorArguments, toGeminiFunctionDeclaration, toOpenAiFunctionTool } from './googleConnectorTools';
 
-// â”€â”€â”€ SAFE ENVIRONMENT EXTRACTOR â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ SAFE ENVIRONMENT EXTRACTOR Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 // Only browser-safe media variables are read here. Text-model credentials stay
 // in the server router and are never serialized into this Vite bundle.
 const clientEnv = {
@@ -45,11 +45,11 @@ export const GROQ_MODELS = Object.freeze({
 const GEMINI_FLASH_MODEL = getEnv('VITE_GEMINI_FLASH_MODEL') || GEMINI_FLASH_MODEL_ID;
 export { GEMINI_MODELS };
 
-// â”€â”€â”€ DYNAMIC GEMINI KEY POOL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ DYNAMIC GEMINI KEY POOL Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 import { GEMINI_KEYS } from '../lib/config/keys.js';
 export const getGeminiKeyPool = () => [...GEMINI_KEYS];
 
-// â”€â”€â”€ SECONDARY ENGINE KEYS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ SECONDARY ENGINE KEYS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 const GROQ_KEY = '';
 const HF_IMAGE_KEY = getEnv('VITE_HF_API_KEY') || getEnv('VITE_HUGGINGFACE_API_KEY');
 const REPLICATE_IMAGE_KEY = getEnv('VITE_REPLICATE_API_TOKEN') || getEnv('VITE_REPLICATE_KEY');
@@ -73,14 +73,14 @@ const providerSystemPrompt = options => [
   options._searchContext ? `\nWEB SEARCH RESULTS (cite inline as [1],[2] markers):\n${options._searchContext}` : '',
 ].filter(Boolean).join('\n\n');
 
-// â”€â”€â”€ MODEL TIERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ MODEL TIERS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 export const MODEL_TIERS = {
   auto: {
     id: 'auto',
     label: 'Auto (Smart Route)',
     shortLabel: 'Auto',
     description: 'Automatically selects a fast model or coding model',
-    badge: '✦',
+    badge: 'âœ¦',
     color: 'text-sky-500',
     geminiModel: 'gemini-3.8-flash',
     groqModel: GROQ_MODELS.primary,
@@ -92,7 +92,7 @@ export const MODEL_TIERS = {
     label: 'Gemini 3.8 Flash',
     shortLabel: '3.8 Flash',
     description: 'Next-gen multimodal speed with sub-second response times',
-    badge: '⚡',
+    badge: 'âš¡',
     color: 'text-amber-500',
     geminiModel: 'gemini-3.8-flash',
     groqModel: GROQ_MODELS.primary,
@@ -104,7 +104,7 @@ export const MODEL_TIERS = {
     label: 'Gemini 3.5 Flash-Lite',
     shortLabel: '3.5 Lite',
     description: 'Lightweight, highly optimized engine for everyday queries',
-    badge: '⚡',
+    badge: 'âš¡',
     color: 'text-emerald-500',
     geminiModel: 'gemini-3.5-flash-lite',
     groqModel: GROQ_MODELS.primary,
@@ -116,7 +116,7 @@ export const MODEL_TIERS = {
     label: 'Gemini 3.6 Flash',
     shortLabel: '3.6 Flash',
     description: 'High throughput with strong reasoning across text and images',
-    badge: '⚡',
+    badge: 'âš¡',
     color: 'text-sky-400',
     geminiModel: 'gemini-3.6-flash',
     groqModel: GROQ_MODELS.primary,
@@ -128,7 +128,7 @@ export const MODEL_TIERS = {
     label: 'Gemini 3.1 Flash-Lite',
     shortLabel: '3.1 Lite',
     description: 'Rapid real-time token streaming and responsive search',
-    badge: '⚡',
+    badge: 'âš¡',
     color: 'text-teal-500',
     geminiModel: 'gemini-3.1-flash-lite',
     groqModel: GROQ_MODELS.primary,
@@ -140,7 +140,7 @@ export const MODEL_TIERS = {
     label: 'Gemini 2.5 Pro',
     shortLabel: '2.5 Pro',
     description: 'Advanced reasoning, full-stack code synthesis & complex problem solving',
-    badge: '🧠',
+    badge: 'ðŸ§ ',
     color: 'text-purple-500',
     geminiModel: GEMINI_PRO_MODEL_ID,
     groqModel: GROQ_MODELS.primary,
@@ -152,7 +152,7 @@ export const MODEL_TIERS = {
     label: 'Gemini 2.5 Flash',
     shortLabel: '2.5 Flash',
     description: 'Stable everyday Gemini model',
-    badge: '⚡',
+    badge: 'âš¡',
     color: 'text-sky-500',
     geminiModel: GEMINI_FLASH_MODEL,
     groqModel: GROQ_MODELS.primary,
@@ -164,7 +164,7 @@ export const MODEL_TIERS = {
     label: 'Zulora Flash 2.5',
     shortLabel: 'Flash 2.5',
     description: 'Gemini 2.5 Flash with Gemini Pro and provider backup routes',
-    badge: '⚡',
+    badge: 'âš¡',
     color: 'text-sky-500',
     geminiModel: GEMINI_FLASH_MODEL,
     groqModel: GROQ_MODELS.primary,
@@ -176,7 +176,7 @@ export const MODEL_TIERS = {
     label: 'Zulora Turbo Speed',
     shortLabel: 'Turbo Speed',
     description: 'Fast Groq LPU responses with Gemini backup routes',
-    badge: '⚡',
+    badge: 'âš¡',
     color: 'text-orange-500',
     geminiModel: 'gemini-3.8-flash',
     groqModel: GROQ_MODELS.primary,
@@ -188,7 +188,7 @@ export const MODEL_TIERS = {
     label: 'Cerebras Ultra Speed',
     shortLabel: 'Cerebras',
     description: 'Wafer-scale accelerated inference via Cerebras',
-    badge: '⚡',
+    badge: 'âš¡',
     color: 'text-rose-500',
     geminiModel: 'gemini-3.8-flash',
     groqModel: 'llama3.1-70b',
@@ -200,7 +200,7 @@ export const MODEL_TIERS = {
     label: 'OpenRouter Multi-Provider',
     shortLabel: 'OpenRouter',
     description: 'Global redundant open-source model routing',
-    badge: '✦',
+    badge: 'âœ¦',
     color: 'text-indigo-500',
     geminiModel: 'gemini-3.8-flash',
     groqModel: 'meta-llama/llama-3.3-70b-instruct',
@@ -212,7 +212,7 @@ export const MODEL_TIERS = {
     label: 'Zulora 3.1 Pro Ultra',
     shortLabel: 'Pro Ultra',
     description: 'Extended reasoning & complex analysis',
-    badge: '🧠',
+    badge: 'ðŸ§ ',
     color: 'text-amber-500',
     geminiModel: GEMINI_PRO_MODEL_ID,
     groqModel: GROQ_MODELS.primary,
@@ -221,7 +221,7 @@ export const MODEL_TIERS = {
   },
 };
 
-// â”€â”€â”€ TIMEOUT FETCH HELPER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ TIMEOUT FETCH HELPER Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 const fetchWithTimeout = async (url, options = {}, timeoutMs = 15000) => {
   const controller = new AbortController();
   const externalSignal = options.signal;
@@ -436,7 +436,7 @@ const ensureGenerationAllowance = async (type, currentUser, requestContext = {})
   }
 };
 
-// â”€â”€â”€ PROVIDER ADAPTERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ PROVIDER ADAPTERS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 /**
  * Gemini Adapter with Dual-Endpoint Failover
@@ -612,8 +612,8 @@ function connectorBadgeForResults(results = []) {
   const providers = [...new Set(results
     .filter(item => item?.executionVerified === true && item?.result && !item.result.error)
     .map(item => getGoogleConnectorFunctionProvider(item.name)))];
-  const badges = { gmail: '📧 Gmail Connector', calendar: '📅 Google Calendar Connector', computer: '💻 Computer Agent Plugin', workspace: 'Google Workspace Workflow' };
-  return providers.map(provider => badges[provider]).filter(Boolean).join(' · ');
+  const badges = { gmail: 'ðŸ“§ Gmail Connector', calendar: 'ðŸ“… Google Calendar Connector', computer: 'ðŸ’» Computer Agent Plugin', workspace: 'Google Workspace Workflow' };
+  return providers.map(provider => badges[provider]).filter(Boolean).join(' Â· ');
 }
 
 function connectorFailureResult({ name, error, model, provider, totalTokens, toolResults = [] }) {
@@ -981,7 +981,7 @@ const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
   };
 };
 
-// â”€â”€â”€ MASTER UNIFIED ROUTER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ MASTER UNIFIED ROUTER Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 async function readDocxText(file) {
   if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot unpack DOCX files. Save the document as PDF or plain text and attach that instead.');
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -1267,7 +1267,7 @@ export const apiRouter = {
     }, 'chat', options.currentUser);
   },
 
-  // â”€â”€â”€ IMAGE STUDIO GENERATION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ IMAGE STUDIO GENERATION Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   /**
    * Flexible generateImage supporting both:
    * 1. generateImage(prompt, options)
@@ -1383,7 +1383,7 @@ export const apiRouter = {
       }
     }
 
-    // â”€â”€ Engine 1: Pollinations FLUX â”€â”€
+    // Ã¢â€â‚¬Ã¢â€â‚¬ Engine 1: Pollinations FLUX Ã¢â€â‚¬Ã¢â€â‚¬
     try {
       const selectedPollinationsModel = imageEngine === 'pollinations-hd' ? 'flux-hd' : 'flux';
       const fluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(styledPrompt)}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&nologo=true&model=${selectedPollinationsModel}`;
@@ -1417,7 +1417,7 @@ export const apiRouter = {
       }
     }
 
-    // â”€â”€ Engine 2: Fal AI FLUX Schnell â”€â”€
+    // Ã¢â€â‚¬Ã¢â€â‚¬ Engine 2: Fal AI FLUX Schnell Ã¢â€â‚¬Ã¢â€â‚¬
     if (FAL_KEY) {
       try {
         const falRes = await fetchWithTimeout(
@@ -1457,7 +1457,7 @@ export const apiRouter = {
       }
     }
 
-    // â”€â”€ Engine 4: Cloudflare Workers AI FLUX â”€â”€
+    // Ã¢â€â‚¬Ã¢â€â‚¬ Engine 4: Cloudflare Workers AI FLUX Ã¢â€â‚¬Ã¢â€â‚¬
     if (CLOUDFLARE_ACCT && CLOUDFLARE_TOKEN) {
       try {
         const cfRes = await fetchWithTimeout(
@@ -1492,7 +1492,7 @@ export const apiRouter = {
       }
     }
 
-    // â”€â”€ Final Deterministic High-Definition Fallback â”€â”€
+    // Ã¢â€â‚¬Ã¢â€â‚¬ Final Deterministic High-Definition Fallback Ã¢â€â‚¬Ã¢â€â‚¬
     if (REPLICATE_IMAGE_KEY) {
       try {
         const model = 'black-forest-labs/flux-schnell';
@@ -1506,7 +1506,7 @@ export const apiRouter = {
       }
     }
 
-    // â”€â”€ Resilient Pollinations Failover (Guaranteed image generation) â”€â”€
+    // Ã¢â€â‚¬Ã¢â€â‚¬ Resilient Pollinations Failover (Guaranteed image generation) Ã¢â€â‚¬Ã¢â€â‚¬
     const fallbackPollinationsUrl = `https://image.pollinations.ai/prompt/${encoded}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&nologo=true&model=flux`;
     return await syncUsage({
       url: fallbackPollinationsUrl,
@@ -1519,7 +1519,7 @@ export const apiRouter = {
     }, 'image', currentUser);
   },
 
-  // â”€â”€â”€ VIDEO STUDIO GENERATION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ VIDEO STUDIO GENERATION Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   /**
    * Flexible generateVideo supporting both:
    * 1. generateVideo(prompt, options)
@@ -1529,7 +1529,7 @@ export const apiRouter = {
     return generateVideoWithProviders(arg1, arg2);
   },
 
-  // â”€â”€â”€ MULTIMODAL FILE READER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ MULTIMODAL FILE READER Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   async readFileContent(file) {
     if (!file) return '';
     const maxBytes = 50 * 1024 * 1024;
@@ -1577,4 +1577,5 @@ export const apiRouter = {
 };
 
 export default apiRouter;
+
 

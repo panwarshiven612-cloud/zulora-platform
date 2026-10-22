@@ -10,6 +10,7 @@ import { useSeoMeta } from './hooks/useSeoMeta';
 import SearchEngineView from './components/SearchEngineView';
 
 const AIStudio = lazy(() => import('./pages/AIStudio'));
+const AdminPanel = lazy(() => import('./pages/admin/AdminPanel'));
 
 const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
 const WORKSPACE_TABS = {
@@ -210,6 +211,14 @@ const AppRouter = () => {
     return (
       <Suspense fallback={<AppLoading label="Opening the code editor..." />}>
         <AIStudio onExitDashboard={() => navigate('/dashboard')} />
+      </Suspense>
+    );
+  }
+
+  if (pathname === '/admin') {
+    return (
+      <Suspense fallback={<AppLoading label="Loading admin panel..." />}>
+        <AdminPanel />
       </Suspense>
     );
   }
