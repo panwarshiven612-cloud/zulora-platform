@@ -200,6 +200,14 @@ const AppRouter = () => {
 
   if (loading && !isAuthenticated) return <AppLoading label="Checking your secure sign-in..." />;
 
+  if (pathname === '/admin') {
+    return (
+      <Suspense fallback={<AppLoading label="Loading admin panel..." />}>
+        <AdminPanel />
+      </Suspense>
+    );
+  }
+
   if (!isAuthenticated) {
     if (pathname === '/login' || pathname === '/signin') {
       return <SignIn onAuthenticated={() => navigate('/dashboard')} />;
@@ -211,14 +219,6 @@ const AppRouter = () => {
     return (
       <Suspense fallback={<AppLoading label="Opening the code editor..." />}>
         <AIStudio onExitDashboard={() => navigate('/dashboard')} />
-      </Suspense>
-    );
-  }
-
-  if (pathname === '/admin') {
-    return (
-      <Suspense fallback={<AppLoading label="Loading admin panel..." />}>
-        <AdminPanel />
       </Suspense>
     );
   }

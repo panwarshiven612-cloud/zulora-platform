@@ -489,11 +489,29 @@ export default function AdminPanel() {
 
   if (!currentUser) {
     return (
-      <div className="min-h-screen grid place-items-center bg-slate-50 dark:bg-[#070b14]">
-        <div className="flex flex-col items-center gap-4 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl max-w-sm w-full mx-4">
-          <Lock className="w-12 h-12 text-slate-400" />
-          <h1 className="text-xl font-bold text-slate-800 dark:text-white">Admin Access</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400 text-center">Please sign in to access the admin dashboard.</p>
+      <div className="min-h-screen grid place-items-center bg-slate-50 dark:bg-[#070b14] px-4">
+        <div className="flex flex-col items-center gap-4 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl max-w-sm w-full mx-4 text-center">
+          <div className="w-14 h-14 rounded-2xl bg-sky-50 dark:bg-sky-950/50 grid place-items-center text-sky-600 dark:text-sky-400">
+            <Shield className="w-7 h-7" />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold text-slate-800 dark:text-white">Admin Dashboard</h1>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Please sign in with an authorized Zulora admin account to continue.</p>
+          </div>
+          <div className="flex flex-col gap-2 w-full mt-2">
+            <button
+              onClick={() => window.location.assign('/login')}
+              className="w-full py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-semibold text-sm shadow-md transition-all"
+            >
+              Sign In to Admin
+            </button>
+            <button
+              onClick={() => window.location.assign('/dashboard')}
+              className="w-full py-2 rounded-xl text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold transition-all"
+            >
+              Return to Workspace
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -501,14 +519,24 @@ export default function AdminPanel() {
 
   if (!isAdmin) {
     return (
-      <div className="min-h-screen grid place-items-center bg-slate-50 dark:bg-[#070b14]">
-        <div className="flex flex-col items-center gap-4 p-8 rounded-3xl border border-red-200 dark:border-red-900/60 bg-white dark:bg-slate-900 shadow-xl max-w-sm w-full mx-4">
-          <AlertTriangle className="w-12 h-12 text-red-500" />
-          <h1 className="text-xl font-bold text-slate-800 dark:text-white">Access Denied</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400 text-center">
-            Your account (<strong>{currentUser.email}</strong>) is not authorized to access this admin panel.
-          </p>
+      <div className="min-h-screen grid place-items-center bg-slate-50 dark:bg-[#070b14] px-4">
+        <div className="flex flex-col items-center gap-4 p-8 rounded-3xl border border-red-200 dark:border-red-900/60 bg-white dark:bg-slate-900 shadow-xl max-w-sm w-full mx-4 text-center">
+          <div className="w-14 h-14 rounded-2xl bg-red-50 dark:bg-red-950/50 grid place-items-center text-red-500">
+            <AlertTriangle className="w-7 h-7" />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold text-slate-800 dark:text-white">Access Denied</h1>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              Your account (<strong>{currentUser.email}</strong>) is not authorized to access this admin panel.
+            </p>
+          </div>
           <Pill label="Unauthorized" color="red" />
+          <button
+            onClick={() => window.location.assign('/dashboard')}
+            className="w-full mt-2 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs transition-all"
+          >
+            Return to Dashboard
+          </button>
         </div>
       </div>
     );
@@ -527,15 +555,23 @@ export default function AdminPanel() {
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-slate-200 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl px-4 py-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <span className="grid h-9 w-9 place-items-center rounded-xl bg-sky-600 text-white">
+          <span className="grid h-9 w-9 place-items-center rounded-xl bg-sky-600 text-white shadow-sm">
             <Shield className="w-5 h-5" />
           </span>
           <div>
-            <p className="text-sm font-extrabold text-slate-900 dark:text-white">Zulora Admin</p>
+            <p className="text-sm font-extrabold text-slate-900 dark:text-white">Zulora Master Admin</p>
             <p className="text-[10px] text-slate-400 dark:text-slate-500 font-medium">{currentUser.email}</p>
           </div>
         </div>
-        <Pill label="Admin Access" color="sky" />
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => window.location.assign('/dashboard')}
+            className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold transition-all"
+          >
+            &larr; Workspace
+          </button>
+          <Pill label="Master Admin" color="sky" />
+        </div>
       </header>
 
       <div className="flex">

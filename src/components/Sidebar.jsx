@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { 
   Plus, 
   MessageSquare, 
@@ -19,7 +19,8 @@ import {
   Brain,
   Database,
   Plug,
-  FolderOpen
+  FolderOpen,
+  Shield
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { firestoreService, TIERS } from '../services/firestoreService';
@@ -363,7 +364,7 @@ export const Sidebar = ({
           className="mt-1 flex w-full items-center gap-2 rounded-xl border border-violet-200/70 bg-violet-50/70 p-2.5 text-left text-xs font-semibold text-slate-700 transition-colors hover:border-violet-300 hover:bg-violet-100/80 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-slate-300 dark:hover:bg-violet-950/60"
         >
           <Plug className="h-4 w-4 text-violet-500" />
-          <span>🔌 Computer Plugin</span>
+          <span>ðŸ”Œ Computer Plugin</span>
         </button>
       </div>
 
@@ -603,3 +604,6 @@ export const Sidebar = ({
 };
 
 export default Sidebar;
+
+
+

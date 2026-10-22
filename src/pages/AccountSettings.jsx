@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+﻿import React, { useEffect, useState } from 'react';
 import {
   User, Mail, Shield, Trash2, AlertTriangle, CheckCircle2,
   ChevronLeft, Crown, BarChart3, Lock, Download, X, Phone, Save,
@@ -28,7 +28,7 @@ const deleteCollectionInBatches = async collectionRef => {
   }
 };
 
-/* ─── Delete Confirmation Modal ─── */
+/* â”€â”€â”€ Delete Confirmation Modal â”€â”€â”€ */
 const DeleteConfirmModal = ({ onConfirm, onCancel, loading }) => {
   const [typed, setTyped] = useState('');
   const CONFIRM_WORD = 'DELETE';
@@ -94,7 +94,7 @@ const DeleteConfirmModal = ({ onConfirm, onCancel, loading }) => {
   );
 };
 
-/* ─── MAIN ACCOUNT SETTINGS ─── */
+/* â”€â”€â”€ MAIN ACCOUNT SETTINGS â”€â”€â”€ */
 export const AccountSettings = ({ onClose }) => {
   const { currentUser, logout, tier, userProfile } = useAuth();
   const [creditStatus, setCreditStatus] = useState(null);
@@ -294,6 +294,36 @@ export const AccountSettings = ({ onClose }) => {
             </div>
 
             
+            {/* Administrator Controls */}
+            {Boolean(currentUser?.email && ['panwarshiven612@gmail.com', 'zulora.help@gmail.com'].includes(currentUser.email)) && (
+              <section className="rounded-xl border border-amber-300/80 dark:border-amber-700/60 bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-amber-500/10 p-4 shadow-sm">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div className="flex items-center gap-3">
+                    <span className="grid h-10 w-10 place-items-center rounded-xl bg-amber-500 text-white shadow-sm shrink-0">
+                      <Shield className="w-5 h-5" />
+                    </span>
+                    <div>
+                      <h3 className="text-sm font-extrabold text-slate-900 dark:text-white flex items-center gap-1.5">
+                        Zulora Master Admin Panel
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-200 dark:bg-amber-800 text-amber-900 dark:text-amber-100 uppercase">
+                          Authorized
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        Manage all users, view transaction revenue, broadcast push alerts & analytics.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => { onClose?.(); window.location.assign('/admin'); }}
+                    className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition-all shadow-sm shrink-0"
+                  >
+                    Open Admin Dashboard &rarr;
+                  </button>
+                </div>
+              </section>
+            )}
+
             {/* Mobile Number Section */}
             <section className="glass-pearl dark:glass-dark rounded-xl border border-white/70 dark:border-slate-700/50 p-4">
               <div className="flex items-center gap-2 mb-2">
@@ -343,7 +373,7 @@ export const AccountSettings = ({ onClose }) => {
                 className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-sky-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
               >
                 {voiceOptions.filter(voice => voice.tier === 'free' || tier !== 'free').map(voice => (
-                  <option key={voice.id} value={voice.id}>{voice.name} · {voice.gender}{voice.tier === 'pro' ? ' · Pro' : ''}</option>
+                  <option key={voice.id} value={voice.id}>{voice.name} Â· {voice.gender}{voice.tier === 'pro' ? ' Â· Pro' : ''}</option>
                 ))}
               </select>
               {tier === 'free' && <p className="mt-2 text-[10px] text-slate-500 dark:text-slate-400">Upgrade to Pro for two additional studio voices.</p>}
@@ -356,8 +386,8 @@ export const AccountSettings = ({ onClose }) => {
               </h3>
               <div className="space-y-2">
                 {[
-                  { icon: User, label: 'Name', value: currentUser?.displayName || '—', note: 'From Google OAuth' },
-                  { icon: Mail, label: 'Email', value: currentUser?.email || '—', note: 'From Google OAuth' },
+                  { icon: User, label: 'Name', value: currentUser?.displayName || 'â€”', note: 'From Google OAuth' },
+                  { icon: Mail, label: 'Email', value: currentUser?.email || 'â€”', note: 'From Google OAuth' },
                   { icon: Shield, label: 'Data Collected', value: 'Name, Email, Usage Counts, Chat History', note: 'Minimum required' },
                   { icon: Lock, label: 'Data NOT Collected', value: 'Address, DOB, Phone, Financial Info', note: 'Data minimization' },
                 ].map(({ icon: Icon, label, value, note }) => (
@@ -385,7 +415,7 @@ export const AccountSettings = ({ onClose }) => {
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
                     Permanently removes your account, all chat sessions, usage data, and personal information from Zulora AI's databases.
                     This action is <strong>irreversible</strong> and complies with your Right to Erasure under the{' '}
-                    <span className="text-sky-500 font-semibold">DPDP Act 2023 §17</span>.
+                    <span className="text-sky-500 font-semibold">DPDP Act 2023 Â§17</span>.
                   </p>
                 </div>
 
@@ -406,7 +436,7 @@ export const AccountSettings = ({ onClose }) => {
 
                 {deleteError && (
                   <p className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 px-3 py-2 rounded-xl border border-red-200/60 dark:border-red-800/40">
-                    ⚠️ {deleteError}
+                    âš ï¸ {deleteError}
                   </p>
                 )}
               </div>
@@ -419,7 +449,7 @@ export const AccountSettings = ({ onClose }) => {
                 <a href="https://zulora.in/terms.html" target="_blank" rel="noopener noreferrer" className="text-sky-600 underline dark:text-sky-400">Terms of Service</a>
               </div>
               <p className="mt-2 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
-                24/7 support for Zulora AI & Zulora Drive: <a href="mailto:zulora.help@gmail.com" className="text-sky-600 underline dark:text-sky-400">zulora.help@gmail.com</a> · <a href="https://wa.me/916395211325" target="_blank" rel="noopener noreferrer" className="text-sky-600 underline dark:text-sky-400">WhatsApp +91 6395211325</a>
+                24/7 support for Zulora AI & Zulora Drive: <a href="mailto:zulora.help@gmail.com" className="text-sky-600 underline dark:text-sky-400">zulora.help@gmail.com</a> Â· <a href="https://wa.me/916395211325" target="_blank" rel="noopener noreferrer" className="text-sky-600 underline dark:text-sky-400">WhatsApp +91 6395211325</a>
               </p>
             </section>
           </div>
@@ -430,3 +460,4 @@ export const AccountSettings = ({ onClose }) => {
 };
 
 export default AccountSettings;
+

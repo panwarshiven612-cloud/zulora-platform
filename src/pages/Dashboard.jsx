@@ -215,7 +215,8 @@ export const Dashboard = ({
       brain: '/brain',
       vault: '/vault',
       studio: '/studio',
-      library: '/library'
+      library: '/library',
+      admin: '/admin'
     };
     if (onNavigate) onNavigate(routeByTab[tab] || '/dashboard');
   }, [guestMode, onNavigate]);

@@ -27,6 +27,7 @@ export interface WorkspaceResponse<T = any> {
   data?: T;
   error?: string;
   code?: string;
+  badge?: string;
   status?: number;
   retryable?: boolean;
   url?: string;
@@ -38,17 +39,19 @@ export interface WorkspaceResponse<T = any> {
 function handleWorkspaceError(error: any): WorkspaceResponse {
   const message = error?.message || String(error || 'Unknown Workspace error');
   const status = Number(error?.status || error?.statusCode) || undefined;
+  const isAuthError = status === 401 || status === 403 || message.includes('OAuth') || message.includes('client credentials') || message.includes('not signed in') || message.includes('expired');
   const code = error?.code || (status === 401
     ? 'GOOGLE_OAUTH_REQUIRED'
     : status === 503
       ? 'GOOGLE_OAUTH_UNAVAILABLE'
-      : message.includes('OAuth') || message.includes('client credentials')
+      : isAuthError
         ? 'GOOGLE_OAUTH_ERROR'
         : 'WORKSPACE_ERROR');
   return {
     success: false,
-    error: message,
+    error: isAuthError ? 'Connector not signed in' : message,
     code,
+    badge: 'Connector not signed in',
     ...(status ? { status } : {}),
     retryable: status === 503 || Boolean(status && status >= 500)
   };

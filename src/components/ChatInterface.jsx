@@ -1859,7 +1859,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         connectorProvider: result.connectorProvider || directTask?.provider || '',
         queryTime: elapsed,
         // MODULE 2: Dynamic connector badge from real API execution
-        connectorBadge: result.connectorBadge || '',
+        connectorBadge: result.connectorBadge || ((result.needsReconnect || directTask?.needsReconnect) ? 'Connector not signed in' : ''),
         connectorData: result.connectorData || [],
         emailDispatch: emailDispatch?.success ? emailDispatch : undefined,
         connectorSuccess: Boolean(directTask?.executed || (result.connectorData || []).some(item => item?.executionVerified === true && item.result?.verified === true)),
@@ -2137,6 +2137,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 };
 
 export default ChatInterface;
+
 
 
 
