@@ -187,18 +187,7 @@ export default function ChatInput({
             <Globe className="h-4 w-4" />
           </button>
 
-          {/* 3. Connectors Link Icon */}
-          <button
-            type="button"
-            onClick={onOpenConnectors}
-            title="Google & Workspace Connectors"
-            aria-label="Connectors"
-            className="h-8 w-8 sm:h-8.5 sm:w-8.5 shrink-0 flex items-center justify-center rounded-xl border border-slate-200/80 dark:border-slate-700/60 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-all"
-          >
-            <Link className="h-4 w-4" />
-          </button>
-
-          {/* 4. Attachment Clip */}
+          {/* 3. Attachment Clip */}
           <button
             type="button"
             onClick={() => fileInputRef?.current?.click()}

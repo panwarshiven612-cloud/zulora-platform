@@ -1,5 +1,5 @@
 ﻿/**
- * ZULORA AI Ã¢â‚¬â€ Client-Side API Waterfall Router
+ * ZULORA AI — Client-Side API Waterfall Router
  * =============================================
  * Complete Multi-Engine Resilience & Dynamic Fallback Pool
  * 
@@ -10,7 +10,7 @@
  * - Video Studio delegates to the Pollinations-first server video router, with Fal AI / Replicate fallbacks
  * - Returns both `url` and `imageUrl`/`videoUrl` so all studio consumers work seamlessly
  *
- * Founded & Created by Shiven Panwar Ã¢â‚¬â€ Zulora AI
+ * Founded & Created by Shiven Panwar — Zulora AI
  */
 import { requestConnectorModel, requestGeneration, requestGenerationStream, trackSuccessfulUsage, checkGenerationAllowance, GenerationApiError } from './generationApi';
 import { generateVideo as generateVideoWithProviders } from './videoService';
@@ -80,7 +80,7 @@ export const MODEL_TIERS = {
     label: 'Auto (Smart Route)',
     shortLabel: 'Auto',
     description: 'Automatically selects a fast model or coding model',
-    badge: 'âœ¦',
+    badge: '✦',
     color: 'text-sky-500',
     geminiModel: 'gemini-3.8-flash',
     groqModel: GROQ_MODELS.primary,
@@ -92,7 +92,7 @@ export const MODEL_TIERS = {
     label: 'Gemini 3.8 Flash',
     shortLabel: '3.8 Flash',
     description: 'Next-gen multimodal speed with sub-second response times',
-    badge: 'âš¡',
+    badge: '⚡',
     color: 'text-amber-500',
     geminiModel: 'gemini-3.8-flash',
     groqModel: GROQ_MODELS.primary,
@@ -104,7 +104,7 @@ export const MODEL_TIERS = {
     label: 'Gemini 3.5 Flash-Lite',
     shortLabel: '3.5 Lite',
     description: 'Lightweight, highly optimized engine for everyday queries',
-    badge: 'âš¡',
+    badge: '⚡',
     color: 'text-emerald-500',
     geminiModel: 'gemini-3.5-flash-lite',
     groqModel: GROQ_MODELS.primary,
@@ -116,7 +116,7 @@ export const MODEL_TIERS = {
     label: 'Gemini 3.6 Flash',
     shortLabel: '3.6 Flash',
     description: 'High throughput with strong reasoning across text and images',
-    badge: 'âš¡',
+    badge: '⚡',
     color: 'text-sky-400',
     geminiModel: 'gemini-3.6-flash',
     groqModel: GROQ_MODELS.primary,
@@ -128,7 +128,7 @@ export const MODEL_TIERS = {
     label: 'Gemini 3.1 Flash-Lite',
     shortLabel: '3.1 Lite',
     description: 'Rapid real-time token streaming and responsive search',
-    badge: 'âš¡',
+    badge: '⚡',
     color: 'text-teal-500',
     geminiModel: 'gemini-3.1-flash-lite',
     groqModel: GROQ_MODELS.primary,
@@ -140,7 +140,7 @@ export const MODEL_TIERS = {
     label: 'Gemini 2.5 Pro',
     shortLabel: '2.5 Pro',
     description: 'Advanced reasoning, full-stack code synthesis & complex problem solving',
-    badge: 'ðŸ§ ',
+    badge: '🧠',
     color: 'text-purple-500',
     geminiModel: GEMINI_PRO_MODEL_ID,
     groqModel: GROQ_MODELS.primary,
@@ -152,7 +152,7 @@ export const MODEL_TIERS = {
     label: 'Gemini 2.5 Flash',
     shortLabel: '2.5 Flash',
     description: 'Stable everyday Gemini model',
-    badge: 'âš¡',
+    badge: '⚡',
     color: 'text-sky-500',
     geminiModel: GEMINI_FLASH_MODEL,
     groqModel: GROQ_MODELS.primary,
@@ -164,7 +164,7 @@ export const MODEL_TIERS = {
     label: 'Zulora Flash 2.5',
     shortLabel: 'Flash 2.5',
     description: 'Gemini 2.5 Flash with Gemini Pro and provider backup routes',
-    badge: 'âš¡',
+    badge: '⚡',
     color: 'text-sky-500',
     geminiModel: GEMINI_FLASH_MODEL,
     groqModel: GROQ_MODELS.primary,
@@ -176,7 +176,7 @@ export const MODEL_TIERS = {
     label: 'Zulora Turbo Speed',
     shortLabel: 'Turbo Speed',
     description: 'Fast Groq LPU responses with Gemini backup routes',
-    badge: 'âš¡',
+    badge: '⚡',
     color: 'text-orange-500',
     geminiModel: 'gemini-3.8-flash',
     groqModel: GROQ_MODELS.primary,
@@ -188,7 +188,7 @@ export const MODEL_TIERS = {
     label: 'Cerebras Ultra Speed',
     shortLabel: 'Cerebras',
     description: 'Wafer-scale accelerated inference via Cerebras',
-    badge: 'âš¡',
+    badge: '⚡',
     color: 'text-rose-500',
     geminiModel: 'gemini-3.8-flash',
     groqModel: 'llama3.1-70b',
@@ -200,7 +200,7 @@ export const MODEL_TIERS = {
     label: 'OpenRouter Multi-Provider',
     shortLabel: 'OpenRouter',
     description: 'Global redundant open-source model routing',
-    badge: 'âœ¦',
+    badge: '✦',
     color: 'text-indigo-500',
     geminiModel: 'gemini-3.8-flash',
     groqModel: 'meta-llama/llama-3.3-70b-instruct',
@@ -212,7 +212,7 @@ export const MODEL_TIERS = {
     label: 'Zulora 3.1 Pro Ultra',
     shortLabel: 'Pro Ultra',
     description: 'Extended reasoning & complex analysis',
-    badge: 'ðŸ§ ',
+    badge: '🧠',
     color: 'text-amber-500',
     geminiModel: GEMINI_PRO_MODEL_ID,
     groqModel: GROQ_MODELS.primary,
@@ -612,8 +612,8 @@ function connectorBadgeForResults(results = []) {
   const providers = [...new Set(results
     .filter(item => item?.executionVerified === true && item?.result && !item.result.error)
     .map(item => getGoogleConnectorFunctionProvider(item.name)))];
-  const badges = { gmail: 'ðŸ“§ Gmail Connector', calendar: 'ðŸ“… Google Calendar Connector', computer: 'ðŸ’» Computer Agent Plugin', workspace: 'Google Workspace Workflow' };
-  return providers.map(provider => badges[provider]).filter(Boolean).join(' Â· ');
+  const badges = { gmail: '📧 Gmail Connector', calendar: '📅 Google Calendar Connector', computer: 'ðŸ’» Computer Agent Plugin', workspace: 'Google Workspace Workflow' };
+  return providers.map(provider => badges[provider]).filter(Boolean).join(' · ');
 }
 
 function connectorFailureResult({ name, error, model, provider, totalTokens, toolResults = [] }) {

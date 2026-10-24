@@ -386,8 +386,8 @@ export const AccountSettings = ({ onClose }) => {
               </h3>
               <div className="space-y-2">
                 {[
-                  { icon: User, label: 'Name', value: currentUser?.displayName || 'â€”', note: 'From Google OAuth' },
-                  { icon: Mail, label: 'Email', value: currentUser?.email || 'â€”', note: 'From Google OAuth' },
+                  { icon: User, label: 'Name', value: currentUser?.displayName || '—', note: 'From Google OAuth' },
+                  { icon: Mail, label: 'Email', value: currentUser?.email || '—', note: 'From Google OAuth' },
                   { icon: Shield, label: 'Data Collected', value: 'Name, Email, Usage Counts, Chat History', note: 'Minimum required' },
                   { icon: Lock, label: 'Data NOT Collected', value: 'Address, DOB, Phone, Financial Info', note: 'Data minimization' },
                 ].map(({ icon: Icon, label, value, note }) => (
@@ -436,7 +436,7 @@ export const AccountSettings = ({ onClose }) => {
 
                 {deleteError && (
                   <p className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 px-3 py-2 rounded-xl border border-red-200/60 dark:border-red-800/40">
-                    âš ï¸ {deleteError}
+                    ⚠️ {deleteError}
                   </p>
                 )}
               </div>

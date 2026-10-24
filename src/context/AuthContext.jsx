@@ -2,6 +2,8 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { authService } from '../services/authService';
 import { firestoreService, TIERS } from '../services/firestoreService';
 import { rateLimiter } from '../services/rateLimiter';
+import { db } from '../services/firebase';
+import { requestPushPermission } from '../lib/firebase/messaging';
 
 const noop = () => {};
 const SAFE_AUTH_CONTEXT = {
@@ -226,6 +228,7 @@ export const AuthProvider = ({ children }) => {
       if (!active) return null;
       latestUid = user?.uid || null;
       setCurrentUser(user || null);
+      if (user?.uid) { requestPushPermission(user.uid, db).catch(() => {}); }
       if (!user) {
         profiledUid = null;
         setUserProfile(null);

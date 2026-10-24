@@ -120,12 +120,12 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
             </button>
           )}
 
-          {/* ðŸ”Œ Computer Plugin button */}
+          {/*  Computer Plugin button */}
           {!guestMode && onOpenComputerPlugin && (
             <button
               onClick={onOpenComputerPlugin}
               className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-300/60 dark:border-indigo-700/60 hover:border-indigo-400 shadow-sm transition-all flex-shrink-0"
-              title="Open Computer Plugin â€” Browser Automation"
+              title="Open Computer Plugin — Browser Automation"
             >
               <Plug className="w-3.5 h-3.5 text-indigo-500" />
               <span className="hidden md:inline">Computer</span>
@@ -215,7 +215,7 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
                       <Crown className="w-4 h-4 text-amber-500" /> Upgrade to Pro
                     </button>
                   )}
-                  {/* Account Settings â€” DPDP data deletion */}
+                  {/* Account Settings — DPDP data deletion */}
                   <button onClick={() => { onOpenSettings?.(); setProfileMenuOpen(false); }}
                     className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-all">
                     <Settings className="w-4 h-4 text-slate-500" /> Account Settings

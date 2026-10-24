@@ -53,7 +53,7 @@ function resetStreamStats(stats: StreamStats) {
   stats.firstTokenAt = undefined;
 }
 
-function linkedFetchSignal(parent?: AbortSignal, timeoutMs = 12000) {
+function linkedFetchSignal(parent?: AbortSignal, timeoutMs = 6000) {
   const fetchController = new AbortController();
   const abortFromParent = () => fetchController.abort(parent?.reason);
   if (parent?.aborted) fetchController.abort(parent.reason);
@@ -85,7 +85,8 @@ async function streamFromGemini(
     }));
 
   const systemMessage = systemInstruction || messages.find(m => m.role === 'system')?.content || MASTER_SYSTEM_PROMPT;
-  const candidateModels = [model, 'gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-pro'].filter((v, i, a) => a.indexOf(v) === i);
+  const normalizedTargetModel = (model === 'gemini-2.5-pro' || model.includes('pro')) ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+  const candidateModels = [normalizedTargetModel, 'gemini-2.5-flash', 'gemini-2.5-pro'].filter((v, i, a) => a.indexOf(v) === i);
   const rotatedKeys = getRotatedKeys('gemini', GEMINI_KEYS);
 
   for (const targetModel of candidateModels) {
@@ -94,7 +95,7 @@ async function streamFromGemini(
       if (!key) continue;
       try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:streamGenerateContent?alt=sse&key=${key}`;
-        const fetchSignal = linkedFetchSignal(stats.signal);
+        const fetchSignal = linkedFetchSignal(stats.signal, 6000);
 
         const res = await fetch(url, {
           method: 'POST',
@@ -111,7 +112,7 @@ async function streamFromGemini(
         });
         fetchSignal.cleanup();
 
-        if (res.status === 429 || res.status === 404 || res.status >= 500 || !res.ok || !res.body) {
+        if (res.status === 429 || res.status === 404 || res.status === 401 || res.status >= 500 || !res.ok || !res.body) {
           continue;
         }
 
@@ -278,7 +279,25 @@ export async function POST(req: Request) {
   let effectiveSystemPrompt = MASTER_SYSTEM_PROMPT;
   if (body.personalMemory) {
     effectiveSystemPrompt += `\n\n${body.personalMemory}`;
+  } else if ((body as any).aiBrain || (body as any).userVault) {
+    const aiBrain = (body as any).aiBrain || {};
+    const userVault = (body as any).userVault || {};
+    const memParts = [
+      aiBrain.talkStyle && `Tone/Style: ${aiBrain.talkStyle}`,
+      aiBrain.customInstructions && `Instructions: ${aiBrain.customInstructions}`,
+      userVault.preferences && `User Preferences: ${userVault.preferences}`,
+      userVault.keyFacts && `Key Facts: ${userVault.keyFacts}`
+    ].filter(Boolean);
+    if (memParts.length) {
+      effectiveSystemPrompt += `\n\n[USER PERSONAL BRAIN & VAULT CONTEXT]:\n${memParts.join('\n')}`;
+    }
   }
+
+  if (Array.isArray((body as any).contextMemory) && (body as any).contextMemory.length) {
+    const recent = (body as any).contextMemory.slice(-6).join('\n');
+    effectiveSystemPrompt += `\n\n[RECENT CHAT CONTEXT MEMORY]:\n${recent}`;
+  }
+
   if (injectedConnectorText) {
     effectiveSystemPrompt += `\n\nACTIVE CONNECTORS CONTEXT:\n${injectedConnectorText}`;
   }
@@ -371,7 +390,7 @@ export async function POST(req: Request) {
       } else if (provider === 'groq') {
         for (const groqKey of getRotatedKeys('groq', GROQ_KEYS)) {
           if (streamed) break;
-          const groqModels = ['openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'qwen/qwen3.8-27b', 'llama-3.3-70b-versatile'];
+          const groqModels = ['openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'qwen/qwen3.8-27b'];
           for (const gm of groqModels) {
             if (streamed) break;
             streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, gm, messages, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
@@ -380,7 +399,7 @@ export async function POST(req: Request) {
       } else if (provider === 'cerebras') {
         for (const cbKey of getRotatedKeys('cerebras', CEREBRAS_KEYS)) {
           if (streamed) break;
-          const cbModels = ['qwen-3.8-27b', 'gpt-oss-120b', 'llama3.1-70b'];
+          const cbModels = ['qwen-3.8-27b', 'gpt-oss-120b'];
           for (const cm of cbModels) {
             if (streamed) break;
             streamed = await streamFromOpenAiCompatible('https://api.cerebras.ai/v1/chat/completions', cbKey, cm, messages, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
@@ -420,7 +439,7 @@ export async function POST(req: Request) {
           } else if (provider === 'groq') {
             for (const groqKey of getRotatedKeys('groq', GROQ_KEYS)) {
               if (streamed) break;
-              for (const gm of ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b', 'qwen/qwen3.8-27b']) {
+              for (const gm of ['openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'qwen/qwen3.8-27b']) {
                 if (streamed) break;
                 activeModel = gm;
                 emit('provider', { provider: 'Groq LPU', model: activeModel });
@@ -430,7 +449,7 @@ export async function POST(req: Request) {
           } else if (provider === 'cerebras') {
             for (const cbKey of getRotatedKeys('cerebras', CEREBRAS_KEYS)) {
               if (streamed) break;
-              for (const cm of ['gpt-oss-120b', 'llama3.1-70b']) {
+              for (const cm of ['qwen-3.8-27b', 'gpt-oss-120b']) {
                 if (streamed) break;
                 activeModel = cm;
                 emit('provider', { provider: 'Cerebras', model: activeModel });
@@ -470,7 +489,7 @@ export async function POST(req: Request) {
               emit('provider', { provider: 'Groq LPU', model: activeModel });
               for (const groqKey of getRotatedKeys('groq', GROQ_KEYS)) {
                 if (streamed) break;
-                for (const gm of ['openai/gpt-oss-20b', 'llama-3.3-70b-versatile']) {
+                for (const gm of ['openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'qwen/qwen3.8-27b']) {
                   if (streamed) break;
                   streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, gm, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
                 }
@@ -502,7 +521,7 @@ export async function POST(req: Request) {
             // Waterfall Step 4: OpenRouter Multi-Provider
             if (!streamed) {
               activeProvider = 'openrouter';
-              activeModel = 'meta-llama/llama-3.3-70b-instruct';
+              activeModel = 'meta-llama/llama-3.3-70b-instruct:free';
               emit('provider', { provider: 'OpenRouter', model: activeModel });
               for (const orKey of getRotatedKeys('openrouter', OPENROUTER_KEYS)) {
                 if (streamed) break;
@@ -512,10 +531,10 @@ export async function POST(req: Request) {
           }
 
           // Coding, Complex Video Generation, or Fallback when non-Gemini exhausted:
-          // Gemini 3.8 Flash / 2.5 Flash with dedicated 40,000 token execution budget
+          // Gemini Flash with dedicated 40,000 token execution budget
           if (!streamed) {
             activeProvider = 'gemini';
-            activeModel = (taskType === 'coding' || taskType === 'video') ? 'gemini-3.8-flash' : 'gemini-2.5-flash';
+            activeModel = 'gemini-2.5-flash';
             const budget = (taskType === 'coding' || taskType === 'video') ? 40000 : 16384;
             emit('provider', { provider: 'Google Gemini', model: activeModel });
             streamed = await streamFromGemini(messages, activeModel, controller, encoder, stats, effectiveSystemPrompt, budget);

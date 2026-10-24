@@ -510,22 +510,20 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                   </div>
                 ))}
               </div>}
-              {message.needsReconnect && <button type="button" onClick={onReconnect} className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-amber-200/70 bg-amber-50/95 px-3 py-1.5 text-xs font-semibold text-amber-800 shadow-sm hover:bg-amber-100">
-                ðŸ”‘ Please reconnect your Google Account to use Gmail/Calendar features.
-              </button>}
+              
             </>
           ) : (
             <>
               {message.thinkingSteps?.length > 0 && <details className="zulora-thinking-box mb-3 overflow-hidden rounded-xl border border-violet-200/70 bg-violet-50/70 text-violet-950 dark:border-violet-900/60 dark:bg-violet-950/25 dark:text-violet-100 shadow-sm" open={Boolean(message.streaming || message.thinkingSteps.some(s => s.status === 'running'))}>
                 <summary className="cursor-pointer list-none px-3 py-2 text-xs font-semibold flex items-center justify-between">
                   <span className="flex items-center gap-1.5">
-                    <span>âš¡</span>
+                    <span>⚡</span>
                     <span>Response process ({message.thinkingSteps.filter(s => s.status === 'done').length}/{message.thinkingSteps.length} complete)</span>
                   </span>
                 </summary>
                 <div className="step-log space-y-1.5 border-t border-violet-200/60 px-3 py-2 dark:border-violet-900/50">
                   {message.thinkingSteps.map((step, stepIndex) => <div key={`${step.label}-${stepIndex}`} className="flex items-start gap-2 text-[11px] leading-relaxed">
-                    <span aria-hidden="true" className="mt-0.5 shrink-0">{step.status === 'done' ? 'âœ…' : step.status === 'error' ? 'âš ï¸' : 'ðŸ”„'}</span>
+                    <span aria-hidden="true" className="mt-0.5 shrink-0">{step.status === 'done' ? '✓' : step.status === 'error' ? 'âš ï¸' : 'ðŸ”„'}</span>
                     <span className="min-w-0"><span className="font-semibold">Step {stepIndex + 1}: {step.label}</span>{step.status === 'done' ? <span className="ml-1 text-emerald-600 dark:text-emerald-400 font-bold">[DONE]</span> : step.status === 'error' ? <span className="ml-1 text-rose-600 dark:text-rose-400 font-bold">[FAILED]</span> : <span className="ml-1 text-violet-600 dark:text-violet-400 font-medium">[IN PROGRESS]</span>}{step.detail && <span className="ml-1.5 text-slate-500 dark:text-slate-400">({step.detail})</span>}</span>
                   </div>)}
                 </div>
@@ -577,7 +575,7 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                     <summary className="cursor-pointer font-semibold text-slate-600 dark:text-slate-300">Storyboard · {message.videoStoryboard.totalDuration || message.videoStoryboard.scenes.at(-1)?.end || '?'}s</summary>
                     <ol className="mt-2 space-y-1.5 text-slate-500 dark:text-slate-400">
                       {message.videoStoryboard.scenes.map((scene, sceneIndex) => <li key={`${scene.id || sceneIndex}-${scene.start}`}>
-                        <span className="font-semibold">{scene.start}â€“{scene.end}s</span> · {scene.caption || scene.text || scene.hero || 'Scene'}
+                        <span className="font-semibold">{scene.start}–{scene.end}s</span> · {scene.caption || scene.text || scene.hero || 'Scene'}
                       </li>)}
                     </ol>
                   </details>}
@@ -613,12 +611,10 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                   </div>
                 </div>
               )}
-              {message.needsReconnect && <button type="button" onClick={onReconnect} className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-amber-200/70 bg-amber-50/95 px-3 py-1.5 text-xs font-semibold text-amber-800 shadow-sm hover:bg-amber-100">
-                ðŸ”‘ Please reconnect your Google Account to use connected features.
-              </button>}
+              
               {message.streaming && (
                 <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-sky-200/50 bg-sky-50/50 px-2.5 py-1 text-[10px] font-semibold text-sky-600 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-400">
-                  <span className="animate-pulse">âš¡</span>
+                  <span className="animate-pulse">⚡</span>
                   <span>Thinking / Generating ({message.streamMetrics ? `~${message.streamMetrics.tokens} tokens | ~${message.streamMetrics.tokensPerSec} tokens/sec` : "tokens..."})</span>
                   <span aria-hidden="true" className="inline-block h-3 ml-0.5 align-middle border-r-2 border-sky-500 animate-pulse" />
                 </div>
@@ -647,12 +643,12 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
               title="Edit and resend this prompt"
             >
               <Pencil className="h-3.5 w-3.5" />
-              <span>âœï¸ Edit Prompt</span>
+              <span>Edit Prompt</span>
             </button>
           </div>
         )}
 
-        {/* Action Bar â€” AI messages only */}
+        {/* Action Bar — AI messages only */}
         {!isUser && (
           <div className={`flex items-center gap-1 px-1 transition-opacity duration-200 ${showActions ? 'opacity-100' : 'opacity-0'}`}>
             <button
@@ -1365,7 +1361,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             role: 'assistant',
             content: displayedText,
             timestamp: Date.now(),
-            model: streamedProvider?.model || 'Generatingâ€¦',
+            model: streamedProvider?.model || 'Generating...',
             provider: streamedProvider?.provider,
             thinkingSteps: [...thinkingSteps],
             streaming: true,
@@ -1561,7 +1557,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           const aiMsg = {
             id: assistantId,
             role: 'assistant',
-            content: `Here is your edited video with synced kinetic captions and motion graphics! ðŸŽ¬\n\n* **Canvas:** 1080x1920 (9:16 Vertical Reel)\n* **Audio/Speech:** Synced Hinglish Roman script captions\n* **Status:** Saved to Zulora Drive & Media Library\n\nYou can play it directly, download using the button below, or ask to tweak fonts, colors, or pacing!`,
+            content: `Here is your edited video with synced kinetic captions and motion graphics! 🎬\n\n* **Canvas:** 1080x1920 (9:16 Vertical Reel)\n* **Audio/Speech:** Synced Hinglish Roman script captions\n* **Status:** Saved to Zulora Drive & Media Library\n\nYou can play it directly, download using the button below, or ask to tweak fonts, colors, or pacing!`,
             timestamp: Date.now(),
             model: 'Zulora Video Studio',
             provider: 'Video Motion Engine',
@@ -1586,7 +1582,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       }
 
       if (imageGenRequest) {
-        pushThinkingStep('Generating image with AI ðŸŽ¨', 'running');
+        pushThinkingStep('Generating image with AI 🎨', 'running');
         try {
           const referenceImage = attachmentPayloads.find(item => item.mimeType?.startsWith('image/'))?.base64 || null;
           const imgResult = await apiRouter.generateImage(basePrompt, { currentUser, referenceImage: hasImageAttach ? referenceImage : null, signal: generationController.signal });
@@ -1610,7 +1606,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           pushThinkingStep('Image ready', 'done');
           const aiMsg = {
             id: assistantId, role: 'assistant',
-            content: `Here's your AI-generated image! ðŸŽ¨\n\n![${basePrompt}](${imgUrl})\n\n[ðŸ“¥ **Download File**](${imgUrl}) &nbsp;â€¢&nbsp; [â†—ï¸ **Open Full Resolution**](${imgUrl})\n\n*Generated by Zulora AI*`,
+            content: `Here's your AI-generated image! 🎨\n\n![${basePrompt}](${imgUrl})\n\n[📥 **Download File**](${imgUrl}) &nbsp;â€¢&nbsp; [â†—ï¸ **Open Full Resolution**](${imgUrl})\n\n*Generated by Zulora AI*`,
             timestamp: Date.now(), model: 'Zulora Image AI',
             provider: 'Zulora AI',
             generatedImageUrl: imgUrl, queryTime: elapsed,
@@ -1635,7 +1631,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       }
 
       if (videoGenRequest) {
-        pushThinkingStep('Generating video with AI ðŸŽ¬', 'running', '0%');
+        pushThinkingStep('Generating video with AI 🎬', 'running', '0%');
         try {
           let videoProgress = 3;
           const videoTask = backgroundTaskManager.runTracked('video', `Video generation: ${basePrompt.slice(0, 64)}`, async updateProgress => {
@@ -1688,7 +1684,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           pushThinkingStep('Video ready', 'done', '100%');
           const aiMsg = {
             id: assistantId, role: 'assistant',
-            content: `Here's your AI-generated video! ðŸŽ¬\n\n*Zulora Video Engine*`,
+            content: `Here's your AI-generated video! 🎬\n\n*Zulora Video Engine*`,
             timestamp: Date.now(), model: 'Zulora Video Engine',
             provider: 'Zulora AI',
             generatedVideoUrl: vidUrl,
@@ -1721,9 +1717,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           connectorData: directTask.data,
           emailDispatch: directTask.emailDispatch,
           connectorBadge: directTask.executed === true
-            ? browserTask?.handled ? 'ðŸ’» Computer Agent Plugin'
-              : directTask.provider === 'gmail' ? 'ðŸ“§ Gmail Connector'
-                : directTask.provider === 'calendar' ? 'ðŸ“… Google Calendar Connector' : ''
+            ? browserTask?.handled ? '💻 Computer Agent Plugin'
+              : directTask.provider === 'gmail' ? '📧 Gmail Connector'
+                : directTask.provider === 'calendar' ? '📅 Google Calendar Connector' : ''
             : '',
           usage: { tracked: false, processedTokens: 0 },
           tokenUsage: { totalTokens: 0 }
@@ -1778,7 +1774,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
                 role: 'assistant',
                 content: displayedText,
                 timestamp: Date.now(),
-                model: route.model || 'Generatingâ€¦',
+                model: route.model || 'Generating...',
                 provider: route.provider,
                 thinkingSteps: [...thinkingSteps],
                 streaming: true,
@@ -2125,7 +2121,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       {showModelMenu && (
         <div aria-hidden="true" className="fixed inset-0 z-40" onClick={() => setShowModelMenu(false)} />
       )}
-      {showConnectorsModal && <ConnectorsModal currentUser={currentUser} reconnectProvider={connectorReauthProvider} onClose={() => { setShowConnectorsModal(false); setConnectorReauthProvider(''); }} />}
+      
       {guestMode && showGuestUpgrade && <GuestGateModal
         onSignIn={() => { setShowGuestUpgrade(false); onNavigate?.('/login'); }}
         onClose={() => setShowGuestUpgrade(false)}

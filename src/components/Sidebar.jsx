@@ -364,7 +364,7 @@ export const Sidebar = ({
           className="mt-1 flex w-full items-center gap-2 rounded-xl border border-violet-200/70 bg-violet-50/70 p-2.5 text-left text-xs font-semibold text-slate-700 transition-colors hover:border-violet-300 hover:bg-violet-100/80 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-slate-300 dark:hover:bg-violet-950/60"
         >
           <Plug className="h-4 w-4 text-violet-500" />
-          <span>ðŸ”Œ Computer Plugin</span>
+          <span>Computer Plugin</span>
         </button>
       </div>
 
