@@ -75,6 +75,7 @@ import { guestGate } from '../services/guestGate';
 import { backgroundTaskManager } from '../services/backgroundTaskManager';
 import { runFullVideoPipeline } from '../services/videoEditAgent';
 import { MotionArtifact, detectMotionArtifact } from './chat/MotionArtifact';
+import ResponseProcess from './chat/ResponseProcess';
 
 /* ============================================================
    CONSTANTS
@@ -514,26 +515,14 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
             </>
           ) : (
             <>
-              {message.thinkingSteps?.length > 0 && <details className="zulora-thinking-box mb-3 overflow-hidden rounded-xl border border-violet-200/70 bg-violet-50/70 text-violet-950 dark:border-violet-900/60 dark:bg-violet-950/25 dark:text-violet-100 shadow-sm" open={Boolean(message.streaming || message.thinkingSteps.some(s => s.status === 'running'))}>
-                <summary className="cursor-pointer list-none px-3 py-2 text-xs font-semibold flex items-center justify-between">
-                  <span className="flex items-center gap-1.5">
-                    <span>⚡</span>
-                    <span>Response process ({message.thinkingSteps.filter(s => s.status === 'done').length}/{message.thinkingSteps.length} complete)</span>
-                  </span>
-                </summary>
-                <div className="step-log space-y-1.5 border-t border-violet-200/60 px-3 py-2 dark:border-violet-900/50">
-                  {message.thinkingSteps.map((step, stepIndex) => <div key={`${step.label}-${stepIndex}`} className="flex items-start gap-2 text-[11px] leading-relaxed">
-                    <span aria-hidden="true" className={`mt-0.5 shrink-0 ${step.status === 'done' ? 'text-emerald-500' : step.status === 'error' ? 'text-rose-500' : 'text-violet-500'}`}>{step.status === 'done' ? '✓' : step.status === 'error' ? '⚠' : '⟳'}</span>
-                    <span className="min-w-0">
-                      <span className="font-semibold text-slate-700 dark:text-slate-300">{step.label}</span>
-                      {step.status === 'done' && <span className="ml-1.5 text-emerald-600 dark:text-emerald-400 font-bold text-[10px]">✓ Done</span>}
-                      {step.status === 'error' && <span className="ml-1.5 text-rose-600 dark:text-rose-400 font-bold text-[10px]">✗ Failed</span>}
-                      {step.status === 'running' && <span className="ml-1.5 text-violet-500 dark:text-violet-400 font-medium text-[10px] animate-pulse">● Working...</span>}
-                      {step.detail && <span className="ml-1.5 text-slate-400 dark:text-slate-500 text-[10px]">({step.detail})</span>}
-                    </span>
-                  </div>)}
-                </div>
-              </details>}
+              <ResponseProcess 
+                steps={message.thinkingSteps} 
+                isStreaming={message.streaming} 
+                sources={message.sources}
+                queryTime={message.queryTime}
+                model={message.model}
+                provider={message.provider}
+              />
               {(() => {
                 const art = !message.streaming && message.role === 'assistant' ? detectMotionArtifact(message.content) : null;
                 if (art && art.hasArtifact) return React.createElement(React.Fragment, null, React.createElement(MotionArtifact, { htmlCode: art.htmlCode, title: art.title }), React.createElement(MarkdownContent, { content: art.cleanedText }));
@@ -628,50 +617,7 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
             </>
           )}
         </div>
-        {!isUser && message.sources?.length > 0 && (
-          <details className="mt-2 w-full rounded-xl border border-sky-200/80 dark:border-sky-800/50 bg-sky-50/60 dark:bg-sky-950/20 overflow-hidden shadow-2xs">
-            <summary className="cursor-pointer list-none px-3 py-1.5 text-[11px] font-bold text-sky-700 dark:text-sky-300 flex items-center justify-between hover:bg-sky-100/50 dark:hover:bg-sky-900/30 select-none transition-colors">
-              <span className="flex items-center gap-1.5">
-                <Globe className="w-3.5 h-3.5 text-sky-500" />
-                <span>Grounding Sources & Citations ({message.sources.length})</span>
-              </span>
-              <span className="text-[10px] text-sky-500 font-normal">View references ▾</span>
-            </summary>
-            <div className="px-3 pb-2.5 pt-1 space-y-1.5 border-t border-sky-200/60 dark:border-sky-800/40">
-              {message.sources.map((source, sourceIndex) => {
-                const url = typeof source === 'string' ? source : source.url;
-                const title = typeof source === 'string' ? source : (source.title || source.url || `Source #${sourceIndex + 1}`);
-                let domain = '';
-                try { if (url) domain = new URL(url).hostname.replace(/^www\./, ''); } catch {}
-                return (
-                  <div key={sourceIndex} className="flex items-start gap-2 text-[11px]">
-                    <span className="text-sky-500 shrink-0 mt-0.5 font-bold">→</span>
-                    <div className="min-w-0 flex-1">
-                      {url ? (
-                        <a
-                          href={url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="font-medium text-sky-600 dark:text-sky-400 hover:underline flex items-center gap-1 truncate"
-                        >
-                          <span className="truncate">{title}</span>
-                          <ExternalLink className="w-2.5 h-2.5 shrink-0 opacity-70" />
-                        </a>
-                      ) : (
-                        <span className="font-medium text-slate-700 dark:text-slate-300 truncate">{title}</span>
-                      )}
-                      {domain && (
-                        <span className="text-[9px] text-slate-400 dark:text-slate-500 ml-1">
-                          [{domain}]
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </details>
-        )}
+
 
         {isUser && (
           <div className={`flex items-center px-1 transition-opacity duration-200 ${showActions ? 'opacity-100' : 'opacity-100 sm:opacity-0'}`}>
