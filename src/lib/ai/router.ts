@@ -89,7 +89,7 @@ export function resolveModelRoute(
     return { provider: 'groq', model: 'openai/gpt-oss-20b', isAuto: false, maxTokens: 16384, taskType: 'simple' };
   }
   if (raw === 'openrouter' || raw === 'openrouter multi-provider' || raw.includes('openrouter')) {
-    return { provider: 'openrouter', model: 'google/gemma-4-26b-a4b-it:free', isAuto: false, maxTokens: 16384, taskType: 'general' };
+    return { provider: 'openrouter', model: 'meta-llama/llama-4-maverick:free', isAuto: false, maxTokens: 16384, taskType: 'general' };
   }
 
   // 2. Smart Auto Waterfall

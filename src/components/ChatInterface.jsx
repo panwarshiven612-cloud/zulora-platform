@@ -523,8 +523,14 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
                 </summary>
                 <div className="step-log space-y-1.5 border-t border-violet-200/60 px-3 py-2 dark:border-violet-900/50">
                   {message.thinkingSteps.map((step, stepIndex) => <div key={`${step.label}-${stepIndex}`} className="flex items-start gap-2 text-[11px] leading-relaxed">
-                    <span aria-hidden="true" className="mt-0.5 shrink-0">{step.status === 'done' ? '✓' : step.status === 'error' ? '⚠' : '⟳'}</span>
-                    <span aria-hidden="true" className="mt-0.5 shrink-0">{step.status === 'done' ? '✓' : step.status === 'error' ? '⚠' : '⟳'}</span>
+                    <span aria-hidden="true" className={`mt-0.5 shrink-0 ${step.status === 'done' ? 'text-emerald-500' : step.status === 'error' ? 'text-rose-500' : 'text-violet-500'}`}>{step.status === 'done' ? '✓' : step.status === 'error' ? '⚠' : '⟳'}</span>
+                    <span className="min-w-0">
+                      <span className="font-semibold text-slate-700 dark:text-slate-300">{step.label}</span>
+                      {step.status === 'done' && <span className="ml-1.5 text-emerald-600 dark:text-emerald-400 font-bold text-[10px]">✓ Done</span>}
+                      {step.status === 'error' && <span className="ml-1.5 text-rose-600 dark:text-rose-400 font-bold text-[10px]">✗ Failed</span>}
+                      {step.status === 'running' && <span className="ml-1.5 text-violet-500 dark:text-violet-400 font-medium text-[10px] animate-pulse">● Working...</span>}
+                      {step.detail && <span className="ml-1.5 text-slate-400 dark:text-slate-500 text-[10px]">({step.detail})</span>}
+                    </span>
                   </div>)}
                 </div>
               </details>}
@@ -623,16 +629,48 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
           )}
         </div>
         {!isUser && message.sources?.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 px-1 pt-1">
-            {message.webSearched && <span className="basis-full px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Web Sources</span>}
-            {message.sources.slice(0, 5).map((source, sourceIndex) => (
-              <a key={`${source.url}-${sourceIndex}`} href={source.url} target="_blank" rel="noreferrer"
-                className="inline-flex max-w-full items-center gap-1 rounded-full border border-sky-200/70 dark:border-sky-800/50 bg-sky-50/70 dark:bg-sky-950/30 px-2 py-1 text-[10px] text-sky-700 dark:text-sky-300 hover:underline">
-                <ExternalLink className="h-3 w-3 shrink-0" />
-                <span className="truncate">{source.title || source.url}</span>
-              </a>
-            ))}
-          </div>
+          <details className="mt-2 w-full rounded-xl border border-sky-200/80 dark:border-sky-800/50 bg-sky-50/60 dark:bg-sky-950/20 overflow-hidden shadow-2xs">
+            <summary className="cursor-pointer list-none px-3 py-1.5 text-[11px] font-bold text-sky-700 dark:text-sky-300 flex items-center justify-between hover:bg-sky-100/50 dark:hover:bg-sky-900/30 select-none transition-colors">
+              <span className="flex items-center gap-1.5">
+                <Globe className="w-3.5 h-3.5 text-sky-500" />
+                <span>Grounding Sources & Citations ({message.sources.length})</span>
+              </span>
+              <span className="text-[10px] text-sky-500 font-normal">View references ▾</span>
+            </summary>
+            <div className="px-3 pb-2.5 pt-1 space-y-1.5 border-t border-sky-200/60 dark:border-sky-800/40">
+              {message.sources.map((source, sourceIndex) => {
+                const url = typeof source === 'string' ? source : source.url;
+                const title = typeof source === 'string' ? source : (source.title || source.url || `Source #${sourceIndex + 1}`);
+                let domain = '';
+                try { if (url) domain = new URL(url).hostname.replace(/^www\./, ''); } catch {}
+                return (
+                  <div key={sourceIndex} className="flex items-start gap-2 text-[11px]">
+                    <span className="text-sky-500 shrink-0 mt-0.5 font-bold">→</span>
+                    <div className="min-w-0 flex-1">
+                      {url ? (
+                        <a
+                          href={url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-medium text-sky-600 dark:text-sky-400 hover:underline flex items-center gap-1 truncate"
+                        >
+                          <span className="truncate">{title}</span>
+                          <ExternalLink className="w-2.5 h-2.5 shrink-0 opacity-70" />
+                        </a>
+                      ) : (
+                        <span className="font-medium text-slate-700 dark:text-slate-300 truncate">{title}</span>
+                      )}
+                      {domain && (
+                        <span className="text-[9px] text-slate-400 dark:text-slate-500 ml-1">
+                          [{domain}]
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </details>
         )}
 
         {isUser && (
@@ -1406,10 +1444,10 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     setLoading(true);
     setShowThinking(true);
     clearTimeout(thinkingTimerRef.current);
-    thinkingTimerRef.current = setTimeout(() => setShowThinking(false), 500);
+    thinkingTimerRef.current = setTimeout(() => setShowThinking(false), 30000);
     setIsAtBottom(true);
     setQueryTime(null);
-    pushThinkingStep('Preparing request');
+    pushThinkingStep('Analyzing your request...');
 
     try {
       // Start persistence without making the model wait for Firestore.
@@ -1448,7 +1486,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         }
       }
       if (generationController.signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
-      if (!simpleQuery) pushThinkingStep('Checking active connectors and request context', 'done');
+      if (!simpleQuery) pushThinkingStep('Checking active connectors & workspace context...', 'done');
       const detectedConnector = simpleQuery ? null : detectConnectorTask(basePrompt);
       const trackEmailAction = detectedConnector === 'gmail'
         && /\b(send|draft|compose)\b/i.test(basePrompt)
@@ -1753,7 +1791,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             if (!isRequestCurrent()) return;
             if (!hasLoggedFirstToken) {
               hasLoggedFirstToken = true;
-              pushThinkingStep('Streaming response at ultra-fast speed', 'running');
+              pushThinkingStep('Streaming ultra-fast response tokens...', 'running');
               clearTimeout(thinkingTimerRef.current);
               setShowThinking(false);
               flushStreamImmediately();
@@ -1791,7 +1829,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             clearTimeout(thinkingTimerRef.current);
             if (isRequestCurrent()) {
               setShowThinking(true);
-              thinkingTimerRef.current = setTimeout(() => setShowThinking(false), 500);
+              thinkingTimerRef.current = setTimeout(() => setShowThinking(false), 30000);
             }
             pushThinkingStep('Retrying with the next available provider');
           },
@@ -1817,7 +1855,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       setQueryTime(elapsed);
-      pushThinkingStep('Request completed', 'done');
+      pushThinkingStep('Response generated successfully', 'done');
       thinkingSteps = thinkingSteps.map(step => step.status === 'running' ? { ...step, status: 'done' } : step);
       let rawResponseText = result.text || streamedText || 'I encountered an issue generating a response. Please try again.';
 

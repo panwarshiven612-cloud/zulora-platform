@@ -100,6 +100,26 @@ function UserManagement() {
   const [userHistoryLoading, setUserHistoryLoading] = useState(false);
   const [userHistoryItems, setUserHistoryItems] = useState([]);
 
+  useEffect(() => {
+    setLoading(true);
+    try {
+      const q = query(collection(db, 'users'), orderBy('createdAt', 'desc'), limit(150));
+      const unsubscribe = onSnapshot(q, snap => {
+        setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        setLoading(false);
+      }, err => {
+        console.warn('[Admin] Live users listener fallback:', err.message);
+        getDocs(q).then(snap => {
+          setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+          setLoading(false);
+        }).catch(() => setLoading(false));
+      });
+      return () => unsubscribe();
+    } catch {
+      setLoading(false);
+    }
+  }, []);
+
   const fetchUsers = useCallback(async () => {
     setLoading(true);
     try {
@@ -111,8 +131,6 @@ function UserManagement() {
       setLoading(false);
     }
   }, []);
-
-  useEffect(() => { fetchUsers(); }, [fetchUsers]);
 
   const toggleBlock = async (uid, currentlyBlocked) => {
     setUpdatingId(uid);
@@ -443,7 +461,7 @@ function AnalyticsTab() {
             { name: 'Gemini 2.5/3.8 Flash', share: 44, color: 'bg-amber-500' },
             { name: 'Groq LPU (Ultra Fast)', share: 32, color: 'bg-orange-500' },
             { name: 'Gemini 2.5 Pro (Deep Reasoning)', share: 14, color: 'bg-sky-500' },
-            { name: 'Cerebras / OpenRouter', share: 10, color: 'bg-indigo-500' },
+            { name: 'OpenRouter Multi-Provider', share: 10, color: 'bg-indigo-500' },
           ]
         });
       } catch (e) {

@@ -433,7 +433,7 @@ export async function POST(req: Request) {
           } else if (provider === 'openrouter') {
             for (const orKey of getRotatedKeys('openrouter', OPENROUTER_KEYS)) {
               if (streamed) break;
-              for (const orm of ['google/gemma-4-26b-a4b-it:free', 'liquid/lfm-2.5-2.6b:free', 'nvidia/nemotron-3.5-lightning:free']) {
+              for (const orm of ['meta-llama/llama-4-maverick:free', 'microsoft/phi-4-reasoning:free', 'google/gemini-2.0-flash-exp:free']) {
                 if (streamed) break;
                 activeModel = orm;
                 emit('provider', { provider: 'OpenRouter', model: activeModel });
@@ -463,11 +463,11 @@ export async function POST(req: Request) {
             // Waterfall Step 2: OpenRouter Multi-Provider
             if (!streamed) {
               activeProvider = 'openrouter';
-              activeModel = 'google/gemma-4-26b-a4b-it:free';
+              activeModel = 'meta-llama/llama-4-maverick:free';
               emit('provider', { provider: 'OpenRouter', model: activeModel });
               for (const orKey of getRotatedKeys('openrouter', OPENROUTER_KEYS)) {
                 if (streamed) break;
-                for (const orm of ['google/gemma-4-26b-a4b-it:free', 'liquid/lfm-2.5-2.6b:free', 'nvidia/nemotron-3.5-lightning:free']) {
+                for (const orm of ['meta-llama/llama-4-maverick:free', 'microsoft/phi-4-reasoning:free', 'google/gemini-2.0-flash-exp:free']) {
                   if (streamed) break;
                   streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, orm, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
                 }
@@ -488,11 +488,11 @@ export async function POST(req: Request) {
           // Fallback to OpenRouter if Gemini also hits quota
           if (!streamed) {
             activeProvider = 'openrouter';
-            activeModel = 'google/gemma-4-26b-a4b-it:free';
+            activeModel = 'meta-llama/llama-4-maverick:free';
             emit('provider', { provider: 'OpenRouter', model: activeModel });
             for (const orKey of getRotatedKeys('openrouter', OPENROUTER_KEYS)) {
               if (streamed) break;
-              for (const orm of ['google/gemma-4-26b-a4b-it:free', 'liquid/lfm-2.5-2.6b:free']) {
+              for (const orm of ['meta-llama/llama-4-maverick:free', 'microsoft/phi-4-reasoning:free', 'google/gemini-2.0-flash-exp:free']) {
                 if (streamed) break;
                 streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, orm, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
               }

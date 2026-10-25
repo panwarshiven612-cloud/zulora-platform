@@ -20,9 +20,7 @@ function modelBadgeLabel(model = '', provider = '') {
     .replace(/\b(\d+(?:\.\d+)?)b\b/gi, '$1B');
   const providerName = source.toLowerCase();
   if (providerName.includes('groq')) return `Groq LPU (${readableModel})`;
-  if (providerName.includes('cerebras')) return `Cerebras Ultra Speed (${readableModel})`;
   if (providerName.includes('openrouter')) return `OpenRouter (${readableModel})`;
-  if (providerName.includes('mistral')) return `Mistral AI (${readableModel})`;
   if (providerName.includes('gemini') || modelId.toLowerCase().startsWith('gemini-')) return readableModel;
   return readableModel;
 }

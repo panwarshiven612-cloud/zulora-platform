@@ -54,8 +54,8 @@ export const WATERFALL_MODELS = {
     endpoint: 'https://api.groq.com/openai/v1/chat/completions'
   },
   openrouter: {
-    primary: 'google/gemma-4-26b-a4b-it:free',
-    fallbacks: ['google/gemma-4-26b-a4b-it:free', 'liquid/lfm-2.5-2.6b:free', 'nvidia/nemotron-3.5-lightning:free'],
+    primary: 'meta-llama/llama-4-maverick:free',
+    fallbacks: ['meta-llama/llama-4-maverick:free', 'microsoft/phi-4-reasoning:free', 'google/gemini-2.0-flash-exp:free'],
     endpoint: 'https://openrouter.ai/api/v1/chat/completions'
   }
 };
