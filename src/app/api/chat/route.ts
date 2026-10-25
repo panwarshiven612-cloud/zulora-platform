@@ -1,9 +1,7 @@
 import { 
   GEMINI_KEYS, 
   GROQ_KEYS, 
-  CEREBRAS_KEYS, 
   OPENROUTER_KEYS, 
-  MISTRAL_KEYS, 
   getRotatedKeys,
   resolveModelRoute,
   classifyTaskType
@@ -396,24 +394,10 @@ export async function POST(req: Request) {
             streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, gm, messages, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
           }
         }
-      } else if (provider === 'cerebras') {
-        for (const cbKey of getRotatedKeys('cerebras', CEREBRAS_KEYS)) {
-          if (streamed) break;
-          const cbModels = ['qwen-3.8-27b', 'gpt-oss-120b'];
-          for (const cm of cbModels) {
-            if (streamed) break;
-            streamed = await streamFromOpenAiCompatible('https://api.cerebras.ai/v1/chat/completions', cbKey, cm, messages, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
-          }
-        }
       } else if (provider === 'openrouter') {
         for (const orKey of getRotatedKeys('openrouter', OPENROUTER_KEYS)) {
           if (streamed) break;
           streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, model, messages, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
-        }
-      } else if (provider === 'mistral') {
-        for (const misKey of getRotatedKeys('mistral', MISTRAL_KEYS)) {
-          if (streamed) break;
-          streamed = await streamFromOpenAiCompatible('https://api.mistral.ai/v1/chat/completions', misKey, model, messages, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
         }
       }
 
@@ -446,40 +430,20 @@ export async function POST(req: Request) {
                 streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, gm, messages, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
               }
             }
-          } else if (provider === 'cerebras') {
-            for (const cbKey of getRotatedKeys('cerebras', CEREBRAS_KEYS)) {
-              if (streamed) break;
-              for (const cm of ['qwen-3.8-27b', 'gpt-oss-120b']) {
-                if (streamed) break;
-                activeModel = cm;
-                emit('provider', { provider: 'Cerebras', model: activeModel });
-                streamed = await streamFromOpenAiCompatible('https://api.cerebras.ai/v1/chat/completions', cbKey, cm, messages, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
-              }
-            }
           } else if (provider === 'openrouter') {
             for (const orKey of getRotatedKeys('openrouter', OPENROUTER_KEYS)) {
               if (streamed) break;
-              for (const orm of ['meta-llama/llama-3.1-70b-instruct', 'mistralai/mistral-large-2407']) {
+              for (const orm of ['google/gemma-4-26b-a4b-it:free', 'liquid/lfm-2.5-2.6b:free', 'nvidia/nemotron-3.5-lightning:free']) {
                 if (streamed) break;
                 activeModel = orm;
                 emit('provider', { provider: 'OpenRouter', model: activeModel });
                 streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, orm, messages, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
               }
             }
-          } else if (provider === 'mistral') {
-            for (const misKey of getRotatedKeys('mistral', MISTRAL_KEYS)) {
-              if (streamed) break;
-              for (const mm of ['mistral-medium-latest', 'mistral-large-latest']) {
-                if (streamed) break;
-                activeModel = mm;
-                emit('provider', { provider: 'Mistral AI', model: activeModel });
-                streamed = await streamFromOpenAiCompatible('https://api.mistral.ai/v1/chat/completions', misKey, mm, messages, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
-              }
-            }
           }
         } else {
           // Smart Auto Waterfall
-          // If Common / Simple Task: Route exclusively to Groq -> Cerebras -> Mistral -> OpenRouter.
+          // If Common / Simple Task: Route exclusively to Groq -> OpenRouter.
           // NEVER route simple text tasks to Gemini unless non-Gemini providers fail.
           if (taskType === 'simple') {
             // Waterfall Step 1: Groq LPU
@@ -496,36 +460,17 @@ export async function POST(req: Request) {
               }
             }
 
-            // Waterfall Step 2: Cerebras Ultra Speed
-            if (!streamed) {
-              activeProvider = 'cerebras';
-              activeModel = 'qwen-3.8-27b';
-              emit('provider', { provider: 'Cerebras', model: activeModel });
-              for (const cbKey of getRotatedKeys('cerebras', CEREBRAS_KEYS)) {
-                if (streamed) break;
-                streamed = await streamFromOpenAiCompatible('https://api.cerebras.ai/v1/chat/completions', cbKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
-              }
-            }
-
-            // Waterfall Step 3: Mistral AI
-            if (!streamed) {
-              activeProvider = 'mistral';
-              activeModel = 'mistral-small-latest';
-              emit('provider', { provider: 'Mistral AI', model: activeModel });
-              for (const misKey of getRotatedKeys('mistral', MISTRAL_KEYS)) {
-                if (streamed) break;
-                streamed = await streamFromOpenAiCompatible('https://api.mistral.ai/v1/chat/completions', misKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
-              }
-            }
-
-            // Waterfall Step 4: OpenRouter Multi-Provider
+            // Waterfall Step 2: OpenRouter Multi-Provider
             if (!streamed) {
               activeProvider = 'openrouter';
-              activeModel = 'meta-llama/llama-3.3-70b-instruct:free';
+              activeModel = 'google/gemma-4-26b-a4b-it:free';
               emit('provider', { provider: 'OpenRouter', model: activeModel });
               for (const orKey of getRotatedKeys('openrouter', OPENROUTER_KEYS)) {
                 if (streamed) break;
-                streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
+                for (const orm of ['google/gemma-4-26b-a4b-it:free', 'liquid/lfm-2.5-2.6b:free', 'nvidia/nemotron-3.5-lightning:free']) {
+                  if (streamed) break;
+                  streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, orm, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
+                }
               }
             }
           }
@@ -543,11 +488,14 @@ export async function POST(req: Request) {
           // Fallback to OpenRouter if Gemini also hits quota
           if (!streamed) {
             activeProvider = 'openrouter';
-            activeModel = 'meta-llama/llama-3.3-70b-instruct';
+            activeModel = 'google/gemma-4-26b-a4b-it:free';
             emit('provider', { provider: 'OpenRouter', model: activeModel });
             for (const orKey of getRotatedKeys('openrouter', OPENROUTER_KEYS)) {
               if (streamed) break;
-              streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
+              for (const orm of ['google/gemma-4-26b-a4b-it:free', 'liquid/lfm-2.5-2.6b:free']) {
+                if (streamed) break;
+                streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, orm, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
+              }
             }
           }
         }

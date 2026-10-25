@@ -5,10 +5,7 @@ import {
   Gauge, 
   Check, 
   ChevronDown,
-  Cpu,
-  Layers,
-  Flame,
-  Brain
+  Layers
 } from 'lucide-react';
 
 export interface ModelOption {
@@ -26,7 +23,7 @@ export const MODEL_OPTIONS: ModelOption[] = [
     id: 'auto',
     label: 'Auto',
     shortLabel: 'Auto',
-    description: 'Smart Route — LPU for simple, Gemini 3.8 for code & video',
+    description: 'Smart Route — Groq LPU for simple, Gemini Flash for code & video',
     icon: Sparkles,
     color: 'text-sky-500',
     badge: 'Smart'
@@ -35,7 +32,7 @@ export const MODEL_OPTIONS: ModelOption[] = [
     id: 'gemini',
     label: 'Gemini Flash',
     shortLabel: 'Gemini',
-    description: 'Gemini 3.8 / 2.5 Flash — 40k token high-speed execution',
+    description: 'Gemini 2.5 Flash — 40k token high-speed execution',
     icon: Zap,
     color: 'text-amber-500',
     badge: 'Flash'
@@ -44,19 +41,10 @@ export const MODEL_OPTIONS: ModelOption[] = [
     id: 'groq',
     label: 'Groq LPU',
     shortLabel: 'Groq LPU',
-    description: 'Ultra-fast LPU hardware acceleration',
+    description: 'Ultra-fast LPU hardware acceleration (~1s latency)',
     icon: Gauge,
     color: 'text-orange-500',
     badge: 'LPU'
-  },
-  {
-    id: 'cerebras',
-    label: 'Cerebras Ultra Speed',
-    shortLabel: 'Cerebras',
-    description: 'Wafer-scale accelerated ultra-low latency',
-    icon: Cpu,
-    color: 'text-rose-500',
-    badge: 'Wafer'
   },
   {
     id: 'openrouter',
@@ -66,15 +54,6 @@ export const MODEL_OPTIONS: ModelOption[] = [
     icon: Layers,
     color: 'text-indigo-500',
     badge: 'Global'
-  },
-  {
-    id: 'mistral',
-    label: 'Mistral AI',
-    shortLabel: 'Mistral',
-    description: 'Mistral Small & Large deep synthesis',
-    icon: Flame,
-    color: 'text-red-500',
-    badge: 'Mistral'
   }
 ];
 
@@ -100,10 +79,7 @@ export default function ModelSelector({
     if (cur === 'auto' || cur === 'zulora auto') return 'auto';
     if (cur === 'gemini' || cur === 'gemini flash' || cur === 'flash' || cur.startsWith('gemini ')) return 'gemini';
     if (cur === 'groq' || cur === 'groq lpu' || cur === 'zulora lpu speed' || cur === 'zulora lpu') return 'groq';
-    if (cur === 'cerebras' || cur === 'cerebras ultra speed' || cur === 'ultra speed') return 'cerebras';
     if (cur === 'openrouter' || cur === 'openrouter multi provider' || cur === 'openrouter multi-provider') return 'openrouter';
-    if (cur === 'mistral' || cur === 'mistral ai') return 'mistral';
-    if (cur === 'pro ultra' || cur === 'zulora 3.1 pro ultra' || cur === 'think' || cur === 'pro' || cur === 'gemini 2.5 pro') return 'pro_ultra';
     return cur || 'auto';
   })();
 

@@ -9,6 +9,8 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { TIERS } from '../services/firestoreService';
+import { collection, addDoc } from 'firebase/firestore';
+import { db } from '../services/firebase';
 
 const upiUri = (scheme, payment) => {
   const query = new URLSearchParams({
@@ -23,6 +25,7 @@ const upiUri = (scheme, payment) => {
 export const PricingModal = ({ isOpen, onClose }) => {
   const { currentUser, tier, refreshProfile } = useAuth();
   const [utr, setUtr] = useState('');
+  const [mobileNumber, setMobileNumber] = useState('');
   const [submittingUtr, setSubmittingUtr] = useState(false);
   const [utrMessage, setUtrMessage] = useState('');
   const [utrError, setUtrError] = useState('');
@@ -31,6 +34,7 @@ export const PricingModal = ({ isOpen, onClose }) => {
   const submitUtr = async event => {
     event.preventDefault();
     const transactionId = utr.trim();
+    const phone = mobileNumber.trim();
     setUtrMessage('');
     setUtrError('');
     if (!/^\d{12}$/.test(transactionId)) {
@@ -47,13 +51,37 @@ export const PricingModal = ({ isOpen, onClose }) => {
       const response = await fetch('/api/payments/utr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ utr: transactionId })
+        body: JSON.stringify({ 
+          utr: transactionId,
+          mobileNumber: phone,
+          plan: selectedPayment.plan,
+          amount: selectedPayment.amount,
+          email: currentUser.email || '',
+          userId: currentUser.uid || ''
+        })
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || 'Could not verify this transaction.');
+
+      try {
+        await addDoc(collection(db, 'transactions'), {
+          utr: transactionId,
+          mobileNumber: phone,
+          plan: selectedPayment.plan,
+          amount: selectedPayment.amount,
+          email: currentUser.email || '',
+          userId: currentUser.uid || '',
+          status: 'pending',
+          createdAt: Date.now()
+        });
+      } catch (clientErr) {
+        // non-blocking fallback
+      }
+
       await refreshProfile();
       setUtr('');
-      setUtrMessage('UTR recorded. Your Pro plan is active.');
+      setMobileNumber('');
+      setUtrMessage(`UTR recorded for ${selectedPayment.plan}. Our admin team will verify and activate your plan shortly.`);
     } catch (error) {
       setUtrError(error.message || 'Could not verify this transaction.');
     } finally {
@@ -298,8 +326,9 @@ export const PricingModal = ({ isOpen, onClose }) => {
           <form onSubmit={submitUtr} className="space-y-2 border-t border-sky-200/70 pt-4 dark:border-sky-800">
             <label htmlFor="utr-input" className="block text-xs font-semibold text-slate-700 dark:text-slate-200">Enter 12-Digit UTR / Transaction ID</label>
             <div className="flex flex-col gap-2 sm:flex-row">
-              <input id="utr-input" inputMode="numeric" autoComplete="off" maxLength={12} pattern="[0-9]{12}" value={utr} onChange={event => setUtr(event.target.value.replace(/\D/g, '').slice(0, 12))} placeholder="12-digit UTR" className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950 dark:text-white" />
-              <button type="submit" disabled={submittingUtr || tier !== TIERS.FREE} className="rounded-xl bg-sky-600 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50">{submittingUtr ? 'Submitting…' : 'Verify & Activate Pro'}</button>
+              <input id="mobile-input" type="tel" inputMode="numeric" maxLength={10} value={mobileNumber} onChange={event => setMobileNumber(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit Mobile No." className="w-full sm:w-44 rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950 dark:text-white" />
+              <input id="utr-input" inputMode="numeric" autoComplete="off" maxLength={12} pattern="[0-9]{12}" value={utr} onChange={event => setUtr(event.target.value.replace(/\D/g, '').slice(0, 12))} placeholder="12-digit UTR Number" className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950 dark:text-white" />
+              <button type="submit" disabled={submittingUtr || tier !== TIERS.FREE} className="rounded-xl bg-sky-600 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50">{submittingUtr ? 'Submitting…' : 'Submit UTR Payment'}</button>
             </div>
             {utrError && <p role="alert" className="text-xs text-rose-600 dark:text-rose-300">{utrError}</p>}
             {utrMessage && <p role="status" className="text-xs text-emerald-700 dark:text-emerald-300">{utrMessage}</p>}

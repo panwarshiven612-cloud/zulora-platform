@@ -4,30 +4,25 @@
  * Enforces manual provider selection override and smart automated waterfall:
  * 1. Explicit User Selection: Strictly locks execution to chosen provider.
  * 2. Smart Auto Waterfall:
- *    - Common/Simple queries: Route exclusively to ultra-fast non-Gemini keys
- *      (Groq LPU -> Cerebras -> Mistral -> OpenRouter). Never hits Gemini unless exhausted.
- *    - Research queries: Uses Gemini Flash with deep reasoning.
- *    - Coding & Video Generation: Routes strictly to Gemini Flash with high 40,000-token budget.
+ *    - Common/Simple queries: Route exclusively to ultra-fast Groq LPU (4 keys).
+ *    - Coding & Video Generation: Routes strictly to Gemini Flash with 40,000-token budget.
+ *    - Fallback: OpenRouter Multi-Provider (5 keys).
  * 3. Thinking State Tracking: Locks active token speed metrics without flickering.
  */
 
 import {
   GEMINI_KEYS,
   GROQ_KEYS,
-  CEREBRAS_KEYS,
-  OPENROUTER_KEYS,
-  MISTRAL_KEYS
+  OPENROUTER_KEYS
 } from '../config/keys';
 
 export {
   GEMINI_KEYS,
   GROQ_KEYS,
-  CEREBRAS_KEYS,
-  OPENROUTER_KEYS,
-  MISTRAL_KEYS
+  OPENROUTER_KEYS
 };
 
-export type ProviderId = 'gemini' | 'groq' | 'cerebras' | 'openrouter' | 'mistral';
+export type ProviderId = 'gemini' | 'groq' | 'openrouter';
 
 export interface RouteResolution {
   provider: ProviderId;
@@ -84,7 +79,7 @@ export function resolveModelRoute(
   const raw = String(preference || 'auto').trim().toLowerCase();
 
   // 1. Explicit User Selection Overrides
-  if (raw === 'gemini' || raw === 'gemini flash' || raw === 'flash' || raw === 'gemini-3.8-flash') {
+  if (raw === 'gemini' || raw === 'gemini flash' || raw === 'flash' || raw === 'gemini-3.8-flash' || raw === 'gemini-2.5-flash') {
     return { provider: 'gemini', model: 'gemini-2.5-flash', isAuto: false, maxTokens: 40000, taskType: 'general' };
   }
   if (raw === 'pro_ultra' || raw === 'gemini-2.5-pro' || raw === 'pro' || raw.includes('pro')) {
@@ -93,14 +88,8 @@ export function resolveModelRoute(
   if (raw === 'groq' || raw === 'groq lpu' || raw.includes('lpu')) {
     return { provider: 'groq', model: 'openai/gpt-oss-20b', isAuto: false, maxTokens: 16384, taskType: 'simple' };
   }
-  if (raw === 'cerebras' || raw === 'cerebras ultra speed' || raw.includes('wafer') || raw.includes('cerebras')) {
-    return { provider: 'cerebras', model: 'qwen-3.8-27b', isAuto: false, maxTokens: 16384, taskType: 'simple' };
-  }
   if (raw === 'openrouter' || raw === 'openrouter multi-provider' || raw.includes('openrouter')) {
-    return { provider: 'openrouter', model: 'meta-llama/llama-3.3-70b-instruct:free', isAuto: false, maxTokens: 16384, taskType: 'general' };
-  }
-  if (raw === 'mistral' || raw === 'mistral ai' || raw.includes('mistral')) {
-    return { provider: 'mistral', model: 'mistral-small-latest', isAuto: false, maxTokens: 16384, taskType: 'general' };
+    return { provider: 'openrouter', model: 'google/gemma-4-26b-a4b-it:free', isAuto: false, maxTokens: 16384, taskType: 'general' };
   }
 
   // 2. Smart Auto Waterfall
@@ -128,7 +117,7 @@ export function resolveModelRoute(
     };
   }
 
-  // Common / Simple tasks -> Ultra-fast non-Gemini Groq LPU (1s latency!)
+  // Common / Simple tasks -> Ultra-fast Groq LPU (~1s latency)
   return {
     provider: 'groq',
     model: 'openai/gpt-oss-20b',
@@ -144,7 +133,5 @@ export default {
   classifyTaskType,
   GEMINI_KEYS,
   GROQ_KEYS,
-  CEREBRAS_KEYS,
-  OPENROUTER_KEYS,
-  MISTRAL_KEYS
+  OPENROUTER_KEYS
 };

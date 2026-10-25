@@ -28,7 +28,7 @@ const deleteCollectionInBatches = async collectionRef => {
   }
 };
 
-/* â”€â”€â”€ Delete Confirmation Modal â”€â”€â”€ */
+/* ─── Delete Confirmation Modal ─── */
 const DeleteConfirmModal = ({ onConfirm, onCancel, loading }) => {
   const [typed, setTyped] = useState('');
   const CONFIRM_WORD = 'DELETE';
@@ -94,7 +94,7 @@ const DeleteConfirmModal = ({ onConfirm, onCancel, loading }) => {
   );
 };
 
-/* â”€â”€â”€ MAIN ACCOUNT SETTINGS â”€â”€â”€ */
+/* ─── MAIN ACCOUNT SETTINGS ─── */
 export const AccountSettings = ({ onClose }) => {
   const { currentUser, logout, tier, userProfile } = useAuth();
   const [creditStatus, setCreditStatus] = useState(null);

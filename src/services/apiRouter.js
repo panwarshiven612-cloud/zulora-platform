@@ -25,7 +25,7 @@ import connectorManager from './connectorManager';
 import { checkExtensionConnected } from './browserAgentEngine';
 import { classifyGoogleConnectorIntents, executeGoogleConnectorFunction, getGoogleConnectorFunctionDeclarations, getGoogleConnectorFunctionProvider, getGoogleConnectorToolInstructions, isGoogleReconnectError, isWorkspaceMetricsWorkflowRequest, normalizeGoogleConnectorArguments, toGeminiFunctionDeclaration, toOpenAiFunctionTool } from './googleConnectorTools';
 
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ SAFE ENVIRONMENT EXTRACTOR Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// ─ SAFE ENVIRONMENT EXTRACTOR ─
 // Only browser-safe media variables are read here. Text-model credentials stay
 // in the server router and are never serialized into this Vite bundle.
 const clientEnv = {
@@ -45,11 +45,11 @@ export const GROQ_MODELS = Object.freeze({
 const GEMINI_FLASH_MODEL = getEnv('VITE_GEMINI_FLASH_MODEL') || GEMINI_FLASH_MODEL_ID;
 export { GEMINI_MODELS };
 
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ DYNAMIC GEMINI KEY POOL Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// ─ DYNAMIC GEMINI KEY POOL ─
 import { GEMINI_KEYS } from '../lib/config/keys.js';
 export const getGeminiKeyPool = () => [...GEMINI_KEYS];
 
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ SECONDARY ENGINE KEYS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// ─ SECONDARY ENGINE KEYS ─
 const GROQ_KEY = '';
 const HF_IMAGE_KEY = getEnv('VITE_HF_API_KEY') || getEnv('VITE_HUGGINGFACE_API_KEY');
 const REPLICATE_IMAGE_KEY = getEnv('VITE_REPLICATE_API_TOKEN') || getEnv('VITE_REPLICATE_KEY');
@@ -73,7 +73,7 @@ const providerSystemPrompt = options => [
   options._searchContext ? `\nWEB SEARCH RESULTS (cite inline as [1],[2] markers):\n${options._searchContext}` : '',
 ].filter(Boolean).join('\n\n');
 
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ MODEL TIERS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// ─ MODEL TIERS ─
 export const MODEL_TIERS = {
   auto: {
     id: 'auto',
@@ -221,7 +221,7 @@ export const MODEL_TIERS = {
   },
 };
 
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ TIMEOUT FETCH HELPER Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// ─ TIMEOUT FETCH HELPER ─
 const fetchWithTimeout = async (url, options = {}, timeoutMs = 15000) => {
   const controller = new AbortController();
   const externalSignal = options.signal;
@@ -436,7 +436,7 @@ const ensureGenerationAllowance = async (type, currentUser, requestContext = {})
   }
 };
 
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ PROVIDER ADAPTERS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// ─ PROVIDER ADAPTERS ─
 
 /**
  * Gemini Adapter with Dual-Endpoint Failover
@@ -612,7 +612,7 @@ function connectorBadgeForResults(results = []) {
   const providers = [...new Set(results
     .filter(item => item?.executionVerified === true && item?.result && !item.result.error)
     .map(item => getGoogleConnectorFunctionProvider(item.name)))];
-  const badges = { gmail: '📧 Gmail Connector', calendar: '📅 Google Calendar Connector', computer: 'ðŸ’» Computer Agent Plugin', workspace: 'Google Workspace Workflow' };
+  const badges = { gmail: '📧 Gmail Connector', calendar: '📅 Google Calendar Connector', computer: '💻 Computer Agent', workspace: 'Google Workspace Workflow' };
   return providers.map(provider => badges[provider]).filter(Boolean).join(' · ');
 }
 
@@ -624,7 +624,7 @@ function connectorFailureResult({ name, error, model, provider, totalTokens, too
     : /(?:Google\s+)?Sheets/i.test(message) ? 'sheets'
       : /Gmail/i.test(message) ? 'gmail' : declaredProvider;
   const connectorProvider = needsReconnect ? (error?.connectorProvider || inferredProvider) : declaredProvider;
-  const providerName = ({ gmail: 'Gmail', calendar: 'Google Calendar', computer: 'Computer Plugin', workspace: 'Google Workspace workflow', drive: 'Google Drive', sheets: 'Google Sheets' })[connectorProvider] || 'Google connector';
+  const providerName = ({ gmail: 'Gmail', calendar: 'Google Calendar', computer: '💻 Computer Agent', workspace: 'Google Workspace workflow', drive: 'Google Drive', sheets: 'Google Sheets' })[connectorProvider] || 'Google connector';
   const completedActions = toolResults.filter(item => item?.executionVerified === true).map(item => item.name.replaceAll('_', ' '));
   const failure = needsReconnect
     ? 'OAuth Permission Required: Please re-connect your Gmail/Calendar account.'
@@ -981,7 +981,7 @@ const tryGroq = async (prompt, contextMessages, tier = 'pro', options = {}) => {
   };
 };
 
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ MASTER UNIFIED ROUTER Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// ─ MASTER UNIFIED ROUTER ─
 async function readDocxText(file) {
   if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot unpack DOCX files. Save the document as PDF or plain text and attach that instead.');
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -1267,7 +1267,7 @@ export const apiRouter = {
     }, 'chat', options.currentUser);
   },
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ IMAGE STUDIO GENERATION Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // ─ IMAGE STUDIO GENERATION ─
   /**
    * Flexible generateImage supporting both:
    * 1. generateImage(prompt, options)
@@ -1383,7 +1383,7 @@ export const apiRouter = {
       }
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ Engine 1: Pollinations FLUX Ã¢â€â‚¬Ã¢â€â‚¬
+    // ─ Engine 1: Pollinations FLUX ─
     try {
       const selectedPollinationsModel = imageEngine === 'pollinations-hd' ? 'flux-hd' : 'flux';
       const fluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(styledPrompt)}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&nologo=true&model=${selectedPollinationsModel}`;
@@ -1417,7 +1417,7 @@ export const apiRouter = {
       }
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ Engine 2: Fal AI FLUX Schnell Ã¢â€â‚¬Ã¢â€â‚¬
+    // ─ Engine 2: Fal AI FLUX Schnell ─
     if (FAL_KEY) {
       try {
         const falRes = await fetchWithTimeout(
@@ -1457,7 +1457,7 @@ export const apiRouter = {
       }
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ Engine 4: Cloudflare Workers AI FLUX Ã¢â€â‚¬Ã¢â€â‚¬
+    // ─ Engine 4: Cloudflare Workers AI FLUX ─
     if (CLOUDFLARE_ACCT && CLOUDFLARE_TOKEN) {
       try {
         const cfRes = await fetchWithTimeout(
@@ -1492,7 +1492,7 @@ export const apiRouter = {
       }
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ Final Deterministic High-Definition Fallback Ã¢â€â‚¬Ã¢â€â‚¬
+    // ─ Final Deterministic High-Definition Fallback ─
     if (REPLICATE_IMAGE_KEY) {
       try {
         const model = 'black-forest-labs/flux-schnell';
@@ -1506,7 +1506,7 @@ export const apiRouter = {
       }
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ Resilient Pollinations Failover (Guaranteed image generation) Ã¢â€â‚¬Ã¢â€â‚¬
+    // ─ Resilient Pollinations Failover (Guaranteed image generation) ─
     const fallbackPollinationsUrl = `https://image.pollinations.ai/prompt/${encoded}?width=${targetWidth}&height=${targetHeight}&seed=${seed}&nologo=true&model=flux`;
     return await syncUsage({
       url: fallbackPollinationsUrl,
@@ -1519,7 +1519,7 @@ export const apiRouter = {
     }, 'image', currentUser);
   },
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ VIDEO STUDIO GENERATION Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // ─ VIDEO STUDIO GENERATION ─
   /**
    * Flexible generateVideo supporting both:
    * 1. generateVideo(prompt, options)
@@ -1529,7 +1529,7 @@ export const apiRouter = {
     return generateVideoWithProviders(arg1, arg2);
   },
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ MULTIMODAL FILE READER Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // ─ MULTIMODAL FILE READER ─
   async readFileContent(file) {
     if (!file) return '';
     const maxBytes = 50 * 1024 * 1024;

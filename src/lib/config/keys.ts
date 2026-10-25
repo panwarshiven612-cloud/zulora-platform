@@ -1,68 +1,62 @@
 /**
  * keys.ts — Central API Key Resolver & Multi-Provider Key Pool
  * ==============================================================
- * Key pool exports for zero-downtime multi-provider waterfall routing.
+ * Optimized multi-provider key pools with Cerebras/Mistral removed.
+ * Active Providers: Google Gemini (healthy pool), Groq LPU (4 keys), OpenRouter (5 keys).
  */
+
+declare const process: any;
 
 const unxor = (hex: string): string => 
   (hex.match(/.{1,2}/g) || []).map(b => String.fromCharCode(parseInt(b, 16) ^ 0x3c)).join('');
 
+// 5 Healthy & Verified Gemini API Keys
 export const GEMINI_KEYS: string[] = [
-  unxor("7d6d127d5e046e720a770c4c45564c5a7809744b446d59650c09094d5070746f6e635d0e495a786c5e530e69085678797870657d4b"),
-  unxor("7d6d127d5e046e720a77694872500f64505809725b6a5b594e047f4d7844547f116653644b6c500e0e455d110f457d4d504d4f756d"),
-  unxor("7d6d127d5e046e720a765a4d0b68560876577d114c6a5d49507b0e756e5e6f5d4a6b750f4b487f084a70095b0a055b7f7d7b4c785b"),
-  unxor("7d6d127d5e046e720a757f797a726609596b515a7b086c78457f5554085f6c707305636a0d6b6e585d560d097f4d11665a5e080e4b"),
-  unxor("7d6d127d5e046e720a770a4a6b5d7764757b7e775e5e5b6b5a7d664558494a5e58557b6f714d7a7d5e526d504565114b6e5708057d"),
-  unxor("7d6d127d5e046e720a7544584c747e707a6e4c73790f0e047e7b7644561153725b0c5876526375087b457e5d550b0f5d524a6a085b"),
-  unxor("7d6d127d5e046e720a775f7e786d6a0f65086b0f46745169535d5a5d4a5044666b787b696c77527b547d655f52466d49115d6d735b")
+  process.env.GEMINI_API_KEY_1 || unxor("7d6d127d5e046e720a770c4c45564c5a7809744b446d59650c09094d5070746f6e635d0e495a786c5e530e69085678797870657d4b"),
+  process.env.GEMINI_API_KEY_2 || unxor("7d6d127d5e046e720a765a4d0b68560876577d114c6a5d49507b0e756e5e6f5d4a6b750f4b487f084a70095b0a055b7f7d7b4c785b"),
+  process.env.GEMINI_API_KEY_3 || unxor("7d6d127d5e046e720a757f797a726609596b515a7b086c78457f5554085f6c707305636a0d6b6e585d560d097f4d11665a5e080e4b"),
+  process.env.GEMINI_API_KEY_4 || unxor("7d6d127d5e046e720a770a4a6b5d7764757b7e775e5e5b6b5a7d664558494a5e58557b6f714d7a7d5e526d504565114b6e5708057d"),
+  process.env.GEMINI_API_KEY_5 || unxor("7d6d127d5e046e720a7544584c747e707a6e4c73790f0e047e7b7644561153725b0c5876526375087b457e5d550b0f5d524a6a085b")
 ];
 
+// 4 New Groq LPU Keys (Round-Robin Pool)
 export const GROQ_KEYS: string[] = [
-  unxor("5b4f57636d7e4b6e6d080a714a595377667b0f4e73784b6b6b7b58455e0f7a65054d537471530a560b6f52094e5e4e66500b724573590f50")
+  process.env.GROQ_API_KEY_1 || unxor("5b4f57636d7e4b6e6d080a714a595377667b0f4e73784b6b6b7b58455e0f7a65054d537471530a560b6f52094e5e4e66500b724573590f50"),
+  process.env.GROQ_API_KEY_2 || unxor("5b4f57637146647350654e714f5f72687d7a054e557a485e6b7b58455e0f7a656b73440a0b6c68780e4651055a7f524a777d0c510f75760f"),
+  process.env.GROQ_API_KEY_3 || unxor("5b4f57630e687968054c4c7850507a6e7071514c0a65495e6b7b58455e0f7a65515178055f780c776a094c0d46455b465d77080b7e550549"),
+  process.env.GROQ_API_KEY_4 || unxor("5b4f5763726572537b715a7e744c7405515b784e7453736d6b7b58455e0f7a65690d44690e464b457e65595a6d7a09485770585f5b64730f")
 ];
 
-export const CEREBRAS_KEYS: string[] = [
-  unxor("5f4f5711440e56054b0e4a5a58480957525209525105574a0f055f0a0552094c524b54560e0a454e444a58520844584c48450848")
-];
-
+// 5 New OpenRouter Multi-Provider Keys (Round-Robin Pool)
 export const OPENROUTER_KEYS: string[] = [
-  unxor("4f5711534e114a0d11055e0b0f0c0b0e59585e0a08590b0c595a0f0b055a5e5f0805095d0f0e5e0d0f0d0b0e5e0b04080b080d0c0d080f0d0f0d05590904095a0c04045d0e5e580e59"),
-  unxor("4f5711534e114a0d110d0909580c0405050b5d0505090e0c0405080d585f5d5e5f590508580c0c08055d59090d0f5a5a045e0d045d05055d5d580e0a050c5a0c09085a5f585f050d0d")
-];
-
-export const MISTRAL_KEYS: string[] = [
-  unxor("514f484e5063765d4f55480a726a0951655405724f5a5d6b446b76770e0e444d6b4b79776b53630c53570d654e")
+  process.env.OPENROUTER_API_KEY_1 || unxor("4f5711534e114a0d11050e5a08590c580e0e590b05095e5d040f0f5e0e0c0b595e095f040f0a0a5e04045f0c0559055e080b595d580c5f0c055e0405080504095f595a590b040e5a0e"),
+  process.env.OPENROUTER_API_KEY_2 || unxor("4f5711534e114a0d115e0c0e0a0a0b5d085a0e080b0d580a095e5d0f04080e5d59085a0a0e090b5d0e0b0d5e085d580c5e050f09095a085a5f5d5e0a090d0b0a5a5e5f5d58080d580f"),
+  process.env.OPENROUTER_API_KEY_3 || unxor("4f5711534e114a0d110b5a5f0e085e0d0a050f5d0c0a0e5e0e5f0b0d0c59040f5d080d080f5a595f0f0b0b080858050c0e0a0e5d0d5e0c5f585a0f08080e5f0c04585e0e0e5e040b5a"),
+  process.env.OPENROUTER_API_KEY_4 || unxor("4f5711534e114a0d110c040e040b0e5f055a080c0e040d0f595e040c08585a5a5f080f045e580c090d0a5f5f0c0e0f0e590b5f0f0a5f095e090d050a595d5e0c05595d0a045808040e"),
+  process.env.OPENROUTER_API_KEY_5 || unxor("4f5711534e114a0d11090f08080e0f0e0e0e09590f0f585d0d055e5d0f5d0504055e0e0b0b055d0b0a5d045f5a0a095908045a0c5a5a5e0a590f59050a5d0f0a0b5f5f0e5f5d5f5f0f")
 ];
 
 export const PROVIDER_WATERFALL_ORDER: string[] = [
-  'gemini',
   'groq',
-  'cerebras',
-  'openrouter',
-  'mistral'
+  'gemini',
+  'openrouter'
 ];
 
 export const WATERFALL_MODELS = {
   gemini: {
     primary: 'gemini-2.5-flash',
     pro: 'gemini-2.5-pro',
-    fallbacks: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash']
+    fallbacks: ['gemini-2.5-flash', 'gemini-2.5-pro']
   },
   groq: {
-    primary: 'llama-3.3-70b-versatile',
+    primary: 'openai/gpt-oss-20b',
+    fallbacks: ['openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'qwen/qwen3.8-27b'],
     endpoint: 'https://api.groq.com/openai/v1/chat/completions'
   },
-  cerebras: {
-    primary: 'llama3.1-70b',
-    endpoint: 'https://api.cerebras.ai/v1/chat/completions'
-  },
   openrouter: {
-    primary: 'meta-llama/llama-3.3-70b-instruct',
+    primary: 'google/gemma-4-26b-a4b-it:free',
+    fallbacks: ['google/gemma-4-26b-a4b-it:free', 'liquid/lfm-2.5-2.6b:free', 'nvidia/nemotron-3.5-lightning:free'],
     endpoint: 'https://openrouter.ai/api/v1/chat/completions'
-  },
-  mistral: {
-    primary: 'mistral-small-latest',
-    endpoint: 'https://api.mistral.ai/v1/chat/completions'
   }
 };
 
@@ -72,9 +66,7 @@ export const TELEGRAM_BOT_USERNAME = "@Zulora_bot";
 const CONFIG_KEYS = {
   GEMINI_KEYS,
   GROQ_KEYS,
-  CEREBRAS_KEYS,
   OPENROUTER_KEYS,
-  MISTRAL_KEYS,
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_BOT_USERNAME,
   PROVIDER_WATERFALL_ORDER,

@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import { 
   collection, getDocs, doc, updateDoc, addDoc, query, orderBy, limit, 
-  where, Timestamp, getDoc 
+  where, Timestamp, getDoc, onSnapshot 
 } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { useAuth } from '../../context/AuthContext';
@@ -128,7 +128,7 @@ function UserManagement() {
 
   const changeUserPlan = async (uid, newPlan) => {
     setUpdatingId(uid);
-    const isPro = newPlan === 'pro' || newPlan === 'enterprise';
+    const isPro = newPlan === 'pro' || newPlan === 'ultra' || newPlan === 'enterprise';
     try {
       await updateDoc(doc(db, 'users', uid), { 
         plan: newPlan, 
@@ -278,7 +278,8 @@ function UserManagement() {
                         className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2 py-1 text-xs font-semibold text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer"
                       >
                         <option value="free">Free Tier</option>
-                        <option value="pro">Pro Plan (₹499)</option>
+                        <option value="pro">Pro Plan (₹299)</option>
+                        <option value="ultra">Ultra Pro Max (₹599)</option>
                         <option value="enterprise">Enterprise</option>
                       </select>
                     </td>
@@ -681,65 +682,191 @@ function NotificationsTab() {
 function PaymentsTab() {
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [activatingId, setActivatingId] = useState('');
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
 
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      try {
-        const snap = await getDocs(query(collection(db, 'transactions'), orderBy('createdAt', 'desc'), limit(50)));
+    setLoading(true);
+    try {
+      const q = query(collection(db, 'transactions'), orderBy('createdAt', 'desc'), limit(100));
+      const unsubscribe = onSnapshot(q, (snap) => {
         setTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      } catch {
-        setTransactions([]);
-      } finally {
         setLoading(false);
-      }
-    })();
+      }, (err) => {
+        console.warn('Real-time payments listener fallback:', err);
+        getDocs(q).then(snap => {
+          setTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+          setLoading(false);
+        }).catch(() => setLoading(false));
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      console.warn('Could not attach snapshot:', e);
+      setLoading(false);
+    }
   }, []);
 
+  const verifyAndActivate = async (tx) => {
+    if (!tx.id) return;
+    setActivatingId(tx.id);
+    try {
+      const planKey = (tx.plan || 'pro').toLowerCase().includes('ultra') ? 'ultra' : 'pro';
+      
+      // 1. If userId exists, activate user document
+      if (tx.userId) {
+        await updateDoc(doc(db, 'users', tx.userId), {
+          plan: planKey,
+          tier: planKey,
+          planTier: planKey === 'ultra' ? 'Ultra Pro Max' : 'Pro',
+          isPro: true,
+          planUpdatedAt: Date.now(),
+          lastVerifiedUtr: tx.utr || tx.transactionId || ''
+        });
+      }
+
+      // 2. Mark transaction as success and verified
+      await updateDoc(doc(db, 'transactions', tx.id), {
+        status: 'success',
+        verifiedAt: Date.now(),
+        verifiedBy: 'Admin Portal'
+      });
+
+      // Update local state immediately
+      setTransactions(prev => prev.map(t => t.id === tx.id ? { ...t, status: 'success', verifiedAt: Date.now() } : t));
+    } catch (e) {
+      alert('Failed to verify and activate subscription: ' + e.message);
+    } finally {
+      setActivatingId('');
+    }
+  };
+
+  const filtered = transactions.filter(tx => {
+    const q = search.toLowerCase();
+    const matchSearch = !q || 
+      (tx.email || '').toLowerCase().includes(q) ||
+      (tx.mobileNumber || tx.phone || '').toLowerCase().includes(q) ||
+      (tx.utr || tx.transactionId || '').toLowerCase().includes(q) ||
+      (tx.plan || '').toLowerCase().includes(q);
+    const matchStatus = statusFilter === 'all' || tx.status === statusFilter;
+    return matchSearch && matchStatus;
+  });
+
   const totalRevenue = transactions.filter(t => t.status === 'success').reduce((acc, t) => acc + (Number(t.amount) || 0), 0);
+  const pendingCount = transactions.filter(t => t.status !== 'success').length;
   const successCount = transactions.filter(t => t.status === 'success').length;
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        <StatCard icon={DollarSign} label="Collected Revenue" value={`₹${totalRevenue.toLocaleString()}`} color="green" />
-        <StatCard icon={Check} label="Success Payments" value={successCount} color="sky" />
-        <StatCard icon={TrendingUp} label="Total Orders" value={transactions.length} color="amber" />
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatCard icon={DollarSign} label="Verified Revenue" value={`₹${totalRevenue.toLocaleString()}`} color="green" />
+        <StatCard icon={Clock} label="Pending Review" value={pendingCount} color="amber" sub="Awaiting Activation" />
+        <StatCard icon={Check} label="Active Subscriptions" value={successCount} color="sky" />
+        <StatCard icon={TrendingUp} label="Total Payments Logged" value={transactions.length} color="purple" />
+      </div>
+
+      {/* Filter and Search Bar */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+        <div className="relative flex-1 min-w-[240px]">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search by UTR, Email, Mobile number..."
+            className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={statusFilter}
+            onChange={e => setStatusFilter(e.target.value)}
+            className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500"
+          >
+            <option value="all">All Statuses ({transactions.length})</option>
+            <option value="pending">Pending Review ({pendingCount})</option>
+            <option value="success">Verified & Active ({successCount})</option>
+          </select>
+        </div>
       </div>
 
       {loading ? (
         <div className="flex items-center justify-center py-12 text-slate-400">
-          <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading payments...
+          <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading real-time payments...
         </div>
       ) : (
         <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full text-sm text-left">
-            <thead className="bg-slate-50 dark:bg-slate-800/60 text-xs font-bold text-slate-500 uppercase">
+            <thead className="bg-slate-50 dark:bg-slate-800/60 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
               <tr>
-                <th className="px-4 py-3">User</th>
+                <th className="px-4 py-3">User Email</th>
+                <th className="px-4 py-3">Mobile No.</th>
+                <th className="px-4 py-3">12-Digit UTR / Ref</th>
                 <th className="px-4 py-3">Plan</th>
                 <th className="px-4 py-3">Amount</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Date</th>
+                <th className="px-4 py-3 text-right">Admin Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {transactions.length === 0 && (
-                <tr><td colSpan={5} className="py-8 text-center text-slate-400 text-sm">No transaction records found.</td></tr>
+              {filtered.length === 0 && (
+                <tr><td colSpan={8} className="py-8 text-center text-slate-400 text-sm">No transaction records matching filter.</td></tr>
               )}
-              {transactions.map(tx => (
-                <tr key={tx.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                  <td className="px-4 py-3 text-slate-700 dark:text-slate-300 truncate max-w-[150px]">{tx.email || tx.userId || '—'}</td>
-                  <td className="px-4 py-3"><Pill label={tx.plan || 'Pro'} color="amber" /></td>
-                  <td className="px-4 py-3 font-bold text-slate-800 dark:text-slate-200">₹{(tx.amount || 0).toLocaleString()}</td>
-                  <td className="px-4 py-3">
-                    <Pill label={tx.status || 'pending'} color={tx.status === 'success' ? 'green' : 'amber'} />
-                  </td>
-                  <td className="px-4 py-3 text-slate-400 text-xs">
-                    {tx.createdAt ? new Date(tx.createdAt?.seconds ? tx.createdAt.seconds * 1000 : tx.createdAt).toLocaleDateString() : '—'}
-                  </td>
-                </tr>
-              ))}
+              {filtered.map(tx => {
+                const isSuccess = tx.status === 'success';
+                const utrCode = tx.utr || tx.transactionId || tx.id;
+                const phone = tx.mobileNumber || tx.phone || tx.mobile || '—';
+                const createdDate = tx.createdAt ? (tx.createdAt?.seconds ? new Date(tx.createdAt.seconds * 1000) : new Date(tx.createdAt)) : null;
+
+                return (
+                  <tr key={tx.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                    <td className="px-4 py-3">
+                      <div className="font-semibold text-slate-800 dark:text-slate-200 truncate max-w-[180px]">
+                        {tx.email || '—'}
+                      </div>
+                      <div className="text-[10px] text-slate-400 truncate max-w-[150px]">
+                        UID: {tx.userId || tx.id}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-slate-700 dark:text-slate-300">
+                      {phone}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs font-bold text-slate-900 dark:text-white">
+                      <span className="px-2 py-1 rounded bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 select-all">
+                        {utrCode}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <Pill label={tx.plan || 'Pro'} color={(tx.plan || '').toLowerCase().includes('ultra') ? 'purple' : 'amber'} />
+                    </td>
+                    <td className="px-4 py-3 font-black text-slate-900 dark:text-slate-100">
+                      ₹{Number(tx.amount || 299).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3">
+                      <Pill label={isSuccess ? 'Verified & Active' : 'Pending Review'} color={isSuccess ? 'green' : 'amber'} />
+                    </td>
+                    <td className="px-4 py-3 text-slate-400 text-xs whitespace-nowrap">
+                      {createdDate ? createdDate.toLocaleDateString() + ' ' + createdDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {isSuccess ? (
+                        <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                          <Check className="w-3.5 h-3.5" /> Activated
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => verifyAndActivate(tx)}
+                          disabled={activatingId === tx.id}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold transition shadow-xs active:scale-95"
+                        >
+                          {activatingId === tx.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                          Verify & Activate
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
