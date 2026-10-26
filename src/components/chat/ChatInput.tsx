@@ -29,7 +29,7 @@ export interface ChatInputProps {
   modelPreference?: string;
   onModelChange?: (modelId: string) => void;
   showModelMenu?: boolean;
-  onToggleModelMenu?: (e: React.MouseEvent) => void;
+  onToggleModelMenu?: (e: React.MouseEvent | React.TouchEvent) => void;
   onCloseModelMenu?: () => void;
   isListening?: boolean;
   onToggleListening?: () => void;
@@ -81,6 +81,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   onStopGeneration
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isSubmittingRef = useRef<boolean>(false);
+
   const activePrompt = inputPrompt || input;
   const setPrompt = setInputPrompt || setInput;
   const activeAttachments = attachments.length > 0 ? attachments : files;
@@ -118,11 +120,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     };
   }, []);
 
-  const submitMessage = useCallback((e?: React.FormEvent | React.MouseEvent | React.TouchEvent) => {
+  const submitMessage = useCallback((e?: React.FormEvent | React.MouseEvent | React.TouchEvent | React.KeyboardEvent) => {
     if (e) {
-      e.preventDefault();
-      e.stopPropagation();
+      if (typeof e.preventDefault === 'function') e.preventDefault();
+      if (typeof e.stopPropagation === 'function') e.stopPropagation();
     }
+
     if (isGenerating) {
       onStopGeneration?.();
       return;
@@ -130,17 +133,34 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
     const trimmed = (activePrompt || '').trim();
     const hasFiles = activeAttachments.length > 0;
-    if (!trimmed && !hasFiles) return;
-    if (isSendDisabled) return;
-
-    // Trigger the send handler cleanly
-    if (typeof onSendMessage === 'function') {
-      onSendMessage(trimmed);
-    } else if (typeof handleSendMessage === 'function') {
-      handleSendMessage(trimmed);
+    
+    // Explicitly reject whitespace-only or empty messages without files
+    if (!trimmed && !hasFiles) {
+      return;
     }
 
-    // Reset textarea height to default single row
+    if (isSendDisabled) {
+      return;
+    }
+
+    // Debounce rapid double-clicks/touches within 250ms
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    setTimeout(() => {
+      isSubmittingRef.current = false;
+    }, 250);
+
+    // Call whichever send handler was passed
+    const sendHandler = onSendMessage || handleSendMessage;
+    if (typeof sendHandler === 'function') {
+      try {
+        sendHandler(trimmed);
+      } catch (err) {
+        console.error('[ChatInput] Error executing message send handler:', err);
+      }
+    }
+
+    // Reset textarea height to default 40px
     if (textareaRef.current) {
       textareaRef.current.style.height = '40px';
     }
@@ -149,6 +169,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      e.stopPropagation();
       submitMessage(e);
     }
   };
@@ -168,12 +189,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
   };
 
-  const hasContent = activePrompt.trim().length > 0 || activeAttachments.length > 0;
+  const hasContent = Boolean(activePrompt && activePrompt.trim().length > 0) || Boolean(activeAttachments && activeAttachments.length > 0);
   const canSend = hasContent && !isSendDisabled;
 
   return (
     <form 
-      onSubmit={submitMessage}
+      onSubmit={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        submitMessage(e);
+      }}
       className="chat-composer-container relative w-full max-w-4xl mx-auto rounded-2xl sm:rounded-3xl border border-slate-200/90 dark:border-slate-800 bg-white/95 dark:bg-[#0c1222]/95 shadow-xl backdrop-blur-2xl transition-all"
     >
       {/* Attachment Chips Tray */}
@@ -216,6 +241,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       <div className="w-full px-3.5 pt-3 pb-1">
         <textarea
           ref={textareaRef}
+          id="chat-textarea"
+          data-testid="chat-input"
           value={activePrompt}
           onChange={(e) => setPrompt?.(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -315,9 +342,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         <div className="shrink-0 flex items-center">
           <button
             type="submit"
-            onClick={submitMessage}
+            id="chat-send-button"
+            data-testid="send-button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              submitMessage(e);
+            }}
             onTouchEnd={(e) => {
               e.preventDefault();
+              e.stopPropagation();
               submitMessage(e);
             }}
             disabled={!isGenerating && !canSend}

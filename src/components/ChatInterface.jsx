@@ -1130,7 +1130,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       return;
     }
     const hasAttachments = attachments.length > 0;
-    const basePrompt = String(promptOverride ?? inputPrompt).trim() || (hasAttachments ? 'Please analyze the attached image or document.' : '');
+    const rawPrompt = typeof promptOverride === 'string' ? promptOverride : inputPrompt;
+    const basePrompt = String(rawPrompt ?? '').trim() || (hasAttachments ? 'Please analyze the attached image or document.' : '');
     if (!basePrompt) return;
 
     // Immediately reset input and file states for instant responsive feedback
@@ -2078,6 +2079,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           inputPrompt={inputPrompt}
           setInputPrompt={setInputPrompt}
           onSendMessage={sendMessage}
+          handleSendMessage={sendMessage}
           attachments={attachments}
           onRemoveAttachment={removeAttachment}
           modelPreference={modelPreference}
