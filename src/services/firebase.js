@@ -18,7 +18,8 @@ const firebaseConfig = {
   projectId: "zulora-al",
   storageBucket: "zulora-al.firebasestorage.app",
   messagingSenderId: "791256936681",
-  appId: "1:791256936681:web:5c52af9f5b76676b2c0078"
+  appId: "1:791256936681:web:5c52af9f5b76676b2c0078",
+  measurementId: "G-4FX84TSHEM"
 };
 
 const app = initializeApp(firebaseConfig);

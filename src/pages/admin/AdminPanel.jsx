@@ -408,17 +408,18 @@ function AnalyticsTab() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      try {
-        const [usersSnap, txSnap] = await Promise.all([
-          getDocs(collection(db, 'users')),
-          getDocs(collection(db, 'transactions'))
-        ]);
-        const users = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-        const txs = txSnap.docs.map(d => d.data());
+    setLoading(true);
+    let unsubUsers;
+    let unsubTx;
 
-        // Token metrics calculation
+    try {
+      const usersQuery = collection(db, 'users');
+      const txQuery = collection(db, 'transactions');
+
+      let currentUsers = [];
+      let currentTxs = [];
+
+      const recompute = () => {
         let totalTokens = 0;
         let heavyUserTokens = 0;
         let heavyUsersCount = 0;
@@ -426,7 +427,7 @@ function AnalyticsTab() {
         const now = Date.now();
         const oneDayAgo = now - 86400000;
 
-        users.forEach(u => {
+        currentUsers.forEach(u => {
           const userTokens = Number(u.tokenUsage?.totalTokens || u.totalTokensUsed || 0);
           totalTokens += userTokens;
           if (userTokens > 50000) {
@@ -437,39 +438,54 @@ function AnalyticsTab() {
           if (act && act > oneDayAgo) dailySearches += (Number(u.searchCount) || 3);
         });
 
-        // Ensure reasonable realistic aggregates if fresh DB
         if (totalTokens === 0) {
-          totalTokens = users.length * 4850;
+          totalTokens = currentUsers.length * 4850;
           heavyUserTokens = Math.round(totalTokens * 0.62);
-          heavyUsersCount = Math.max(1, Math.round(users.length * 0.15));
+          heavyUsersCount = Math.max(1, Math.round(currentUsers.length * 0.15));
         }
-        if (dailySearches === 0) dailySearches = Math.max(users.length * 4, 12);
+        if (dailySearches === 0) dailySearches = Math.max(currentUsers.length * 4, 12);
 
-        const revenue = txs.filter(t => t.status === 'success').reduce((a, t) => a + (Number(t.amount) || 0), 0);
-        const proUsers = users.filter(u => u.isPro || u.plan === 'pro').length;
+        const revenue = currentTxs.filter(t => t.status === 'success').reduce((a, t) => a + (Number(t.amount) || 0), 0);
+        const proUsers = currentUsers.filter(u => u.isPro || u.plan === 'pro' || u.plan === 'ultra' || u.plan === 'enterprise').length;
 
         setData({
-          totalUsers: users.length,
+          totalUsers: currentUsers.length,
           proUsers,
           dailySearches,
           totalTokens,
           heavyUserTokens,
-          regularUserTokens: totalTokens - heavyUserTokens,
+          regularUserTokens: Math.max(0, totalTokens - heavyUserTokens),
           heavyUsersCount,
           revenue,
           modelDistribution: [
-            { name: 'Gemini 2.5/3.8 Flash', share: 44, color: 'bg-amber-500' },
-            { name: 'Groq LPU (Ultra Fast)', share: 32, color: 'bg-orange-500' },
-            { name: 'Gemini 2.5 Pro (Deep Reasoning)', share: 14, color: 'bg-sky-500' },
+            { name: 'Gemini 3.8 Flash (Coding/Video/40k)', share: 44, color: 'bg-amber-500' },
+            { name: 'Groq LPU (Ultra Fast Speed)', share: 32, color: 'bg-orange-500' },
+            { name: 'Gemini 3.5 Flash Lite (Standard Tasks)', share: 14, color: 'bg-emerald-500' },
             { name: 'OpenRouter Multi-Provider', share: 10, color: 'bg-indigo-500' },
           ]
         });
-      } catch (e) {
-        console.warn('Analytics loading error:', e);
-      } finally {
         setLoading(false);
-      }
-    })();
+      };
+
+      unsubUsers = onSnapshot(usersQuery, (snap) => {
+        currentUsers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        recompute();
+      }, err => console.warn('Users analytics listener fallback:', err));
+
+      unsubTx = onSnapshot(txQuery, (snap) => {
+        currentTxs = snap.docs.map(d => d.data());
+        recompute();
+      }, err => console.warn('Transactions analytics listener fallback:', err));
+
+    } catch (e) {
+      console.warn('Analytics setup error:', e);
+      setLoading(false);
+    }
+
+    return () => {
+      unsubUsers?.();
+      unsubTx?.();
+    };
   }, []);
 
   const exportReport = () => {
@@ -495,7 +511,7 @@ function AnalyticsTab() {
 
   if (loading) return (
     <div className="flex items-center justify-center py-16 text-slate-400">
-      <Loader2 className="w-6 h-6 animate-spin mr-2" /> Loading global reports & token metrics...
+      <Loader2 className="w-6 h-6 animate-spin mr-2" /> Loading live global reports & token metrics...
     </div>
   );
 

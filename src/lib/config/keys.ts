@@ -44,9 +44,10 @@ export const PROVIDER_WATERFALL_ORDER: string[] = [
 
 export const WATERFALL_MODELS = {
   gemini: {
-    primary: 'gemini-2.5-flash',
+    primary: 'gemini-3.8-flash',
+    lite: 'gemini-3.5-flash-lite',
     pro: 'gemini-2.5-pro',
-    fallbacks: ['gemini-2.5-flash', 'gemini-2.5-pro']
+    fallbacks: ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-pro']
   },
   groq: {
     primary: 'openai/gpt-oss-20b',

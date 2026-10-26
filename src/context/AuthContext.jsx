@@ -330,6 +330,9 @@ export const AuthProvider = ({ children }) => {
 
   const checkUsage = async (type, options = {}) => {
     if (!currentUser) return { allowed: false, error: 'User not signed in' };
+    if (userProfile?.blocked || currentUser?.blocked) {
+      return { allowed: false, blocked: true, error: 'Your account has been suspended by an administrator.' };
+    }
     const result = await firestoreService.checkUsageAllowance(currentUser.uid, type, options);
     // Automatically trigger usage limits modal if limit reached
     if (!result.allowed) {

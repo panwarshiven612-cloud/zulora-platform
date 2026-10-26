@@ -113,9 +113,7 @@ const getZuloraEngineLabel = (model = '', provider = '') => {
   if (/selecting model|generating/.test(value) || !rawModel || rawModel.toLowerCase() === 'auto') return 'Selecting model';
   if (/^(?:pro|think)$/.test(rawModel.toLowerCase())) return 'Gemini 2.5 Pro';
   if (rawModel.toLowerCase() === 'groq') return 'Groq LPU';
-  if (rawModel.toLowerCase() === 'cerebras') return 'Cerebras';
   if (rawModel.toLowerCase() === 'openrouter') return 'OpenRouter';
-  if (rawModel.toLowerCase() === 'mistral') return 'Mistral AI';
   if (/zulora video engine/.test(value)) return 'Zulora Video Engine';
   if (/computer plugin|computer agent/.test(value)) return 'Computer Agent';
   if (/native api connectors|connector/.test(value)) return rawModel || 'Google Workspace Connector';
@@ -129,9 +127,7 @@ const getZuloraEngineLabel = (model = '', provider = '') => {
     : cleanModelName(modelId.includes('/') ? modelId.split('/').at(-1) : modelId);
 
   if (/groq|llama/.test(value)) return `Groq LPU (${prettyModel || 'Llama model'})`;
-  if (/cerebras/.test(value)) return `Cerebras (${prettyModel || 'Active model'})`;
   if (/openrouter/.test(value)) return `OpenRouter (${prettyModel || 'Active model'})`;
-  if (/mistral/.test(value)) return `Mistral AI (${prettyModel || 'Active model'})`;
   if (/gemini/.test(value) || modelId.startsWith('gemini-')) return prettyModel;
   if (/pollinations/.test(value)) return `Pollinations AI (${prettyModel || 'Mistral'})`;
   if (/zulora resilient fallback|fallback cluster|system safe/.test(value)) return 'Zulora Fallback';
@@ -1121,6 +1117,18 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 
   const sendMessage = useCallback(async (promptOverride = null) => {
     if (sendingRef.current) return;
+    if (currentUser?.blocked || userProfile?.blocked) {
+      const blockedNotice = {
+        id: `blocked_${Date.now()}`,
+        role: 'assistant',
+        content: '⚠️ **Account Suspended**: Your Zulora AI account has been suspended by an administrator. Please contact support at `zulora.help@gmail.com` for assistance.',
+        timestamp: Date.now(),
+        model: 'Access Control',
+        provider: 'Zulora Security'
+      };
+      setMessages(prev => [...prev, blockedNotice]);
+      return;
+    }
     const hasAttachments = attachments.length > 0;
     const basePrompt = String(promptOverride ?? inputPrompt).trim() || (hasAttachments ? 'Please analyze the attached image or document.' : '');
     if (!basePrompt) return;

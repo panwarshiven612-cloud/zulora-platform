@@ -52,14 +52,17 @@ export const ResponseProcess: React.FC<ResponseProcessProps> = ({
   const totalCount = steps.length;
   const isActivelyThinking = isStreaming || steps.some(s => s.status === 'running');
 
-  if (steps.length === 0 && sources.length === 0 && !isActivelyThinking) {
+  // Filter out any empty steps without a label to ensure no empty tick marks
+  const validSteps = steps.filter(s => s && typeof s.label === 'string' && s.label.trim().length > 0);
+
+  if (validSteps.length === 0 && sources.length === 0 && !isActivelyThinking) {
     return null;
   }
 
   return (
     <div className={`space-y-2 mb-3 ${className}`}>
       {/* 1. Claude-Style Thinking & Step Process Box */}
-      {(steps.length > 0 || isActivelyThinking) && (
+      {(validSteps.length > 0 || isActivelyThinking) && (
         <details 
           className="zulora-thinking-box overflow-hidden rounded-xl border border-violet-200/80 bg-violet-50/70 text-violet-950 dark:border-violet-900/60 dark:bg-violet-950/25 dark:text-violet-100 shadow-xs transition-all"
           open={Boolean(isActivelyThinking || doneCount < totalCount)}
@@ -90,7 +93,7 @@ export const ResponseProcess: React.FC<ResponseProcessProps> = ({
           </summary>
 
           <div className="step-log space-y-2 border-t border-violet-200/60 px-3.5 py-2.5 dark:border-violet-900/50 bg-white/40 dark:bg-slate-900/30">
-            {steps.map((step, idx) => {
+            {validSteps.map((step, idx) => {
               const isDone = step.status === 'done';
               const isError = step.status === 'error';
               const isRunning = step.status === 'running';
@@ -142,7 +145,12 @@ export const ResponseProcess: React.FC<ResponseProcessProps> = ({
               {sources.map((src, i) => {
                 const url = typeof src === 'string' ? src : src.url;
                 const title = typeof src === 'string' ? src : (src.title || src.url || `Source #${i + 1}`);
-                const domain = typeof src === 'object' && src.domain ? src.domain : (url ? new URL(url).hostname.replace(/^www\./, '') : '');
+                let domain = typeof src === 'object' && src.domain ? src.domain : '';
+                if (!domain && url) {
+                  try {
+                    domain = new URL(url).hostname.replace(/^www\./, '');
+                  } catch {}
+                }
                 const isVault = typeof src === 'object' && src.type === 'vault';
 
                 return (
@@ -186,4 +194,3 @@ export const ResponseProcess: React.FC<ResponseProcessProps> = ({
 };
 
 export default ResponseProcess;
-

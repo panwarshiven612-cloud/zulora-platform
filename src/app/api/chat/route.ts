@@ -83,8 +83,12 @@ async function streamFromGemini(
     }));
 
   const systemMessage = systemInstruction || messages.find(m => m.role === 'system')?.content || MASTER_SYSTEM_PROMPT;
-  const normalizedTargetModel = (model === 'gemini-2.5-pro' || model.includes('pro')) ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
-  const candidateModels = [normalizedTargetModel, 'gemini-2.5-flash', 'gemini-2.5-pro'].filter((v, i, a) => a.indexOf(v) === i);
+  const normalizedTargetModel = (model === 'gemini-2.5-pro' || model.includes('pro'))
+    ? 'gemini-2.5-pro'
+    : (model === 'gemini-3.5-flash-lite' || model.includes('lite'))
+      ? 'gemini-3.5-flash-lite'
+      : 'gemini-3.8-flash';
+  const candidateModels = [normalizedTargetModel, 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-pro'].filter((v, i, a) => a.indexOf(v) === i);
   const rotatedKeys = getRotatedKeys('gemini', GEMINI_KEYS);
 
   for (const targetModel of candidateModels) {
@@ -414,7 +418,7 @@ export async function POST(req: Request) {
         // Strict Manual Mode: If user explicitly picked an engine, exhaust only that engine's keys and models
         if (!isAuto) {
           if (provider === 'gemini') {
-            for (const fbModel of ['gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-pro']) {
+            for (const fbModel of ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-pro']) {
               if (streamed) break;
               activeModel = fbModel;
               emit('provider', { provider: 'Google Gemini', model: activeModel });
@@ -479,7 +483,7 @@ export async function POST(req: Request) {
           // Gemini Flash with dedicated 40,000 token execution budget
           if (!streamed) {
             activeProvider = 'gemini';
-            activeModel = 'gemini-2.5-flash';
+            activeModel = (taskType === 'coding' || taskType === 'video') ? 'gemini-3.8-flash' : 'gemini-3.5-flash-lite';
             const budget = (taskType === 'coding' || taskType === 'video') ? 40000 : 16384;
             emit('provider', { provider: 'Google Gemini', model: activeModel });
             streamed = await streamFromGemini(messages, activeModel, controller, encoder, stats, effectiveSystemPrompt, budget);

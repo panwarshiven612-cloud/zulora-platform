@@ -882,6 +882,15 @@ export const firestoreService = {
    */
   async checkUsageAllowance(uid, type = 'chat', options = {}) {
     let profile = await this.getUserProfile(uid);
+    if (profile?.blocked) {
+      return {
+        allowed: false,
+        upgradeRequired: false,
+        usage: { blocked: true },
+        tier: getTier(profile),
+        error: 'Your account has been suspended by an administrator.'
+      };
+    }
     profile = this.evaluateUsageWindows(profile);
 
     const limits = this.getProfileLimits(profile);

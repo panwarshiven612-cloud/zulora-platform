@@ -3,11 +3,12 @@
  * =================================================================
  * Enforces manual provider selection override and smart automated waterfall:
  * 1. Explicit User Selection: Strictly locks execution to chosen provider.
- * 2. Smart Auto Waterfall:
- *    - Common/Simple queries: Route exclusively to ultra-fast Groq LPU (4 keys).
- *    - Coding & Video Generation: Routes strictly to Gemini Flash with 40,000-token budget.
+ * 2. Purged Gemini 2.5 Flash: Standardized on Gemini 3.8 Flash (Complex/40k) and Gemini 3.5 Flash Lite (Standard).
+ * 3. Smart Auto Waterfall:
+ *    - Common/Simple queries: Route to ultra-fast Groq LPU / Gemini 3.5 Flash Lite (~1s latency).
+ *    - Coding, Web Building & Video: Routes strictly to Gemini 3.8 Flash with 40,000-token budget.
  *    - Fallback: OpenRouter Multi-Provider (5 keys).
- * 3. Thinking State Tracking: Locks active token speed metrics without flickering.
+ * 4. Thinking State Tracking: Locks active token speed metrics without flickering.
  */
 
 import {
@@ -52,7 +53,7 @@ export function getRotatedKeys(
   return [...pool.slice(start), ...pool.slice(0, start)];
 }
 
-const CODING_REGEX = /\b(?:code|coding|function|class|component|refactor|debug|typescript|javascript|python|rust|golang|c\+\+|html|css|sql|regex|algorithm|api\s*route|backend|frontend|react|vue|svelte|nextjs|vite)\b/i;
+const CODING_REGEX = /\b(?:code|coding|function|class|component|refactor|debug|typescript|javascript|python|rust|golang|c\+\+|html|css|sql|regex|algorithm|api\s*route|backend|frontend|react|vue|svelte|nextjs|vite|build\s+(?:a\s+)?(?:website|web\s*app|site|dashboard))\b/i;
 const VIDEO_REGEX = /\b(?:video|animation|motion|motion\s*graphics?|render|timeline|storyboard|gsap|canvas|keyframe|1080x1920|9:16|mp4|ffmpeg)\b/i;
 const RESEARCH_REGEX = /\b(?:research|deep\s*dive|in-depth|cite|citation|paper|sources|benchmark|analysis|audit|compare|investigate|thorough)\b/i;
 
@@ -79,8 +80,11 @@ export function resolveModelRoute(
   const raw = String(preference || 'auto').trim().toLowerCase();
 
   // 1. Explicit User Selection Overrides
-  if (raw === 'gemini' || raw === 'gemini flash' || raw === 'flash' || raw === 'gemini-3.8-flash' || raw === 'gemini-2.5-flash') {
-    return { provider: 'gemini', model: 'gemini-2.5-flash', isAuto: false, maxTokens: 40000, taskType: 'general' };
+  if (raw === 'gemini-3.8-flash' || raw === 'gemini-3.8' || raw === 'gemini' || raw === 'gemini flash' || raw === 'flash') {
+    return { provider: 'gemini', model: 'gemini-3.8-flash', isAuto: false, maxTokens: 40000, taskType: 'coding' };
+  }
+  if (raw === 'gemini-3.5-flash-lite' || raw === 'gemini-3.5' || raw === 'flash lite' || raw === 'gemini lite' || raw === 'lite') {
+    return { provider: 'gemini', model: 'gemini-3.5-flash-lite', isAuto: false, maxTokens: 16384, taskType: 'general' };
   }
   if (raw === 'pro_ultra' || raw === 'gemini-2.5-pro' || raw === 'pro' || raw.includes('pro')) {
     return { provider: 'gemini', model: 'gemini-2.5-pro', isAuto: false, maxTokens: 32768, taskType: 'research' };
@@ -95,11 +99,11 @@ export function resolveModelRoute(
   // 2. Smart Auto Waterfall
   const taskType = classifyTaskType(prompt, hasAttachments);
 
-  // Coding & Video -> Gemini Flash with 40,000 token execution budget
+  // Coding & Complex Video Generation -> Gemini 3.8 Flash with 40,000 token execution budget
   if (taskType === 'coding' || taskType === 'video') {
     return {
       provider: 'gemini',
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       isAuto: true,
       maxTokens: 40000,
       taskType
