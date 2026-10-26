@@ -131,8 +131,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       return;
     }
 
-    const trimmed = (activePrompt || '').trim();
-    const hasFiles = activeAttachments.length > 0;
+    const trimmed = (activePrompt || textareaRef.current?.value || '').trim();
+    const hasFiles = Boolean(activeAttachments && activeAttachments.length > 0);
     
     // Explicitly reject whitespace-only or empty messages without files
     if (!trimmed && !hasFiles) {
@@ -189,7 +189,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
   };
 
-  const hasContent = Boolean(activePrompt && activePrompt.trim().length > 0) || Boolean(activeAttachments && activeAttachments.length > 0);
+  const textContent = (activePrompt || textareaRef.current?.value || '').trim();
+  const hasContent = Boolean(textContent.length > 0) || Boolean(activeAttachments && activeAttachments.length > 0);
   const canSend = hasContent && !isSendDisabled;
 
   return (
@@ -341,27 +342,37 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         {/* 7. Send Arrow Button */}
         <div className="shrink-0 flex items-center">
           <button
-            type="submit"
+            type="button"
             id="chat-send-button"
             data-testid="send-button"
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              submitMessage(e);
+              const val = (activePrompt || textareaRef.current?.value || '').trim();
+              if (isGenerating) {
+                onStopGeneration?.();
+              } else if (val || (activeAttachments && activeAttachments.length > 0)) {
+                submitMessage(e);
+              }
             }}
             onTouchEnd={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              submitMessage(e);
+              const val = (activePrompt || textareaRef.current?.value || '').trim();
+              if (isGenerating) {
+                onStopGeneration?.();
+              } else if (val || (activeAttachments && activeAttachments.length > 0)) {
+                submitMessage(e);
+              }
             }}
-            disabled={!isGenerating && !canSend}
+            disabled={isSendDisabled}
             aria-label={isGenerating ? 'Stop generation' : 'Send message'}
             title={isGenerating ? 'Stop generation' : 'Send message'}
-            className={`h-9 w-9 sm:h-9 sm:w-9 flex items-center justify-center rounded-full font-semibold transition-all duration-200 select-none touch-manipulation ${
+            className={`h-9 w-9 sm:h-9 sm:w-9 flex items-center justify-center rounded-full font-semibold transition-all duration-200 select-none touch-manipulation cursor-pointer ${
               isGenerating
-                ? 'animate-pulse bg-rose-500 text-white shadow-md shadow-rose-500/30 hover:bg-rose-600 active:scale-90 cursor-pointer'
+                ? 'animate-pulse bg-rose-500 text-white shadow-md shadow-rose-500/30 hover:bg-rose-600 active:scale-90'
                 : canSend
-                  ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-md shadow-sky-500/25 hover:from-sky-600 hover:to-blue-700 active:scale-95 cursor-pointer'
+                  ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-md shadow-sky-500/25 hover:from-sky-600 hover:to-blue-700 active:scale-95'
                   : 'cursor-not-allowed bg-slate-100 dark:bg-slate-800/50 text-slate-400 dark:text-slate-600'
             }`}
           >

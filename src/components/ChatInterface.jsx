@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -1129,15 +1129,25 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       setMessages(prev => [...prev, blockedNotice]);
       return;
     }
-    const hasAttachments = attachments.length > 0;
-    const rawPrompt = typeof promptOverride === 'string' ? promptOverride : inputPrompt;
-    const basePrompt = String(rawPrompt ?? '').trim() || (hasAttachments ? 'Please analyze the attached image or document.' : '');
+    const hasAttachments = attachments && attachments.length > 0;
+    let candidate = typeof promptOverride === 'string' ? promptOverride : inputPrompt;
+    if (!candidate && typeof document !== 'undefined') {
+      const textareaEl = document.getElementById('chat-textarea');
+      if (textareaEl && textareaEl.value) {
+        candidate = textareaEl.value;
+      }
+    }
+    const basePrompt = String(candidate ?? '').trim() || (hasAttachments ? 'Please analyze the attached image or document.' : '');
     if (!basePrompt) return;
 
     // Immediately reset input and file states for instant responsive feedback
     const activeAttachedFiles = [...attachments];
     setInputPrompt('');
     setAttachments([]);
+    if (typeof document !== 'undefined') {
+      const textareaEl = document.getElementById('chat-textarea');
+      if (textareaEl) textareaEl.value = '';
+    }
 
     const codeGenerationRequest = isCodeGenerationPrompt(basePrompt);
     const simpleQuery = isSimpleChatRequest(basePrompt, { attachments, webSearch: enableWebSearch });
@@ -2009,8 +2019,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         const sessionStillProcessing = Array.from(activeRequestsRef.current.values()).includes(activeSessionId);
         if (isRequestCurrent()) setShowThinking(sessionStillProcessing);
         setLoading(sessionStillProcessing);
-        sendingRef.current = false;
       }
+      sendingRef.current = false;
     }
   }, [inputPrompt, loading, messages, modelPreference, enableWebSearch, attachments, currentUser, activeSession, buildContextMessages, getAttachmentDataUrl, isPro, recordUsage, setIsUsageModalOpen, setIsPricingModalOpen, onUpdateSession, connectorContext]);
 
