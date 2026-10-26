@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef, useEffect } from 'react';
 import { 
   Sparkles, 
   Zap, 
@@ -78,7 +78,7 @@ export interface ModelSelectorProps {
   modelPreference?: string;
   onModelChange?: (modelId: string) => void;
   isOpen?: boolean;
-  onToggle?: (e: React.MouseEvent) => void;
+  onToggle?: (e: React.MouseEvent | React.TouchEvent) => void;
   onClose?: () => void;
 }
 
@@ -89,6 +89,24 @@ export default function ModelSelector({
   onToggle,
   onClose
 }: ModelSelectorProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Auto-close when clicking or tapping outside
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleOutside = (e: MouseEvent | TouchEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        onClose?.();
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    document.addEventListener('touchstart', handleOutside, { passive: true });
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      document.removeEventListener('touchstart', handleOutside);
+    };
+  }, [isOpen, onClose]);
+
   // Normalize model ID to match available engines
   const normalizedId = (() => {
     const raw = String(modelPreference || 'auto').trim();
@@ -104,9 +122,11 @@ export default function ModelSelector({
   const activeModel = MODEL_OPTIONS.find(m => m.id === normalizedId) || AUTO_OPTION;
   const ActiveIcon = activeModel.icon;
 
-  const handleSelect = (modelId: string, e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleSelect = (modelId: string, e?: React.MouseEvent | React.TouchEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     try {
       localStorage.setItem('zulora_chat_model_preference', modelId);
     } catch {
@@ -126,10 +146,14 @@ export default function ModelSelector({
         aria-checked={isSelected}
         key={model.id}
         onClick={(e) => handleSelect(model.id, e)}
-        className={`w-full flex items-start gap-2.5 px-2.5 py-2 rounded-xl text-left transition-all ${
+        onTouchEnd={(e) => {
+          e.preventDefault();
+          handleSelect(model.id, e);
+        }}
+        className={`w-full flex items-start gap-2.5 px-2.5 py-2 rounded-xl text-left transition-all select-none touch-manipulation cursor-pointer ${
           isSelected
             ? 'bg-sky-50/90 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 border border-sky-200/60 dark:border-sky-800/60 shadow-xs'
-            : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-slate-800/60 border border-transparent'
+            : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-slate-800/60 border border-transparent active:scale-[0.98]'
         }`}
       >
         <Icon className={`w-4 h-4 mt-0.5 shrink-0 ${model.color}`} />
@@ -152,15 +176,19 @@ export default function ModelSelector({
   };
 
   return (
-    <div className="relative" id="model-selector">
+    <div className="relative" id="model-selector" ref={containerRef}>
       <button
         type="button"
         aria-haspopup="menu"
         aria-expanded={isOpen}
         aria-controls="model-selector-menu"
         onClick={onToggle}
+        onTouchEnd={(e) => {
+          e.preventDefault();
+          onToggle?.(e);
+        }}
         title={`Selected Model: ${activeModel.label}`}
-        className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 text-xs font-semibold rounded-xl text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/70 border border-slate-200/80 dark:border-slate-700/60 shadow-xs bg-white/70 dark:bg-slate-800/40 backdrop-blur-md transition-all active:scale-95"
+        className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 text-xs font-semibold rounded-xl text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/70 border border-slate-200/80 dark:border-slate-700/60 shadow-xs bg-white/70 dark:bg-slate-800/40 backdrop-blur-md transition-all active:scale-95 touch-manipulation cursor-pointer"
       >
         <ActiveIcon className={`w-3.5 h-3.5 shrink-0 ${activeModel.color}`} />
         <span className="max-w-[4.5rem] sm:max-w-[6.5rem] truncate font-medium">{activeModel.shortLabel}</span>

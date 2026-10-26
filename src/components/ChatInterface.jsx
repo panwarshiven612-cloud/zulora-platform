@@ -1133,6 +1133,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     const basePrompt = String(promptOverride ?? inputPrompt).trim() || (hasAttachments ? 'Please analyze the attached image or document.' : '');
     if (!basePrompt) return;
 
+    // Immediately reset input and file states for instant responsive feedback
+    const activeAttachedFiles = [...attachments];
+    setInputPrompt('');
+    setAttachments([]);
+
     const codeGenerationRequest = isCodeGenerationPrompt(basePrompt);
     const simpleQuery = isSimpleChatRequest(basePrompt, { attachments, webSearch: enableWebSearch });
     const generationController = new AbortController();
@@ -1157,10 +1162,10 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       const uploadDirectlyToDrive = /\b(?:zulora\s+)?drive\b/i.test(basePrompt)
         && /\b(upload|save|store|back\s*up)\b/i.test(basePrompt);
       if (!uploadDirectlyToDrive) {
-        const imageFiles = attachments.filter(isImageAttachment);
-        const pdfFiles = attachments.filter(isPdfAttachment);
-        const videoFiles = attachments.filter(file => attachmentMimeType(file).startsWith('video/'));
-        const textFiles = attachments.filter(file => !isImageAttachment(file) && !isPdfAttachment(file) && !attachmentMimeType(file).startsWith('video/'));
+        const imageFiles = activeAttachedFiles.filter(isImageAttachment);
+        const pdfFiles = activeAttachedFiles.filter(isPdfAttachment);
+        const videoFiles = activeAttachedFiles.filter(file => attachmentMimeType(file).startsWith("video/"));
+        const textFiles = activeAttachedFiles.filter(file => !isImageAttachment(file) && !isPdfAttachment(file) && !attachmentMimeType(file).startsWith("video/"));
         const shouldRenderVideoEdit = videoFiles.length > 0 && isVideoEditIntent(basePrompt);
         const directVideoFiles = shouldRenderVideoEdit ? [] : videoFiles;
         if (imageFiles.some(file => !/^image\/(?:png|jpe?g|webp|gif|heic|heif)$/i.test(attachmentMimeType(file)))) {
@@ -1214,9 +1219,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       content: fullPrompt,
       displayContent: basePrompt, // show original prompt in UI
       timestamp: Date.now(),
-      attachments: attachments.map(f => f.name),
+      attachments: activeAttachedFiles.map(f => f.name),
     };
-    const messagePreviews = attachments.map(file => {
+    const messagePreviews = activeAttachedFiles.map(file => {
       const url = URL.createObjectURL(file);
       messagePreviewUrlsRef.current.add(url);
       return { name: file.name, mimeType: attachmentMimeType(file), url };
@@ -1272,7 +1277,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         role: message.role,
         content: message.content,
         uploadedContext,
-        attachments: attachments.map(file => ({ name: file.name, mimeType: attachmentMimeType(file), size: file.size })),
+        attachments: activeAttachedFiles.map(file => ({ name: file.name, mimeType: attachmentMimeType(file), size: file.size })),
         model: message.model || modelPreference,
         provider: message.provider || '',
         timestamp: message.timestamp
@@ -1392,9 +1397,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       return Promise.resolve();
     };
     setMessages(newMessages);
-    setInputPrompt('');
-    attachments.forEach(file => preparedAttachmentDataRef.current.delete(file));
-    setAttachments([]);
+    activeAttachedFiles.forEach(file => preparedAttachmentDataRef.current.delete(file));
     setLoading(true);
     setShowThinking(true);
     clearTimeout(thinkingTimerRef.current);
@@ -2068,7 +2071,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       )}
 
       {/* ─── Input Area ─── */}
-      <div className="chat-composer-wrapper shrink-0 border-t border-slate-200/70 bg-white/80 px-2.5 pt-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] backdrop-blur-xl dark:border-slate-800/70 dark:bg-[#070b14]/90 sm:px-4 sm:py-4 sm:pb-4 md:px-6">
+      <div className="chat-composer-wrapper relative z-50 shrink-0 border-t border-slate-200/70 bg-white/80 px-2.5 pt-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] backdrop-blur-xl dark:border-slate-800/70 dark:bg-[#070b14]/90 sm:px-4 sm:py-4 sm:pb-4 md:px-6">
 
         {/* Input Box */}
         <ChatInput
