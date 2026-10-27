@@ -719,7 +719,7 @@ const WelcomeScreen = ({ user, onSuggestion }) => (
    MAIN CHAT INTERFACE
    ============================================================ */
 export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpenVoiceAssistant, pendingLibraryAsset, onLibraryAssetConsumed, guestMode = false, onNavigate }) => {
-  const { currentUser, isPro, setIsUsageModalOpen, setIsPricingModalOpen, checkUsage, recordUsage } = useAuth();
+  const { currentUser, userProfile, isPro, setIsUsageModalOpen, setIsPricingModalOpen, checkUsage, recordUsage } = useAuth();
 
   const [messages, setMessages] = useState([]);
   const [inputPrompt, setInputPrompt] = useState('');
@@ -1117,7 +1117,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 
   const sendMessage = useCallback(async (promptOverride = null) => {
     if (sendingRef.current) return;
-    if (currentUser?.blocked || userProfile?.blocked) {
+    if (currentUser?.blocked || (typeof userProfile !== "undefined" && userProfile?.blocked)) {
       const blockedNotice = {
         id: `blocked_${Date.now()}`,
         role: 'assistant',
@@ -1139,6 +1139,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     }
     const basePrompt = String(candidate ?? '').trim() || (hasAttachments ? 'Please analyze the attached image or document.' : '');
     if (!basePrompt) return;
+
+    console.log('Sending message:', basePrompt);
 
     // Immediately reset input and file states for instant responsive feedback
     const activeAttachedFiles = [...attachments];
@@ -1240,8 +1242,10 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     if (messagePreviews.length) setMessageMedia(previous => new Map(previous).set(userMsg.id, messagePreviews));
 
     const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
     const sessionId = activeSession?.id || `chat_${Date.now()}`;
-    const isRequestCurrent = () => chatMountedRef.current && lastActiveSessionIdRef.current === sessionId;
+    lastActiveSessionIdRef.current = sessionId;
+    const isRequestCurrent = () => chatMountedRef.current && (lastActiveSessionIdRef.current === sessionId || !lastActiveSessionIdRef.current);
     const firstUserPrompt = newMessages.find(message => message.role === 'user')?.displayContent || newMessages.find(message => message.role === 'user')?.content || basePrompt;
     const sessionTitle = activeSession?.title && !['Untitled Chat', 'New Chat'].includes(activeSession.title)
       ? activeSession.title
@@ -1258,7 +1262,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     };
     const assistantId = `${Date.now() + 1}_${Math.random().toString(36).slice(2, 8)}`;
     activeRequestsRef.current.set(assistantId, sessionId);
-    if (!activeSession?.id) lastActiveSessionIdRef.current = sessionId;
     onUpdateSession?.(pendingSession);
     let streamedText = '';
     let displayedText = '';
@@ -1330,10 +1333,12 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
 
     const publishAssistant = (streaming = true) => {
       if (!isRequestCurrent()) return;
-      setMessages(previous => [
-        ...previous.filter(message => message.id !== assistantId),
-        {
-          id: assistantId,
+      setMessages(previous => {
+        const base = previous.some(m => m.id === userMsg.id) ? previous : [...previous, userMsg];
+        return [
+          ...base.filter(message => message.id !== assistantId),
+          {
+            id: assistantId,
           role: 'assistant',
           content: displayedText,
           timestamp: Date.now(),
@@ -1342,8 +1347,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           thinkingSteps: [...thinkingSteps],
           streaming,
           streamMetrics: getLiveStreamMetrics()
-        }
-      ]);
+          }
+        ];
+      });
     };
 
     // Immediately display assistant typing indicator with selected model
@@ -1362,20 +1368,23 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     const publishStreamFrame = () => {
       try {
         if (!isRequestCurrent()) return;
-        setMessages(previous => [
-          ...previous.filter(message => message.id !== assistantId),
-          {
-            id: assistantId,
-            role: 'assistant',
-            content: displayedText,
-            timestamp: Date.now(),
-            model: streamedProvider?.model || 'Generating...',
-            provider: streamedProvider?.provider,
-            thinkingSteps: [...thinkingSteps],
-            streaming: true,
-            streamMetrics: getLiveStreamMetrics()
-          }
-        ]);
+        setMessages(previous => {
+          const base = previous.some(m => m.id === userMsg.id) ? previous : [...previous, userMsg];
+          return [
+            ...base.filter(message => message.id !== assistantId),
+            {
+              id: assistantId,
+              role: 'assistant',
+              content: displayedText,
+              timestamp: Date.now(),
+              model: streamedProvider?.model || 'Generating...',
+              provider: streamedProvider?.provider,
+              thinkingSteps: [...thinkingSteps],
+              streaming: true,
+              streamMetrics: getLiveStreamMetrics()
+            }
+          ];
+        });
       } catch (err) {
         console.error("Error publishing stream frame:", err);
       }
@@ -1407,7 +1416,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       flushStreamImmediately();
       return Promise.resolve();
     };
-    setMessages(newMessages);
     activeAttachedFiles.forEach(file => preparedAttachmentDataRef.current.delete(file));
     setLoading(true);
     setShowThinking(true);

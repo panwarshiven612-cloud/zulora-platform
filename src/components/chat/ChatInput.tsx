@@ -162,14 +162,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const sendHandler = onSendMessage || handleSendMessage;
     if (typeof sendHandler === 'function') {
       try {
+        console.log('Sending message:', trimmed);
         sendHandler(trimmed);
       } catch (err) {
         console.error('[ChatInput] Error executing message send handler:', err);
       }
     }
 
-    // Reset textarea height to default 40px
+    // Immediately clear input text field for instant responsive feedback
+    if (typeof setPrompt === 'function') {
+      setPrompt('');
+    }
     if (textareaRef.current) {
+      textareaRef.current.value = '';
       textareaRef.current.style.height = '40px';
     }
   }, [activePrompt, activeAttachments, isGenerating, isSendDisabled, onSendMessage, handleSendMessage, onStopGeneration]);
@@ -357,22 +362,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              const val = (activePrompt || textareaRef.current?.value || '').trim();
               if (isGenerating) {
                 onStopGeneration?.();
-              } else if (val || (activeAttachments && activeAttachments.length > 0)) {
-                submitMessage(e);
+                return;
               }
+              submitMessage(e);
             }}
             onTouchEnd={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              const val = (activePrompt || textareaRef.current?.value || '').trim();
               if (isGenerating) {
                 onStopGeneration?.();
-              } else if (val || (activeAttachments && activeAttachments.length > 0)) {
-                submitMessage(e);
+                return;
               }
+              submitMessage(e);
             }}
             disabled={isSendDisabled}
             aria-label={isGenerating ? 'Stop generation' : 'Send message'}

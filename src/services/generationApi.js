@@ -11,13 +11,13 @@ export class GenerationApiError extends Error {
 
 /** Calls the authenticated server route when it is available (production/Vercel). */
 export async function requestGeneration(action, payload, currentUser, endpoint = '/api/ai', externalSignal) {
-  if (!currentUser?.getIdToken) return null;
-
-  let token;
-  try {
-    token = await currentUser.getIdToken();
-  } catch {
-    return null;
+  let token = '';
+  if (currentUser?.getIdToken) {
+    try {
+      token = await currentUser.getIdToken();
+    } catch {
+      token = '';
+    }
   }
 
   let response;
@@ -32,9 +32,9 @@ export async function requestGeneration(action, payload, currentUser, endpoint =
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
       },
-      body: JSON.stringify({ action, ...payload }),
+      body: JSON.stringify({ action: !currentUser?.uid && action === 'chat' ? 'guest-chat' : action, ...payload }),
       signal: controller.signal
     });
   } catch (error) {
@@ -239,17 +239,18 @@ export async function requestVoiceOptions(currentUser) {
 /** Requests chat output as authenticated server-sent events and forwards each token to the UI. */
 export async function requestGenerationStream(payload, currentUser, onToken, onReset, onProvider, signal, guest = false) {
   let token = '';
+  const isGuest = guest || !currentUser?.uid;
   if (currentUser?.getIdToken) {
     try { token = await currentUser.getIdToken(); }
-    catch { return null; }
-  } else if (!guest) return null;
+    catch { token = ''; }
+  }
 
   let response;
   try {
     response = await fetch('/api/ai', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify({ action: guest ? 'guest-chat-stream' : 'chat-stream', ...payload }),
+      body: JSON.stringify({ action: isGuest ? 'guest-chat-stream' : 'chat-stream', ...payload }),
       signal
     });
   } catch (error) {
