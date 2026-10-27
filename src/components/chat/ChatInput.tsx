@@ -100,20 +100,28 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   // Dynamic Viewport Height (dvh) & mobile keyboard slide-above handler
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    let rafId: number | null = null;
     const handleViewportChange = () => {
-      const vv = window.visualViewport;
-      const height = vv ? vv.height : window.innerHeight;
-      document.documentElement.style.setProperty('--dvh', `${height * 0.01}px`);
-      const offset = vv ? Math.max(0, window.innerHeight - (vv.height + (vv.offsetTop || 0))) : 0;
-      document.documentElement.style.setProperty('--keyboard-offset', `${offset}px`);
+      if (rafId !== null) return; // already queued
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const vv = window.visualViewport;
+        const height = vv ? vv.height : window.innerHeight;
+        document.documentElement.style.setProperty('--dvh', `${height * 0.01}px`);
+        const offset = vv
+          ? Math.max(0, window.innerHeight - (vv.height + (vv.offsetTop || 0)))
+          : 0;
+        document.documentElement.style.setProperty('--keyboard-offset', `${offset}px`);
+      });
     };
 
-    window.visualViewport?.addEventListener('resize', handleViewportChange);
-    window.visualViewport?.addEventListener('scroll', handleViewportChange);
-    window.addEventListener('resize', handleViewportChange);
+    window.visualViewport?.addEventListener('resize', handleViewportChange, { passive: true });
+    window.visualViewport?.addEventListener('scroll', handleViewportChange, { passive: true });
+    window.addEventListener('resize', handleViewportChange, { passive: true });
     handleViewportChange();
 
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
       window.visualViewport?.removeEventListener('resize', handleViewportChange);
       window.visualViewport?.removeEventListener('scroll', handleViewportChange);
       window.removeEventListener('resize', handleViewportChange);
@@ -195,6 +203,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   return (
     <form 
+      noValidate
       onSubmit={(e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -239,7 +248,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       )}
 
       {/* Main Textarea Area */}
-      <div className="w-full px-3.5 pt-3 pb-1">
+      <div className="w-full px-3.5 pt-3 pb-1 transform-gpu">
         <textarea
           ref={textareaRef}
           id="chat-textarea"

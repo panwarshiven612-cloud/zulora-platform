@@ -109,7 +109,7 @@ export interface VideoExecutionResult {
 
 const MOTION_THINKING_BUDGET = 24_576;
 const MOTION_MAX_OUTPUT_TOKENS = 32_768;
-const MOTION_PLANNER_MODEL = 'gemini-2.5-flash';
+const MOTION_PLANNER_MODEL = 'gemini-3.8-flash';
 const MOTION_PALETTE = ['#060C20', '#1E90FF', '#28D2FF', '#ECEFF8', '#FFD628'];
 
 const CLAUDE_TIMELINE_PLANNER_PROMPT = `You are the creative director, senior copywriter, and JSON timeline architect for Zulora AI Motion Studio.

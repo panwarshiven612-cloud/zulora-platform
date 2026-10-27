@@ -111,7 +111,7 @@ const getZuloraEngineLabel = (model = '', provider = '') => {
   const value = `${rawModel} ${provider}`.toLowerCase().replace(/[_-]+/g, ' ');
   if (/instant reply/.test(value)) return 'Zulora Instant Reply';
   if (/selecting model|generating/.test(value) || !rawModel || rawModel.toLowerCase() === 'auto') return 'Selecting model';
-  if (/^(?:pro|think)$/.test(rawModel.toLowerCase())) return 'Gemini 2.5 Pro';
+  if (/^(?:pro|think)$/.test(rawModel.toLowerCase())) return 'Gemini Pro (Research)';
   if (rawModel.toLowerCase() === 'groq') return 'Groq LPU';
   if (rawModel.toLowerCase() === 'openrouter') return 'OpenRouter';
   if (/zulora video engine/.test(value)) return 'Zulora Video Engine';

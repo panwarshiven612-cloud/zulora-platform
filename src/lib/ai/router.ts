@@ -3,7 +3,7 @@
  * =================================================================
  * Enforces manual provider selection override and smart automated waterfall:
  * 1. Explicit User Selection: Strictly locks execution to chosen provider.
- * 2. Purged Gemini 2.5 Flash: Standardized on Gemini 3.8 Flash (Complex/40k) and Gemini 3.5 Flash Lite (Standard).
+ * 2. Model Strategy: Standardized on Gemini 3.8 Flash (Complex/40k) and Gemini 3.5 Flash Lite (Standard).
  * 3. Smart Auto Waterfall:
  *    - Common/Simple queries: Route to ultra-fast Groq LPU / Gemini 3.5 Flash Lite (~1s latency).
  *    - Coding, Web Building & Video: Routes strictly to Gemini 3.8 Flash with 40,000-token budget.
