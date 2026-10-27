@@ -726,7 +726,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const [loading, setLoading] = useState(false);
   const [showThinking, setShowThinking] = useState(false);
   const [mediaAnalysisStatus, setMediaAnalysisStatus] = useState('');
-  const [modelPreference, setModelPreference] = useState(() => readStoredModelPreference(`${CHAT_MODEL_PREFERENCE_KEY}_guest`));
+  const [modelPreference, setModelPreference] = useState(() => readStoredModelPreference('zulora_chat_model_preference') || readStoredModelPreference(`${CHAT_MODEL_PREFERENCE_KEY}_guest`) || 'auto');
   const [enableWebSearch, setEnableWebSearch] = useState(false);
   const [attachments, setAttachments] = useState([]);
   const [attachmentPreviewUrls, setAttachmentPreviewUrls] = useState(() => new Map());
@@ -771,7 +771,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     skipModelPreferenceWriteRef.current = true;
     const stored = readStoredModelPreference(modelPreferenceKey) || readStoredModelPreference('zulora_chat_model_preference') || 'auto';
     const sessionModel = activeSession?.modelPreference || activeSession?.model;
-    if (stored) {
+    if (stored && stored !== 'auto') {
       setModelPreference(stored);
       return;
     }

@@ -23,12 +23,11 @@ export const publishStreamFrame = (res, stepData) => {
   }
 };
 
-const CHAT_ORDER = ['gemini', 'groq', 'cerebras', 'openrouter', 'mistral'];
-const GEMINI_FLASH_MODEL = 'gemini-2.5-flash';
+const CHAT_ORDER = ['groq', 'gemini', 'openrouter'];
+const GEMINI_FLASH_MODEL = 'gemini-3.8-flash';
 const GEMINI_CHAT_MODEL_FALLBACKS = Object.freeze([
   'gemini-3.8-flash',
   'gemini-3.5-flash-lite',
-  'gemini-2.5-flash',
   GEMINI_PRO_MODEL_ID,
   'gemini-3.6-flash',
   'gemini-3.1-flash-lite'
@@ -703,9 +702,7 @@ async function readProviderEventStream(response, readToken, onToken, streamState
 async function tryOpenAiProvider(provider, messages, options = {}) {
   const configs = {
     groq: { url: 'https://api.groq.com/openai/v1/chat/completions', model: options.model || 'llama-3.3-70b-versatile', label: 'Groq LPU' },
-    cerebras: { url: 'https://api.cerebras.ai/v1/chat/completions', model: 'llama3.1-70b', label: 'Cerebras' },
-    openrouter: { url: 'https://openrouter.ai/api/v1/chat/completions', model: 'meta-llama/llama-3.3-70b-instruct', label: 'OpenRouter' },
-    mistral: { url: 'https://api.mistral.ai/v1/chat/completions', model: 'mistral-small-latest', label: 'Mistral' }
+    openrouter: { url: 'https://openrouter.ai/api/v1/chat/completions', model: 'meta-llama/llama-3.3-70b-instruct', label: 'OpenRouter' }
   };
   const config = configs[provider];
   const keys = apiKeyPool.candidates(provider);
@@ -882,7 +879,7 @@ export async function generateTextWithWaterfall(prompt, systemPrompt = '') {
   try { gemini = await tryGeminiWithModelFallback(messages, { maxTokens: 1024 }); }
   catch (error) { console.warn('Gemini waterfall failed; trying alternate providers:', error?.message || 'provider error'); }
   if (gemini?.text) return gemini.text;
-  for (const provider of ['groq', 'cerebras', 'openrouter', 'mistral']) {
+  for (const provider of ['groq', 'openrouter']) {
     try {
       const result = await tryOpenAiProvider(provider, messages, { maxTokens: 1024 });
       if (result?.text) return result.text;
@@ -915,7 +912,7 @@ function normalizeModelPreference(value) {
 }
 
 function chooseChatOrder(preference) {
-  const selectedProvider = ['groq', 'cerebras', 'openrouter', 'mistral'].includes(preference) ? preference : 'gemini';
+  const selectedProvider = ['groq', 'openrouter'].includes(preference) ? preference : 'gemini';
   return [selectedProvider, ...CHAT_ORDER.filter(provider => provider !== selectedProvider)];
 }
 
@@ -967,7 +964,7 @@ async function generateChat(body, streamOptions = {}) {
   const order = vision
     ? ['gemini']
     : requestedPreference === 'auto'
-      ? ['groq', 'cerebras', 'gemini', 'openrouter', 'mistral']
+      ? ['groq', 'gemini', 'openrouter']
       : chooseChatOrder(preference);
   for (const provider of order) {
     try {

@@ -5,12 +5,10 @@ export const maxDuration = 30;
 export const config = { maxDuration };
 
 const reply = (res, status, message) => res.status(status).json({ error: message });
-const CHAT_ORDER = ['gemini', 'groq', 'cerebras', 'openrouter', 'mistral'];
+const CHAT_ORDER = ['groq', 'gemini', 'openrouter'];
 const CONFIG = {
   groq: { label: 'Groq LPU', url: 'https://api.groq.com/openai/v1/chat/completions', model: process.env.GROQ_CHAT_MODEL || 'llama-3.3-70b-versatile' },
-  cerebras: { label: 'Cerebras', url: 'https://api.cerebras.ai/v1/chat/completions', model: process.env.CEREBRAS_CHAT_MODEL || 'llama-3.3-70b' },
-  openrouter: { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1/chat/completions', model: process.env.OPENROUTER_CHAT_MODEL || 'meta-llama/llama-3.3-70b-instruct' },
-  mistral: { label: 'Mistral', url: 'https://api.mistral.ai/v1/chat/completions', model: process.env.MISTRAL_CHAT_MODEL || 'mistral-large-latest' }
+  openrouter: { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1/chat/completions', model: process.env.OPENROUTER_CHAT_MODEL || 'meta-llama/llama-3.3-70b-instruct' }
 };
 
 function normalizeMessages(value) {
@@ -94,9 +92,7 @@ function toGeminiContents(messages) {
 function preferredProvider(value) {
   const text = String(value || '').toLowerCase();
   if (text.includes('groq') || text.includes('llama') || text.includes('turbo')) return 'groq';
-  if (text.includes('cerebras')) return 'cerebras';
   if (text.includes('openrouter')) return 'openrouter';
-  if (text.includes('mistral')) return 'mistral';
   return 'gemini';
 }
 
