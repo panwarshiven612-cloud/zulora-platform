@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ZULORA AI — Client-Side API Waterfall Router
  * =============================================
  * Complete Multi-Engine Resilience & Dynamic Fallback Pool
@@ -1196,6 +1196,7 @@ export const apiRouter = {
           userVault: options.userVault || null,
           activeConnectorProviders,
           studioMode: Boolean(options.studioMode),
+          modelId: requestedTier,
           model: requestedTier,
           modelPreference: requestedTier,
           enableWebSearch: Boolean(options.webSearch),

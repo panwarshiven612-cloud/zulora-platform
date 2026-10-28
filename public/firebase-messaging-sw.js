@@ -4,7 +4,7 @@
  * Firebase Cloud Messaging Service Worker
  * ----------------------------------------
  * Handles background push notifications for Zulora AI.
- * Must be placed at the root of the public/ directory.
+ * Deep-links directly back to the active chat session upon notification click.
  */
 
 importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js');
@@ -26,24 +26,40 @@ const messaging = firebase.messaging();
  * Handle background push notifications (app not in focus)
  */
 messaging.onBackgroundMessage(payload => {
-  const { title = 'Zulora AI', body = 'You have a new message.' } = payload.notification || {};
+  const { title = 'Your response is ready', body = 'Your Zulora AI response has finished generating.' } = payload.notification || {};
+  const data = payload.data || {};
   const notificationOptions = {
     body,
     icon: '/favicon.ico',
     badge: '/favicon.ico',
-    data: payload.data || {},
-    tag: 'zulora-push',
+    data,
+    tag: data.sessionId ? `zulora-complete-${data.sessionId}` : 'zulora-push',
     renotify: true
   };
   self.registration.showNotification(title, notificationOptions);
 });
 
 /**
- * Handle notification click — open Zulora dashboard
+ * Handle notification click — deep-link directly back to chat session and page
  */
 self.addEventListener('notificationclick', event => {
   event.notification.close();
-  const url = event.notification.data?.url || 'https://zulora.in/dashboard';
-  event.waitUntil(clients.openWindow(url));
-});
+  const data = event.notification.data || {};
+  const targetUrl = data.url || (data.sessionId ? `/dashboard?session=${data.sessionId}` : '/dashboard');
 
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientList => {
+      for (const client of clientList) {
+        if ('focus' in client) {
+          if (client.url.includes('/dashboard') || client.url.includes('/chat')) {
+            client.navigate(targetUrl);
+            return client.focus();
+          }
+        }
+      }
+      if (clients.openWindow) {
+        return clients.openWindow(targetUrl);
+      }
+    })
+  );
+});

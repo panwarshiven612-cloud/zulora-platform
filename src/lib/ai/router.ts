@@ -53,9 +53,9 @@ export function getRotatedKeys(
   return [...pool.slice(start), ...pool.slice(0, start)];
 }
 
-const CODING_REGEX = /\b(?:code|coding|function|class|component|refactor|debug|typescript|javascript|python|rust|golang|c\+\+|html|css|sql|regex|algorithm|api\s*route|backend|frontend|react|vue|svelte|nextjs|vite|build\s+(?:a\s+)?(?:website|web\s*app|site|dashboard))\b/i;
-const VIDEO_REGEX = /\b(?:video|animation|motion|motion\s*graphics?|render|timeline|storyboard|gsap|canvas|keyframe|1080x1920|9:16|mp4|ffmpeg)\b/i;
-const RESEARCH_REGEX = /\b(?:research|deep\s*dive|in-depth|cite|citation|paper|sources|benchmark|analysis|audit|compare|investigate|thorough)\b/i;
+export const CODING_REGEX = /\b(?:code|coding|function|class|component|refactor|debug|typescript|javascript|python|rust|golang|c\+\+|html|css|sql|regex|algorithm|api\s*route|backend|frontend|react|vue|svelte|nextjs|vite|build\s+(?:a\s+)?(?:website|web\s*app|site|dashboard))\b/i;
+export const VIDEO_REGEX = /\b(?:video|animation|motion|motion\s*graphics?|render|timeline|storyboard|gsap|canvas|keyframe|1080x1920|9:16|mp4|ffmpeg)\b/i;
+export const RESEARCH_REGEX = /\b(?:research|deep\s*dive|in-depth|cite|citation|paper|sources|benchmark|analysis|audit|compare|investigate|thorough|market\s*analysis|competitive\s*analysis|landscape|evaluation|comprehensive|detailed\s*report)\b/i;
 
 export function classifyTaskType(prompt: string, hasAttachments = false): 'simple' | 'coding' | 'video' | 'research' | 'general' {
   const text = String(prompt || '').trim();
@@ -89,11 +89,11 @@ export function resolveModelRoute(
   if (raw === 'pro_ultra' || raw === 'gemini-2.5-pro' || raw === 'pro' || raw.includes('pro')) {
     return { provider: 'gemini', model: 'gemini-2.5-pro', isAuto: false, maxTokens: 32768, taskType: 'research' };
   }
-  if (raw === 'groq' || raw === 'groq lpu' || raw.includes('lpu')) {
-    return { provider: 'groq', model: 'openai/gpt-oss-20b', isAuto: false, maxTokens: 16384, taskType: 'simple' };
+  if (raw === 'groq' || raw === 'groq lpu' || raw.includes('lpu') || raw.includes('groq')) {
+    return { provider: 'groq', model: 'llama-3.3-70b-versatile', isAuto: false, maxTokens: 16384, taskType: 'simple' };
   }
   if (raw === 'openrouter' || raw === 'openrouter multi-provider' || raw.includes('openrouter')) {
-    return { provider: 'openrouter', model: 'meta-llama/llama-4-maverick:free', isAuto: false, maxTokens: 16384, taskType: 'general' };
+    return { provider: 'openrouter', model: 'meta-llama/llama-3.3-70b-instruct', isAuto: false, maxTokens: 16384, taskType: 'general' };
   }
 
   // 2. Smart Auto Waterfall
@@ -124,7 +124,7 @@ export function resolveModelRoute(
   // Common / Simple tasks -> Ultra-fast Groq LPU (~1s latency)
   return {
     provider: 'groq',
-    model: 'openai/gpt-oss-20b',
+    model: 'llama-3.3-70b-versatile',
     isAuto: true,
     maxTokens: 16384,
     taskType: 'simple'

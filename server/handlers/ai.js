@@ -3,6 +3,7 @@ import { apiKeyPool, availableProviders, providerKeys } from './apiKeyPool.js';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from '../../src/services/systemPrompt.js';
 import { AI_STUDIO_SYSTEM_PROMPT } from '../../src/services/aiStudioPrompt.js';
 import { GEMINI_PRO_MODEL_ID, isCodeGenerationPrompt, isWebsiteGenerationPrompt, normalizeGeminiModelId, toGeminiInlineData } from '../../src/services/aiModels.js';
+import { isResearchQuery, ZULORA_RESEARCH_8_PART_PROMPT } from '../../src/lib/ai/researchFormatter.js';
 import { WEBSITE_BUILD_SYSTEM_PROMPT } from '../../src/services/websiteBuildPrompt.js';
 import { buildImagePrompt } from '../../src/services/imageGen.js';
 import { refineVideoPrompt } from '../../src/services/videoPrompt.js';
@@ -917,11 +918,12 @@ function chooseChatOrder(preference) {
 }
 
 async function generateChat(body, streamOptions = {}) {
-  const requestedPreference = normalizeModelPreference(body.modelPreference || body.model);
+  const requestedPreference = normalizeModelPreference(body.modelId || body.modelPreference || body.model);
   const simpleQuery = body.simpleQuery === true;
   const flagship = requestedPreference === 'gemini-2.5-pro' || requestedPreference === 'think';
   const latestUserPrompt = [...(Array.isArray(body.messages) ? body.messages : [])].reverse().find(message => message?.role === 'user')?.content || '';
   const websiteBuild = isWebsiteGenerationPrompt(latestUserPrompt);
+  const researchMode = isResearchQuery(latestUserPrompt, requestedPreference);
   let searchResults = Array.isArray(body.searchResults) ? body.searchResults : [];
   if (body.enableWebSearch && !searchResults.length && latestUserPrompt) {
     try { searchResults = (await webSearch(latestUserPrompt, { signal: streamOptions.signal })).results || []; }
@@ -944,6 +946,7 @@ async function generateChat(body, streamOptions = {}) {
     flagship ? FLAGSHIP_SYSTEM_PROMPT : '',
     body.studioMode ? AI_STUDIO_SYSTEM_PROMPT : '',
     websiteBuild ? WEBSITE_BUILD_SYSTEM_PROMPT : '',
+    researchMode ? ZULORA_RESEARCH_8_PART_PROMPT : '',
     researchContext
   ].filter(Boolean).join('\n\n');
   const messages = plainMessages(body.messages, systemPrompt);
@@ -969,7 +972,7 @@ async function generateChat(body, streamOptions = {}) {
   for (const provider of order) {
     try {
       const result = provider === 'gemini'
-        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: false, model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: body.guestDemo && !coding ? 2_048 : coding ? CODE_GENERATION_MAX_TOKENS : 32_768, ...streamOptions })
+        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: false, model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: body.guestDemo && !coding ? 2_048 : coding || geminiModel === 'gemini-3.8-flash' ? 40_000 : 32_768, ...streamOptions })
         : await tryOpenAiProvider(provider, messages, {
           attachments: body.attachments,
           vision,
@@ -1624,7 +1627,7 @@ export default async function handler(req, res) {
     catch { return rejectRequest(503, 'Could not verify sign-in. Please retry.'); }
     if (!uid) return rejectRequest(401, 'Your sign-in session has expired. Sign in again.');
   }
-  const preference = normalizeModelPreference(body.modelPreference || body.model);
+  const preference = normalizeModelPreference(body.modelId || body.modelPreference || body.model);
   const highTierRequest = preference === 'think' || preference === 'pro' || preference === 'gemini-3.1-pro-preview' || preference === 'gemini-2.5-pro';
   const flagshipRequest = type === 'chat' && highTierRequest && isCodeGenerationRequest(body);
 

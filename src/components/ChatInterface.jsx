@@ -68,6 +68,7 @@ import { isExplicitBrowserAutomationIntent } from '../services/browserAutomation
 import { checkExtensionConnected, executeCommand } from '../services/browserAgentEngine';
 import CodeArtifactRunner from './CodeArtifactRunner';
 import ModelSelector from './ModelSelector';
+import { requestNotificationPermission, sendCompletionNotification } from '../lib/firebase/notifications';
 import ChatInput from './chat/ChatInput';
 import ConnectorsModal from './ConnectorsModal';
 import GuestGateModal from './GuestGateModal';
@@ -825,6 +826,13 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       activeStreamCleanupsRef.current.clear();
     };
   }, []);
+
+  // Request notification permission for background push completion alerts
+  useEffect(() => {
+    if (currentUser?.uid && typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+      requestNotificationPermission(currentUser.uid, db).catch(() => {});
+    }
+  }, [currentUser?.uid]);
 
   useEffect(() => {
     let active = true;
@@ -1909,6 +1917,15 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         onUpdateSession?.(updatedSession);
         return finalMessages;
       });
+
+      // Background push notification when user has navigated away or tab is hidden
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        sendCompletionNotification({
+          sessionId,
+          sessionTitle,
+          promptSnippet: basePrompt.slice(0, 60)
+        }).catch(err => console.warn('[Notifications] Background push failed:', err));
+      }
 
       const estimatedTokens = Math.max(512, Math.ceil((fullPrompt.length + String(result.text || '').length) / 4));
       const processedTokens = directTask
