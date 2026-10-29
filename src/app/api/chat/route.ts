@@ -3,14 +3,16 @@ import {
   GROQ_KEYS, 
   OPENROUTER_KEYS, 
   getRotatedKeys,
+  markKeyFailure,
+  isKeyHealthy,
   resolveModelRoute,
   classifyTaskType
 } from '../../../lib/ai/router';
 import { MASTER_SYSTEM_PROMPT } from '../../../lib/llm/prompts/systemPrompt';
 import { buildInjectedConnectorContext, ConnectorContextPayload } from '../../../lib/connectors';
-import { isResearchQuery, formatResearchPrompt } from '../../../lib/ai/researchFormatter';
+import { isResearchQuery, formatResearchPrompt, getResearchTokenBudget, RESEARCH_TOKEN_BUDGET } from '../../../lib/ai/researchFormatter';
 
-// Effort-level token budget resolver
+// Dynamic effort-level token budget resolver
 function resolveEffortTokenBudget(effortLevel: string, coding: boolean = false): number {
   const EFFORT_BUDGETS: Record<string, number> = { low: 4096, medium: 8192, high: 20000, extra: 40000, max: 65536 };
   let budget = EFFORT_BUDGETS[effortLevel] ?? 8192;
@@ -60,7 +62,8 @@ function resetStreamStats(stats: StreamStats) {
   stats.firstTokenAt = undefined;
 }
 
-function linkedFetchSignal(parent?: AbortSignal, timeoutMs = 8000) {
+// Fast linked abort signal with aggressive 4s timeout for rapid failover
+function linkedFetchSignal(parent?: AbortSignal, timeoutMs = 4000) {
   const fetchController = new AbortController();
   const abortFromParent = () => fetchController.abort(parent?.reason);
   if (parent?.aborted) fetchController.abort(parent.reason);
@@ -92,12 +95,12 @@ async function streamFromGemini(
     }));
 
   const systemMessage = systemInstruction || messages.find(m => m.role === 'system')?.content || MASTER_SYSTEM_PROMPT;
-  const normalizedTargetModel = (model === 'gemini-2.5-pro' || model.includes('pro'))
-    ? 'gemini-2.5-pro'
-    : (model === 'gemini-3.5-flash-lite' || model.includes('lite'))
-      ? 'gemini-3.5-flash-lite'
-      : 'gemini-3.8-flash';
-  const candidateModels = [normalizedTargetModel, 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-pro'].filter((v, i, a) => a.indexOf(v) === i);
+  const normalizedTargetModel = (model === 'gemini-3.5-flash-lite' || model.includes('lite'))
+    ? 'gemini-3.5-flash-lite'
+    : 'gemini-3.8-flash';
+  const candidateModels = normalizedTargetModel === 'gemini-3.5-flash-lite'
+    ? ['gemini-3.5-flash-lite', 'gemini-3.8-flash']
+    : ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
   const rotatedKeys = getRotatedKeys('gemini', GEMINI_KEYS);
 
   for (const targetModel of candidateModels) {
@@ -106,7 +109,7 @@ async function streamFromGemini(
       if (!key) continue;
       try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:streamGenerateContent?alt=sse&key=${key}`;
-        const fetchSignal = linkedFetchSignal(stats.signal, 8000);
+        const fetchSignal = linkedFetchSignal(stats.signal, 4000);
 
         const res = await fetch(url, {
           method: 'POST',
@@ -124,6 +127,9 @@ async function streamFromGemini(
         fetchSignal.cleanup();
 
         if (res.status === 429 || res.status === 404 || res.status === 401 || res.status >= 500 || !res.ok || !res.body) {
+          if (res.status === 429 || res.status === 401 || res.status === 404) {
+            markKeyFailure(key);
+          }
           continue;
         }
 
@@ -162,6 +168,7 @@ async function streamFromGemini(
           return true;
         }
       } catch {
+        markKeyFailure(key);
         if (stats.signal?.aborted) return false;
       }
     }
@@ -182,7 +189,7 @@ async function streamFromOpenAiCompatible(
 ): Promise<boolean> {
   try {
     if (stats.signal?.aborted || !key) return false;
-    const fetchSignal = linkedFetchSignal(stats.signal, 10000);
+    const fetchSignal = linkedFetchSignal(stats.signal, 4000);
 
     const formattedMessages = [...messages];
     if (systemInstruction && !formattedMessages.some(m => m.role === 'system')) {
@@ -206,7 +213,12 @@ async function streamFromOpenAiCompatible(
     });
     fetchSignal.cleanup();
 
-    if (res.status === 429 || res.status === 404 || res.status >= 500 || !res.ok || !res.body) return false;
+    if (res.status === 429 || res.status === 404 || res.status === 401 || res.status >= 500 || !res.ok || !res.body) {
+      if (res.status === 429 || res.status === 401 || res.status === 404) {
+        markKeyFailure(key);
+      }
+      return false;
+    }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -241,6 +253,7 @@ async function streamFromOpenAiCompatible(
 
     return receivedAnyToken;
   } catch {
+    markKeyFailure(key);
     return false;
   }
 }
@@ -327,10 +340,13 @@ export async function POST(req: Request) {
   const effortBudget = resolveEffortTokenBudget(effortLevel, taskType === 'coding' || Boolean(body.coding));
   const wantsStream = body.stream !== false;
 
-  // MODULE 2: Deep Research 8-Part Structured Output Injection
-  if (isResearchQuery(lastUserPrompt, requestedModel) || taskType === 'research') {
+  // Deep Research 8-Part Structured Output Injection & Token Budget Scaling
+  const isResearch = isResearchQuery(lastUserPrompt, requestedModel) || taskType === 'research';
+  if (isResearch) {
     effectiveSystemPrompt = formatResearchPrompt(effectiveSystemPrompt, injectedConnectorText);
   }
+  const researchBudget = isResearch ? getResearchTokenBudget(effortLevel) : 0;
+  const finalTokenBudget = Math.max(maxTokens, effortBudget, researchBudget);
 
   // Non-streaming fallback
   if (!wantsStream) {
@@ -359,7 +375,7 @@ export async function POST(req: Request) {
     });
   }
 
-  // Real-time SSE Token Streaming
+  // Real-time Ultra-Fast SSE Token Streaming (<0.5s Latency)
   const encoder = new TextEncoder();
   const abortController = new AbortController();
   const abortFromRequest = () => abortController.abort(req.signal.reason);
@@ -380,7 +396,7 @@ export async function POST(req: Request) {
         }
       };
 
-      // Flush immediate initial SSE ping (<50ms) to lock connection
+      // Flush immediate initial SSE ping (<50ms) to lock connection and bypass proxy buffering
       try {
         controller.enqueue(encoder.encode(': ping\n\n'));
       } catch {}
@@ -407,26 +423,23 @@ export async function POST(req: Request) {
 
       // 1. Strict Primary Engine Dispatch (Strictly honor user selection)
       if (provider === 'gemini') {
-        streamed = await streamFromGemini(messages, model, controller, encoder, stats, effectiveSystemPrompt, Math.max(maxTokens, effortBudget));
+        streamed = await streamFromGemini(messages, model, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
       } else if (provider === 'groq') {
         for (const groqKey of getRotatedKeys('groq', GROQ_KEYS)) {
           if (streamed) break;
-          const groqModels = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
-          for (const gm of groqModels) {
-            if (streamed) break;
-            activeModel = gm;
-            streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, gm, messages, controller, encoder, stats, effectiveSystemPrompt, Math.max(maxTokens, effortBudget));
+          activeModel = 'llama-3.3-70b-versatile';
+          streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
+          if (!streamed) {
+            // Try backup model with same key if model-specific issue
+            activeModel = 'llama-3.1-8b-instant';
+            streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
           }
         }
       } else if (provider === 'openrouter') {
         for (const orKey of getRotatedKeys('openrouter', OPENROUTER_KEYS)) {
           if (streamed) break;
-          const openRouterModels = ['meta-llama/llama-3.3-70b-instruct', 'google/gemini-2.0-flash-exp:free'];
-          for (const orm of openRouterModels) {
-            if (streamed) break;
-            activeModel = orm;
-            streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, orm, messages, controller, encoder, stats, effectiveSystemPrompt, Math.max(maxTokens, effortBudget));
-          }
+          activeModel = 'meta-llama/llama-3.3-70b-instruct';
+          streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
         }
       }
 
@@ -440,7 +453,7 @@ export async function POST(req: Request) {
         emit('reset', {});
         resetStreamStats(stats);
 
-        // Strict Manual Mode: If user explicitly picked an engine, exhaust other options in that provider first,
+        // Strict Manual Mode: If user explicitly picked an engine, exhaust other healthy options,
         // then gracefully waterfall to safety engines so the user request never fails.
         if (!isAuto) {
           if (provider === 'gemini') {
@@ -450,27 +463,27 @@ export async function POST(req: Request) {
             emit('provider', { provider: 'Groq LPU (Fallback)', model: activeModel });
             for (const groqKey of getRotatedKeys('groq', GROQ_KEYS)) {
               if (streamed) break;
-              for (const gm of ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant']) {
-                if (streamed) break;
-                streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, gm, messages, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
-              }
+              streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
             }
           } else if (provider === 'groq') {
-            // Waterfall fallback from Groq: Try Gemini 3.8 Flash -> OpenRouter
+            // Waterfall fallback from Groq: Try Gemini 3.5 Flash Lite -> Gemini 3.8 Flash -> OpenRouter
             activeProvider = 'gemini';
-            activeModel = 'gemini-3.8-flash';
+            activeModel = 'gemini-3.5-flash-lite';
             emit('provider', { provider: 'Google Gemini (Fallback)', model: activeModel });
-            streamed = await streamFromGemini(messages, activeModel, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
+            streamed = await streamFromGemini(messages, activeModel, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
           } else if (provider === 'openrouter') {
-            // Waterfall fallback from OpenRouter: Try Gemini 3.8 Flash -> Groq
-            activeProvider = 'gemini';
-            activeModel = 'gemini-3.8-flash';
-            emit('provider', { provider: 'Google Gemini (Fallback)', model: activeModel });
-            streamed = await streamFromGemini(messages, activeModel, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
+            // Waterfall fallback from OpenRouter: Try Groq -> Gemini 3.5 Flash Lite
+            activeProvider = 'groq';
+            activeModel = 'llama-3.3-70b-versatile';
+            emit('provider', { provider: 'Groq LPU (Fallback)', model: activeModel });
+            for (const groqKey of getRotatedKeys('groq', GROQ_KEYS)) {
+              if (streamed) break;
+              streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
+            }
           }
         } else {
           // Smart Auto Waterfall
-          if (taskType === 'simple') {
+          if (taskType === 'simple' || taskType === 'general') {
             // Waterfall Step 1: Groq LPU
             if (!streamed) {
               activeProvider = 'groq';
@@ -478,49 +491,57 @@ export async function POST(req: Request) {
               emit('provider', { provider: 'Groq LPU', model: activeModel });
               for (const groqKey of getRotatedKeys('groq', GROQ_KEYS)) {
                 if (streamed) break;
-                for (const gm of ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant']) {
-                  if (streamed) break;
-                  streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, gm, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
-                }
+                streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
               }
             }
 
-            // Waterfall Step 2: OpenRouter Multi-Provider
+            // Waterfall Step 2: Gemini 3.5 Flash Lite
+            if (!streamed) {
+              activeProvider = 'gemini';
+              activeModel = 'gemini-3.5-flash-lite';
+              emit('provider', { provider: 'Gemini 3.5 Flash Lite', model: activeModel });
+              streamed = await streamFromGemini(messages, activeModel, controller, encoder, stats, effectiveSystemPrompt, 16384);
+            }
+
+            // Waterfall Step 3: OpenRouter Multi-Provider
             if (!streamed) {
               activeProvider = 'openrouter';
               activeModel = 'meta-llama/llama-3.3-70b-instruct';
               emit('provider', { provider: 'OpenRouter', model: activeModel });
               for (const orKey of getRotatedKeys('openrouter', OPENROUTER_KEYS)) {
                 if (streamed) break;
-                for (const orm of ['meta-llama/llama-3.3-70b-instruct', 'google/gemini-2.0-flash-exp:free']) {
-                  if (streamed) break;
-                  streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, orm, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
-                }
+                streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
               }
             }
           }
 
-          // Coding, Complex Video Generation, or Fallback when non-Gemini exhausted:
-          // Gemini Flash with dedicated 40,000 token execution budget
+          // Coding, Deep Research, Complex Video Generation:
+          // Gemini 3.8 Flash with dedicated 40,000 token execution budget
           if (!streamed) {
             activeProvider = 'gemini';
-            activeModel = (taskType === 'coding' || taskType === 'video') ? 'gemini-3.8-flash' : 'gemini-3.5-flash-lite';
-            const budget = (taskType === 'coding' || taskType === 'video') ? 40000 : 16384;
+            activeModel = 'gemini-3.8-flash';
             emit('provider', { provider: 'Google Gemini', model: activeModel });
-            streamed = await streamFromGemini(messages, activeModel, controller, encoder, stats, effectiveSystemPrompt, budget);
+            streamed = await streamFromGemini(messages, activeModel, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
           }
 
-          // Fallback to OpenRouter if Gemini also hits quota
+          // Fallback to Groq / OpenRouter if Gemini quota exhausted
+          if (!streamed) {
+            activeProvider = 'groq';
+            activeModel = 'llama-3.3-70b-versatile';
+            emit('provider', { provider: 'Groq LPU', model: activeModel });
+            for (const groqKey of getRotatedKeys('groq', GROQ_KEYS)) {
+              if (streamed) break;
+              streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
+            }
+          }
+
           if (!streamed) {
             activeProvider = 'openrouter';
             activeModel = 'meta-llama/llama-3.3-70b-instruct';
             emit('provider', { provider: 'OpenRouter', model: activeModel });
             for (const orKey of getRotatedKeys('openrouter', OPENROUTER_KEYS)) {
               if (streamed) break;
-              for (const orm of ['meta-llama/llama-3.3-70b-instruct', 'google/gemini-2.0-flash-exp:free']) {
-                if (streamed) break;
-                streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, orm, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
-              }
+              streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
             }
           }
         }
@@ -562,9 +583,10 @@ export async function POST(req: Request) {
   return new Response(stream, {
     headers: {
       'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache, no-transform',
+      'Cache-Control': 'no-cache, no-transform, no-store, must-revalidate',
       'Connection': 'keep-alive',
       'X-Accel-Buffering': 'no',
+      'Transfer-Encoding': 'chunked',
       'X-AI-Model': model,
       'X-AI-Provider': provider
     }

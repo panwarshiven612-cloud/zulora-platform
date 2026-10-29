@@ -786,7 +786,7 @@ async function tryGemini(messages, options = {}) {
           contents,
           ...(systemPrompt ? { system_instruction: { parts: [{ text: systemPrompt }] } } : {}),
           ...(options.enableWebSearch ? { tools: [{ google_search: {} }] } : {}),
-          generationConfig: { temperature: 0.7, maxOutputTokens: options.maxTokens || (options.coding || options.flagship || options.model === 'gemini-2.5-pro' ? CODE_GENERATION_MAX_TOKENS : 4096) }
+          generationConfig: { temperature: 0.7, maxOutputTokens: options.maxTokens || (options.coding || options.flagship || options.model === 'gemini-3.8-flash' ? CODE_GENERATION_MAX_TOKENS : 4096) }
         })
       }, options.stream ? 12_000 : 16_000, 1);
       if (response.ok) {
@@ -905,7 +905,7 @@ function normalizeModelPreference(value) {
   const geminiModel = normalizeGeminiModelId(raw);
   if (geminiModel) return geminiModel;
   const selected = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
-  if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra') || /zulora 3\.1 pro(?: ultra)?/.test(selected)) return 'gemini-2.5-pro';
+  if (selected === 'think' || selected.includes('thinking') || selected.includes('3.5 pro ultra') || selected.includes('pro ultra') || /zulora 3\.1 pro(?: ultra)?/.test(selected)) return 'gemini-3.8-flash';
   if (selected === 'llama' || (selected.includes('llama') && /(?:70b|3\.3)/.test(selected))) return 'groq';
   if (selected === 'groq' || selected.includes('groq') || selected.includes('turbo')) return 'groq';
   if (selected.includes('cerebras')) return 'cerebras';
@@ -913,9 +913,9 @@ function normalizeModelPreference(value) {
   if (selected.includes('mistral')) return 'mistral';
   if (selected === 'flash' || selected.includes('gemini flash') || selected.includes('zulora flash')) return 'gemini-3.8-flash';
   if (selected === 'gemini') return 'gemini-3.8-flash';
-  if (selected === 'pro 3.14' || selected === 'zulora pro 3.14' || selected === 'pro' || selected === 'pro 314') return 'gemini-2.5-pro';
+  if (selected === 'pro 3.14' || selected === 'zulora pro 3.14' || selected === 'pro' || selected === 'pro 314') return 'gemini-3.8-flash';
   if (selected === 'auto' || !selected) return 'auto';
-  if (['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'gemini-2.5-pro';
+  if (['high reason', 'high reasoning', 'reasoning'].includes(selected)) return 'gemini-3.8-flash';
   return raw;
 }
 
@@ -929,7 +929,7 @@ async function generateChat(body, streamOptions = {}) {
   const effortLevel = String(body.effortLevel || 'medium').toLowerCase();
   const effortTokenBudget = resolveEffortTokenBudget(effortLevel, false, false);
   const simpleQuery = body.simpleQuery === true;
-  const flagship = requestedPreference === 'gemini-2.5-pro' || requestedPreference === 'think';
+  const flagship = requestedPreference === 'gemini-3.8-flash' || requestedPreference === 'think';
   const latestUserPrompt = [...(Array.isArray(body.messages) ? body.messages : [])].reverse().find(message => message?.role === 'user')?.content || '';
   const websiteBuild = isWebsiteGenerationPrompt(latestUserPrompt);
   const researchMode = isResearchQuery(latestUserPrompt, requestedPreference);
@@ -963,10 +963,10 @@ async function generateChat(body, streamOptions = {}) {
   if (body.attachments?.length && !attachments.length) throw new Error('The attached image or PDF format is unsupported. Use PNG, JPEG, WebP, GIF, or PDF.');
   const vision = attachments.length > 0;
   const coding = isCodeGenerationRequest({ messages: [{ role: 'user', content: latestUserPrompt }] });
-  const complex = ['pro', 'think', 'gemini-2.5-pro', 'high_reason', 'pro_314', 'pro_ultra'].includes(requestedPreference) ||
+  const complex = ['pro', 'think', 'gemini-3.8-flash', 'high_reason', 'pro_314', 'pro_ultra'].includes(requestedPreference) ||
     /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(latestUserPrompt);
   const preference = requestedPreference === 'auto' ? 'gemini-3.8-flash' : requestedPreference;
-  const useProModel = ['pro', 'think', 'gemini-2.5-pro', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference);
+  const useProModel = ['pro', 'think', 'gemini-3.8-flash', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference);
   const isDirectGemini = String(preference).startsWith('gemini-');
   const geminiModel = isDirectGemini
     ? preference
@@ -1637,7 +1637,7 @@ export default async function handler(req, res) {
     if (!uid) return rejectRequest(401, 'Your sign-in session has expired. Sign in again.');
   }
   const preference = normalizeModelPreference(body.modelId || body.modelPreference || body.model);
-  const highTierRequest = preference === 'think' || preference === 'pro' || preference === 'gemini-3.1-pro-preview' || preference === 'gemini-2.5-pro';
+  const highTierRequest = preference === 'think' || preference === 'pro' || preference === 'gemini-3.1-pro-preview' || preference === 'gemini-3.8-flash';
   const flagshipRequest = type === 'chat' && highTierRequest && isCodeGenerationRequest(body);
 
   try {

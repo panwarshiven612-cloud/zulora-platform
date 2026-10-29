@@ -35,7 +35,7 @@ export const MANUAL_OPTIONS: ModelOption[] = [
     id: 'gemini-3.8-flash',
     label: 'Gemini 3.8 Flash',
     shortLabel: 'Gemini 3.8',
-    description: 'High token budget (40k) for complex coding, web building & video',
+    description: 'High token budget (40k) for complex coding, web building & deep research',
     icon: Zap,
     color: 'text-amber-500',
     badge: '40k Tokens'
@@ -112,7 +112,7 @@ export default function ModelSelector({
     const raw = String(modelPreference || 'auto').trim();
     const cur = raw.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
     if (cur === 'auto' || cur === 'zulora auto') return 'auto';
-    if (cur === 'gemini 3.8 flash' || cur === 'gemini 3.8' || cur === 'gemini' || cur === 'gemini-3.8-flash') return 'gemini-3.8-flash';
+    if (cur === 'gemini 3.8 flash' || cur === 'gemini 3.8' || cur === 'gemini' || cur === 'gemini-3.8-flash' || cur === 'think' || cur === 'pro' || cur === 'deep research') return 'gemini-3.8-flash';
     if (cur === 'gemini 3.5 flash lite' || cur === 'gemini 3.5' || cur === 'flash lite' || cur === 'gemini lite' || cur === 'gemini-3.5-flash-lite' || cur === 'lite') return 'gemini-3.5-flash-lite';
     if (cur === 'groq' || cur === 'groq lpu' || cur === 'zulora lpu speed' || cur === 'zulora lpu') return 'groq';
     if (cur === 'openrouter' || cur === 'openrouter multi provider' || cur === 'openrouter multi-provider') return 'openrouter';

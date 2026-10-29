@@ -25,18 +25,18 @@ cd "$PROJECT_ROOT"
 npm run build
 echo "  ✓ Web bundle built: dist/"
 
-# 2. Sync with Capacitor
-echo "[2/5] Syncing Capacitor..."
-npx cap sync android
-echo "  ✓ Capacitor synced"
-
-# 3. Ensure android platform exists
+# 2. Ensure android platform exists
 if [ ! -d "$PROJECT_ROOT/android" ]; then
-  echo "[3/5] Adding Android platform..."
+  echo "[2/5] Adding Android platform..."
   npx cap add android
 else
-  echo "[3/5] Android platform already exists — skipping add"
+  echo "[2/5] Android platform already exists — skipping add"
 fi
+
+# 3. Sync with Capacitor
+echo "[3/5] Syncing Capacitor..."
+npx cap sync android
+echo "  ✓ Capacitor synced"
 
 # 4. Build APK via Gradle
 echo "[4/5] Building $MODE APK..."

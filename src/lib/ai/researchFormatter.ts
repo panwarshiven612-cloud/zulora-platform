@@ -12,7 +12,30 @@
  * 8. Sources (Numbered list: publisher, title, date, URL)
  */
 
-export const RESEARCH_TRIGGER_REGEX = /\b(?:research|deep\s*dive|in-depth|cite|citation|paper|sources|benchmark|analysis|audit|compare|investigate|thorough|market\s*analysis|competitive\s*analysis|landscape|evaluation|comprehensive|detailed\s*report)\b/i;
+export const RESEARCH_TRIGGER_REGEX = /\b(?:research|deep\s*dive|in-depth|cite|citation|paper|sources|benchmark|analysis|audit|compare|investigate|thorough|market\s*analysis|competitive\s*analysis|landscape|evaluation|comprehensive|detailed\s*report|literature\s*review|whitepaper|systematic\s*review|case\s*study)\b/i;
+
+export const RESEARCH_TOKEN_BUDGET = 40000;
+
+/**
+ * Computes dynamic token budget for deep research tasks scaled to thinking effort level
+ */
+export function getResearchTokenBudget(effortLevel: string = 'medium'): number {
+  const norm = String(effortLevel || 'medium').toLowerCase();
+  switch (norm) {
+    case 'low':
+      return 20000;
+    case 'medium':
+      return 32768;
+    case 'high':
+      return 40000;
+    case 'extra':
+      return 50000;
+    case 'max':
+      return 65536;
+    default:
+      return 40000;
+  }
+}
 
 export const ZULORA_RESEARCH_8_PART_PROMPT = `
 ================================================================================
@@ -72,7 +95,7 @@ export function isResearchQuery(prompt: string = '', modelPreference: string = '
   const text = String(prompt || '').trim();
   const pref = String(modelPreference || '').trim().toLowerCase();
 
-  if (pref === 'think' || pref === 'gemini-2.5-pro' || pref.includes('research')) {
+  if (pref === 'think' || pref.includes('research') || pref.includes('deep-research')) {
     return true;
   }
 
@@ -97,8 +120,9 @@ export function formatResearchPrompt(baseSystemPrompt: string = '', searchContex
 
 export default {
   RESEARCH_TRIGGER_REGEX,
+  RESEARCH_TOKEN_BUDGET,
+  getResearchTokenBudget,
   ZULORA_RESEARCH_8_PART_PROMPT,
   isResearchQuery,
   formatResearchPrompt
 };
-
