@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
-const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
+const LOGO_URL = 'https://i.postimg.cc/wxXPzmkp/file-00000000a3608208b2ebb7552f63ec28.png';
 const ADMIN_EMAILS = ['panwarshiven612@gmail.com', 'zulora.help@gmail.com'];
 
 const TAB_CONFIG = [

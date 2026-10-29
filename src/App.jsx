@@ -12,7 +12,7 @@ import SearchEngineView from './components/SearchEngineView';
 const AIStudio = lazy(() => import('./pages/AIStudio'));
 const AdminPanel = lazy(() => import('./pages/admin/AdminPanel'));
 
-const LOGO_URL = 'https://i.postimg.cc/V621Yk7C/IMG-20260531-172651.jpg';
+const LOGO_URL = 'https://i.postimg.cc/wxXPzmkp/file-00000000a3608208b2ebb7552f63ec28.png';
 const WORKSPACE_TABS = {
   '/dashboard': 'chat',
   '/chat': 'chat',
