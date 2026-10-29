@@ -13,6 +13,14 @@
       "destination": "/terms.html"
     },
     {
+      "source": "/app",
+      "destination": "/app.html"
+    },
+    {
+      "source": "/download.apk",
+      "destination": "/download.apk"
+    },
+    {
       "source": "/api",
       "destination": "/api/index"
     },

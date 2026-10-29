@@ -68,6 +68,7 @@ import { isExplicitBrowserAutomationIntent } from '../services/browserAutomation
 import { checkExtensionConnected, executeCommand } from '../services/browserAgentEngine';
 import CodeArtifactRunner from './CodeArtifactRunner';
 import ModelSelector from './ModelSelector';
+import { DEFAULT_EFFORT, EFFORT_STORAGE_KEY, getEffortOption, resolveTokenBudget } from './chat/EffortSelector';
 import { requestNotificationPermission, sendCompletionNotification } from '../lib/firebase/notifications';
 import ChatInput from './chat/ChatInput';
 import ConnectorsModal from './ConnectorsModal';
@@ -736,6 +737,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [isSpeakingIndex, setIsSpeakingIndex] = useState(null);
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const [effortLevel, setEffortLevel] = useState(() => { try { return localStorage.getItem(EFFORT_STORAGE_KEY) || DEFAULT_EFFORT; } catch { return DEFAULT_EFFORT; } });
+  const [showEffortMenu, setShowEffortMenu] = useState(false);
   const [showConnectorsModal, setShowConnectorsModal] = useState(false);
   const [connectorReauthProvider, setConnectorReauthProvider] = useState('');
   const [connectorContext, setConnectorContext] = useState('');
@@ -1755,6 +1758,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           modelPreference: modelPreference,
           webSearch: enableWebSearch,
           simpleQuery,
+          effortLevel,
           signal: generationController.signal,
           userId: currentUser?.uid,
           currentUser,
@@ -2125,6 +2129,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             setShowModelMenu(value => !value);
           }}
           onCloseModelMenu={() => setShowModelMenu(false)}
+          effortLevel={effortLevel}
+          onEffortChange={level => { setEffortLevel(level); try { localStorage.setItem(EFFORT_STORAGE_KEY, level); } catch {} }}
+          showEffortMenu={showEffortMenu}
+          onToggleEffortMenu={event => { event.stopPropagation(); setShowEffortMenu(v => !v); }}
+          onCloseEffortMenu={() => setShowEffortMenu(false)}
           isListening={isListening}
           onToggleListening={toggleListening}
           onOpenVoiceAssistant={onOpenVoiceAssistant}
@@ -2152,6 +2161,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       {/* Click outside model menu */}
       {showModelMenu && (
         <div aria-hidden="true" className="fixed inset-0 z-40" onClick={() => setShowModelMenu(false)} />
+      )}
+      {showEffortMenu && (
+        <div aria-hidden="true" className="fixed inset-0 z-40" onClick={() => setShowEffortMenu(false)} />
       )}
       
       {guestMode && showGuestUpgrade && <GuestGateModal

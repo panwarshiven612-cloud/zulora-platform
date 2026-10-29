@@ -893,6 +893,13 @@ export async function generateTextWithWaterfall(prompt, systemPrompt = '') {
   return "I'm temporarily processing requests at high load. Please ask again and I'll respond right away.";
 }
 
+function resolveEffortTokenBudget(effortLevel, coding, research) {
+  const EFFORT_BUDGETS = { low: 4096, medium: 8192, high: 20000, extra: 40000, max: 65536 };
+  let budget = EFFORT_BUDGETS[String(effortLevel || 'medium')] || 8192;
+  if ((coding || research) && budget < 20000) budget = 20000;
+  return budget;
+}
+
 function normalizeModelPreference(value) {
   const raw = String(value || 'auto').trim().toLowerCase();
   const geminiModel = normalizeGeminiModelId(raw);
@@ -919,6 +926,8 @@ function chooseChatOrder(preference) {
 
 async function generateChat(body, streamOptions = {}) {
   const requestedPreference = normalizeModelPreference(body.modelId || body.modelPreference || body.model);
+  const effortLevel = String(body.effortLevel || 'medium').toLowerCase();
+  const effortTokenBudget = resolveEffortTokenBudget(effortLevel, false, false);
   const simpleQuery = body.simpleQuery === true;
   const flagship = requestedPreference === 'gemini-2.5-pro' || requestedPreference === 'think';
   const latestUserPrompt = [...(Array.isArray(body.messages) ? body.messages : [])].reverse().find(message => message?.role === 'user')?.content || '';
@@ -972,14 +981,14 @@ async function generateChat(body, streamOptions = {}) {
   for (const provider of order) {
     try {
       const result = provider === 'gemini'
-        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: false, model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: body.guestDemo && !coding ? 2_048 : coding || geminiModel === 'gemini-3.8-flash' ? 40_000 : 32_768, ...streamOptions })
+        ? await tryGeminiWithModelFallback(messages, { attachments: body.attachments, enableWebSearch: false, model: geminiModel, coding, flagship, preferBestKey: flagship, maxTokens: body.guestDemo && !coding ? 2_048 : Math.max(effortTokenBudget, coding || geminiModel === 'gemini-3.8-flash' ? 40_000 : 32_768), ...streamOptions })
         : await tryOpenAiProvider(provider, messages, {
           attachments: body.attachments,
           vision,
           coding,
           model: provider === 'groq' ? groqModel : undefined,
           reasoning: preference === 'think' && provider === 'groq',
-          maxTokens: body.guestDemo && !coding ? 2_048 : coding ? CODE_GENERATION_MAX_TOKENS : useProModel || flagship ? 32_768 : 16_384,
+          maxTokens: body.guestDemo && !coding ? 2_048 : Math.max(effortTokenBudget, coding ? CODE_GENERATION_MAX_TOKENS : useProModel || flagship ? 32_768 : 16_384),
           ...streamOptions
         });
       if (result) return { ...result, ...(body.enableWebSearch ? { sources: searchResults } : {}) };

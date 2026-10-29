@@ -13,6 +13,14 @@
  * Founded & Created by Shiven Panwar — Zulora AI
  */
 import { requestConnectorModel, requestGeneration, requestGenerationStream, trackSuccessfulUsage, checkGenerationAllowance, GenerationApiError } from './generationApi';
+
+// Effort token budget resolver (inline, avoids TS import in .js file)
+function resolveTokenBudget(effortLevel, coding, research) {
+  const EFFORT_BUDGETS = { low: 4096, medium: 8192, high: 20000, extra: 40000, max: 65536 };
+  let budget = EFFORT_BUDGETS[String(effortLevel || 'medium')] || 8192;
+  if ((coding || research) && budget < 20000) budget = 20000;
+  return budget;
+}
 import { generateVideo as generateVideoWithProviders } from './videoService';
 import { buildSystemPrompt, FLAGSHIP_SYSTEM_PROMPT } from './systemPrompt';
 import { webSearch, formatCitations } from './webSearch';
@@ -1204,7 +1212,9 @@ export const apiRouter = {
           attachments: options.attachments || [],
           simpleQuery,
           coding,
-          flagship
+          flagship,
+          effortLevel: options.effortLevel || 'medium',
+          effortTokenBudget: resolveTokenBudget(options.effortLevel || 'medium', coding, false)
         };
         const serverResult = options.onToken
           ? await requestGenerationStream(chatPayload, options.currentUser, token => {

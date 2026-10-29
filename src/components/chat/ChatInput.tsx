@@ -12,6 +12,7 @@ import {
   FileText
 } from 'lucide-react';
 import ModelSelector from './ModelSelector';
+import EffortSelector, { type EffortLevel, DEFAULT_EFFORT, EFFORT_STORAGE_KEY } from './EffortSelector';
 
 export const MAX_FILE_SIZE: number = 50 * 1024 * 1024; // 50 MB max file size
 
@@ -47,6 +48,11 @@ export interface ChatInputProps {
   onStopGeneration?: () => void;
   showMoreTools?: boolean;
   onToggleMoreTools?: () => void;
+  effortLevel?: EffortLevel;
+  onEffortChange?: (level: EffortLevel) => void;
+  showEffortMenu?: boolean;
+  onToggleEffortMenu?: (e: React.MouseEvent | React.TouchEvent) => void;
+  onCloseEffortMenu?: () => void;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = ({
@@ -78,7 +84,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   onToggleWebSearch,
   onOpenConnectors,
   isGenerating = false,
-  onStopGeneration
+  onStopGeneration,
+  effortLevel = DEFAULT_EFFORT,
+  onEffortChange,
+  showEffortMenu = false,
+  onToggleEffortMenu,
+  onCloseEffortMenu
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isSubmittingRef = useRef<boolean>(false);
@@ -284,6 +295,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             isOpen={showModelMenu}
             onToggle={onToggleModelMenu}
             onClose={onCloseModelMenu}
+          />
+
+          {/* 1b. Thinking Effort Selector */}
+          <EffortSelector
+            effortLevel={effortLevel}
+            onEffortChange={onEffortChange}
+            isOpen={showEffortMenu}
+            onToggle={onToggleEffortMenu}
+            onClose={onCloseEffortMenu}
           />
 
           {/* 2. Web Search Icon */}

@@ -10,6 +10,14 @@ import { MASTER_SYSTEM_PROMPT } from '../../../lib/llm/prompts/systemPrompt';
 import { buildInjectedConnectorContext, ConnectorContextPayload } from '../../../lib/connectors';
 import { isResearchQuery, formatResearchPrompt } from '../../../lib/ai/researchFormatter';
 
+// Effort-level token budget resolver
+function resolveEffortTokenBudget(effortLevel: string, coding: boolean = false): number {
+  const EFFORT_BUDGETS: Record<string, number> = { low: 4096, medium: 8192, high: 20000, extra: 40000, max: 65536 };
+  let budget = EFFORT_BUDGETS[effortLevel] ?? 8192;
+  if (coding && budget < 20000) budget = 20000;
+  return budget;
+}
+
 export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -250,6 +258,8 @@ export async function POST(req: Request) {
     searchContext?: ConnectorContextPayload['searchContext'];
     context?: string;
     personalMemory?: string;
+    effortLevel?: string;
+    coding?: boolean;
   };
 
   try {
@@ -313,6 +323,8 @@ export async function POST(req: Request) {
   const requestedModel = body.modelId || body.modelPreference || body.model || 'auto';
   const resolved = resolveModelRoute(requestedModel, lastUserPrompt, Boolean(body.driveContext));
   const { provider, model, isAuto, maxTokens, taskType } = resolved;
+  const effortLevel = String(body.effortLevel || 'medium').toLowerCase();
+  const effortBudget = resolveEffortTokenBudget(effortLevel, taskType === 'coding' || Boolean(body.coding));
   const wantsStream = body.stream !== false;
 
   // MODULE 2: Deep Research 8-Part Structured Output Injection
@@ -395,7 +407,7 @@ export async function POST(req: Request) {
 
       // 1. Strict Primary Engine Dispatch (Strictly honor user selection)
       if (provider === 'gemini') {
-        streamed = await streamFromGemini(messages, model, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
+        streamed = await streamFromGemini(messages, model, controller, encoder, stats, effectiveSystemPrompt, Math.max(maxTokens, effortBudget));
       } else if (provider === 'groq') {
         for (const groqKey of getRotatedKeys('groq', GROQ_KEYS)) {
           if (streamed) break;
@@ -403,7 +415,7 @@ export async function POST(req: Request) {
           for (const gm of groqModels) {
             if (streamed) break;
             activeModel = gm;
-            streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, gm, messages, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
+            streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, gm, messages, controller, encoder, stats, effectiveSystemPrompt, Math.max(maxTokens, effortBudget));
           }
         }
       } else if (provider === 'openrouter') {
@@ -413,7 +425,7 @@ export async function POST(req: Request) {
           for (const orm of openRouterModels) {
             if (streamed) break;
             activeModel = orm;
-            streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, orm, messages, controller, encoder, stats, effectiveSystemPrompt, maxTokens);
+            streamed = await streamFromOpenAiCompatible('https://openrouter.ai/api/v1/chat/completions', orKey, orm, messages, controller, encoder, stats, effectiveSystemPrompt, Math.max(maxTokens, effortBudget));
           }
         }
       }
