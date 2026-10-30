@@ -73,6 +73,7 @@ import { requestNotificationPermission, sendCompletionNotification } from '../li
 import ChatInput from './chat/ChatInput';
 import ConnectorsModal from './ConnectorsModal';
 import GuestGateModal from './GuestGateModal';
+import { AdBanner } from './ads/AdBanner';
 import { guestGate } from '../services/guestGate';
 import { backgroundTaskManager } from '../services/backgroundTaskManager';
 import { runFullVideoPipeline } from '../services/videoEditAgent';
@@ -720,7 +721,7 @@ const WelcomeScreen = ({ user, onSuggestion }) => (
 /* ============================================================
    MAIN CHAT INTERFACE
    ============================================================ */
-export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpenVoiceAssistant, pendingLibraryAsset, onLibraryAssetConsumed, guestMode = false, onNavigate }) => {
+export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpenVoiceAssistant, pendingLibraryAsset, onLibraryAssetConsumed, guestMode = false, onNavigate, onOpenRewards }) => {
   const { currentUser, userProfile, isPro, setIsUsageModalOpen, setIsPricingModalOpen, checkUsage, recordUsage } = useAuth();
 
   const [messages, setMessages] = useState([]);
@@ -2150,6 +2151,12 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           enableWebSearch={enableWebSearch}
           onToggleWebSearch={() => setEnableWebSearch(value => !value)}
           onOpenConnectors={() => setShowConnectorsModal(true)}
+        />
+
+        {/* ChatGPT-style bottom non-intrusive Ad Banner */}
+        <AdBanner
+          onOpenRewards={onOpenRewards}
+          tier={isPro ? 'pro' : (userProfile?.planTier || 'free')}
         />
 
         {/* Disclaimer */}

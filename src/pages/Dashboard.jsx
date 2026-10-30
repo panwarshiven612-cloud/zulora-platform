@@ -14,6 +14,7 @@ import AccountSettings from './AccountSettings';
 import VoiceAgentModal from '../components/VoiceAgentModal';
 import ComputerPluginModal from '../components/ComputerPluginModal';
 import GuestGateModal from '../components/GuestGateModal';
+import { RewardModal } from '../components/ads/RewardModal';
 import { firestoreService } from '../services/firestoreService';
 
 const AIStudio = lazy(() => import('./AIStudio'));
@@ -91,6 +92,7 @@ export const Dashboard = ({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
   const [isComputerPluginOpen, setIsComputerPluginOpen] = useState(false);
+  const [isRewardModalOpen, setIsRewardModalOpen] = useState(false);
   const [showGuestUpgrade, setShowGuestUpgrade] = useState(false);
 
   const safeDisplayName = currentUser?.displayName || userProfile?.displayName || (guestMode ? 'Guest' : 'Shiven');
@@ -255,6 +257,7 @@ export const Dashboard = ({
           onCloseMobile={() => setIsMobileSidebarOpen(false)}
           setActiveTab={handleSelectTab}
           onOpenComputerPlugin={guestMode ? undefined : () => setIsComputerPluginOpen(true)}
+          onOpenRewards={() => setIsRewardModalOpen(true)}
         />
 
         {/* Main Interactive Area — wrapped in DashboardErrorBoundary */}
@@ -270,6 +273,7 @@ export const Dashboard = ({
                 onLibraryAssetConsumed={() => setPendingLibraryAsset(null)}
                 guestMode={guestMode}
                 onNavigate={onNavigate}
+                onOpenRewards={() => setIsRewardModalOpen(true)}
               />
             )}
 
@@ -315,6 +319,14 @@ export const Dashboard = ({
       <UsageLimitsModal isOpen={isUsageModalOpen} onClose={() => setIsUsageModalOpen(false)} />
       <PricingModal isOpen={isPricingModalOpen} onClose={() => setIsPricingModalOpen(false)} />
       {isSettingsOpen && <AccountSettings onClose={() => setIsSettingsOpen(false)} />}
+
+      {/* Ad Reward Modal */}
+      {!guestMode && (
+        <RewardModal
+          isOpen={isRewardModalOpen}
+          onClose={() => setIsRewardModalOpen(false)}
+        />
+      )}
 
       {/* Computer Plugin Drawer */}
       {!guestMode && <ComputerPluginModal

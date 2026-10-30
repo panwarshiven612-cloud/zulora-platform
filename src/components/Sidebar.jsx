@@ -20,7 +20,9 @@ import {
   Database,
   Plug,
   FolderOpen,
-  Shield
+  Shield,
+  Download,
+  Gift
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { firestoreService, TIERS } from '../services/firestoreService';
@@ -34,7 +36,8 @@ export const Sidebar = ({
   isMobileOpen, 
   onCloseMobile,
   setActiveTab,
-  onOpenComputerPlugin
+  onOpenComputerPlugin,
+  onOpenRewards
 }) => {
   const { 
     currentUser, 
@@ -365,6 +368,25 @@ export const Sidebar = ({
         >
           <Plug className="h-4 w-4 text-violet-500" />
           <span>Computer Plugin</span>
+        </button>
+        <a
+          href="/download.apk"
+          download="ZuloraAI.apk"
+          className="mt-1 flex w-full items-center gap-2 rounded-xl border border-emerald-200/70 bg-emerald-50/70 p-2.5 text-left text-xs font-semibold text-slate-700 transition-colors hover:border-emerald-300 hover:bg-emerald-100/80 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-slate-300 dark:hover:bg-emerald-950/60"
+        >
+          <Download className="h-4 w-4 text-emerald-500" />
+          <span>Download Android App</span>
+        </a>
+        <button
+          type="button"
+          onClick={() => {
+            onOpenRewards?.();
+            if (onCloseMobile) onCloseMobile();
+          }}
+          className="mt-1 flex w-full items-center gap-2 rounded-xl border border-amber-200/70 bg-amber-50/70 p-2.5 text-left text-xs font-semibold text-slate-700 transition-colors hover:border-amber-300 hover:bg-amber-100/80 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-slate-300 dark:hover:bg-amber-950/60"
+        >
+          <Gift className="h-4 w-4 text-amber-500" />
+          <span>Earn Free Pro (Rewards)</span>
         </button>
       </div>
 
