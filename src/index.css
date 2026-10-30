@@ -742,3 +742,11 @@
 @media (max-width: 768px) {
   .prose-chat { font-size: 0.875rem; }
 }
+
+/* zulora-desktop-perf */
+@media (min-width: 768px) {
+  .chat-composer-wrapper { contain: layout style; }
+  main { isolation: isolate; }
+}
+/* Eliminate scroll-triggered repaints on desktop */
+[class*="overflow-y-auto"] { transform: translateZ(0); backface-visibility: hidden; }

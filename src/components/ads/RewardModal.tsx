@@ -18,6 +18,7 @@ import {
 import confetti from 'canvas-confetti';
 import { useAuth } from '../../context/AuthContext';
 import { firestoreService, TIERS } from '../../services/firestoreService';
+import { getActiveCustomAds, logAdImpression, CustomAd } from './adAnalyticsService';
 
 export interface RewardModalProps {
   isOpen: boolean;
@@ -43,6 +44,7 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
   const [redeemSuccess, setRedeemSuccess] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
   const [cooldownSeconds, setCooldownSeconds] = useState(0);
+  const [promoCreative, setPromoCreative] = useState<CustomAd | null>(null);
 
   const timerRef = useRef<any>(null);
   const cooldownRef = useRef<any>(null);
@@ -70,6 +72,12 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
     };
 
     checkCooldown();
+
+    getActiveCustomAds().then(ads => {
+      if (ads.length > 0) {
+        setPromoCreative(ads[Math.floor(Math.random() * ads.length)]);
+      }
+    }).catch(() => {});
 
     // Live cooldown countdown
     cooldownRef.current = setInterval(() => {
@@ -314,18 +322,54 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
               )}
             </div>
 
-            {/* Active Ad Playing Card */}
+            {/* Active Ad Playing Card with Promotional Creative */}
             {watchingAd ? (
-              <div className="p-4 rounded-xl border border-sky-300 dark:border-sky-800 bg-sky-50/90 dark:bg-sky-950/50 text-center space-y-2 animate-fade-slide">
-                <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-sky-500 text-white font-extrabold text-lg shadow-md animate-pulse">
-                  {adSecondsLeft}s
+              <div className="relative overflow-hidden rounded-2xl border border-sky-400 dark:border-sky-800 bg-slate-900 text-white shadow-xl animate-fade-slide">
+                {promoCreative?.imageUrl ? (
+                  <div className="relative w-full h-44 bg-black overflow-hidden flex items-center justify-center">
+                    {promoCreative.imageUrl.endsWith('.mp4') || promoCreative.imageUrl.endsWith('.webm') ? (
+                      <video
+                        src={promoCreative.imageUrl}
+                        autoPlay
+                        muted
+                        loop
+                        playsInline
+                        className="w-full h-full object-cover opacity-85"
+                      />
+                    ) : (
+                      <img
+                        src={promoCreative.imageUrl}
+                        alt={promoCreative.title}
+                        className="w-full h-full object-cover opacity-85"
+                        onError={(e) => { (e.currentTarget.parentElement as HTMLElement).style.display = 'none'; }}
+                      />
+                    )}
+                    <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent" />
+                  </div>
+                ) : (
+                  <div className="w-full h-28 bg-gradient-to-tr from-sky-900 via-indigo-950 to-slate-950 flex items-center justify-center">
+                    <Sparkles className="w-10 h-10 text-sky-400/40 animate-pulse" />
+                  </div>
+                )}
+
+                {/* Overlaid Countdown Badge */}
+                <div className="absolute top-2.5 right-2.5 px-3 py-1 rounded-full bg-slate-950/85 backdrop-blur-md border border-white/20 text-white font-black text-xs flex items-center gap-1.5 shadow-md">
+                  <Clock className="w-3.5 h-3.5 text-amber-400 animate-spin" />
+                  <span>Ad ends in {adSecondsLeft}s</span>
                 </div>
-                <p className="text-xs font-bold text-sky-900 dark:text-sky-200">
-                  Sponsored Video Ad in Progress...
-                </p>
-                <p className="text-[10px] text-sky-700 dark:text-sky-400">
-                  Please keep this window open. Your +10 points will credit automatically when timer hits 0.
-                </p>
+
+                {/* Ad Details */}
+                <div className="p-3 text-left space-y-1">
+                  <span className="text-[8px] font-extrabold uppercase px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-400/40">
+                    Sponsored Ad &bull; {promoCreative?.sponsorName || 'Featured Partner'}
+                  </span>
+                  <h4 className="text-xs font-bold text-white truncate">
+                    {promoCreative?.title || 'Sponsor Promotion in Progress'}
+                  </h4>
+                  <p className="text-[10px] text-slate-300 line-clamp-1">
+                    {promoCreative?.description || 'Keep this dialog active. +10 Points credit automatically when the timer expires.'}
+                  </p>
+                </div>
               </div>
             ) : (
               <button

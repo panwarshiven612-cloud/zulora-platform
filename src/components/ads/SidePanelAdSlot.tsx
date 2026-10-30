@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Megaphone, ExternalLink, X } from 'lucide-react';
+import { Megaphone, ExternalLink, X, ArrowRight } from 'lucide-react';
 import { getActiveCustomAds, logAdImpression, logAdClick, CustomAd } from './adAnalyticsService';
 
 export interface SidePanelAdSlotProps {
@@ -41,11 +41,12 @@ export const SidePanelAdSlot: React.FC<SidePanelAdSlotProps> = ({
   };
 
   return (
-    <div className={`p-3 my-2 rounded-2xl border border-sky-200/60 dark:border-sky-900/40 bg-sky-50/50 dark:bg-slate-900/50 backdrop-blur-xs relative text-left ${className}`}>
+    <div className={`p-3 my-2 rounded-2xl border border-sky-200/60 dark:border-sky-900/40 bg-gradient-to-br from-sky-50/70 to-indigo-50/50 dark:from-slate-900/70 dark:to-sky-950/30 backdrop-blur-md relative text-left shadow-xs ${className}`}>
       <button
         onClick={() => setClosed(true)}
         className="absolute top-2 right-2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-md"
         title="Dismiss ad"
+        aria-label="Dismiss"
       >
         <X className="w-3 h-3" />
       </button>
@@ -55,20 +56,33 @@ export const SidePanelAdSlot: React.FC<SidePanelAdSlotProps> = ({
           Sponsored
         </span>
         <span className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-          {ad.sponsorName}
+          This might also interest you &bull; {ad.sponsorName}
         </span>
       </div>
 
       {ad.imageUrl && (
-        <img
-          src={ad.imageUrl}
-          alt={ad.title}
-          className="w-full h-24 object-cover rounded-xl mb-2 border border-slate-200/60 dark:border-slate-800"
-          onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
-        />
+        <div className="relative w-full h-24 rounded-xl overflow-hidden mb-2 border border-slate-200/60 dark:border-slate-800 bg-slate-100 dark:bg-slate-900">
+          {ad.imageUrl.endsWith('.mp4') || ad.imageUrl.endsWith('.webm') ? (
+            <video
+              src={ad.imageUrl}
+              autoPlay
+              muted
+              loop
+              playsInline
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <img
+              src={ad.imageUrl}
+              alt={ad.title}
+              className="w-full h-full object-cover"
+              onError={(e) => { (e.currentTarget.parentElement as HTMLElement).style.display = 'none'; }}
+            />
+          )}
+        </div>
       )}
 
-      <p className="text-xs font-bold text-slate-800 dark:text-white line-clamp-1">
+      <p className="text-xs font-bold text-slate-900 dark:text-white line-clamp-1">
         {ad.title}
       </p>
       {ad.description && (
@@ -80,10 +94,10 @@ export const SidePanelAdSlot: React.FC<SidePanelAdSlotProps> = ({
       <button
         type="button"
         onClick={handleClick}
-        className="w-full mt-1.5 flex items-center justify-center gap-1 py-1.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-bold shadow-xs transition"
+        className="w-full mt-1.5 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-bold shadow-xs transition cursor-pointer active:scale-98"
       >
         <span>{ad.ctaText || 'Learn More'}</span>
-        <ExternalLink className="w-3 h-3" />
+        <ArrowRight className="w-3 h-3" />
       </button>
     </div>
   );

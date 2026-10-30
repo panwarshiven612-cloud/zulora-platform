@@ -23,7 +23,7 @@ export const AUTO_OPTION: ModelOption = {
   id: 'auto',
   label: 'Auto (Smart Adaptive)',
   shortLabel: 'Auto',
-  description: 'Smart Route — Groq/Lite for instant text, Gemini 3.8 Flash for code & video',
+  description: 'Smart Route — Gemini 3.5 Flash Lite by default, 3.8 Flash auto-upgraded for code & research',
   icon: Sparkles,
   color: 'text-sky-500',
   badge: 'Adaptive',

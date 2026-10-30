@@ -74,6 +74,7 @@ import ChatInput from './chat/ChatInput';
 import ConnectorsModal from './ConnectorsModal';
 import GuestGateModal from './GuestGateModal';
 import { AdBanner } from './ads/AdBanner';
+import { SponsoredCard } from './ads/SponsoredCard';
 import { recordUserSearch } from '../lib/ai/memory';
 import { guestGate } from '../services/guestGate';
 import { backgroundTaskManager } from '../services/backgroundTaskManager';
@@ -2156,6 +2157,9 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         />
 
         {/* ChatGPT-style bottom non-intrusive Ad Banner */}
+        {/* Sponsored card below AI responses - free tier only */}
+        <SponsoredCard userId={userId || currentUser?.uid || 'guest'} />
+
         <AdBanner
           onOpenRewards={onOpenRewards}
           tier={isPro ? 'pro' : (userProfile?.planTier || 'free')}

@@ -154,13 +154,13 @@ export function resolveModelRoute(
     };
   }
 
-  // Common / Simple tasks -> Ultra-fast Groq LPU (<500ms latency)
+  // Default lightweight model -> Gemini 3.5 Flash Lite
   return {
-    provider: 'groq',
-    model: 'llama-3.3-70b-versatile',
+    provider: 'gemini',
+    model: 'gemini-3.5-flash-lite',
     isAuto: true,
     maxTokens: 16384,
-    taskType: 'simple'
+    taskType: 'general'
   };
 }
 

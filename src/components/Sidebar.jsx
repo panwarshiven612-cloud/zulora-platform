@@ -26,6 +26,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { firestoreService, TIERS } from '../services/firestoreService';
 import { requestLimits } from '../services/generationApi';
+import { SidePanelAdSlot } from './ads/SidePanelAdSlot';
 
 export const Sidebar = ({ 
   currentChatId, 
@@ -380,6 +381,9 @@ export const Sidebar = ({
           <Gift className="h-4 w-4 text-amber-500" />
           <span>Earn Free Pro (Rewards)</span>
         </button>
+
+        {/* Dashboard Sidebar Sponsored Slot */}
+        <SidePanelAdSlot userId={currentUser?.uid || 'guest'} />
       </div>
 
       {/* History List */}

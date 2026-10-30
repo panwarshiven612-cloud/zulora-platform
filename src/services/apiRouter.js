@@ -1085,7 +1085,7 @@ export const apiRouter = {
     const intentGeminiModel = directGeminiModel ? requestedTier : flagship ? GEMINI_PRO_MODEL_ID : 'gemini-3.8-flash';
     const tier = vision
       ? directGeminiModel ? requestedTier : (geminiSelected ? 'gemini' : requestedTier === 'think' || requestedTier === 'pro' ? 'gemini-2.5-pro' : 'gemini-3.8-flash')
-      : requestedTier === 'auto' ? 'gemini-3.8-flash' : requestedTier;
+      : requestedTier === 'auto' ? 'gemini-3.5-flash-lite' : requestedTier;
     const highTierCodeRequest = coding && (flagship || requestedTier === 'pro' || (directGeminiModel && /pro/i.test(requestedTier)));
     options = { ...options, coding, websiteBuild, flagship: highTierCodeRequest, maxTokens: coding ? CODE_GENERATION_MAX_TOKENS : options.maxTokens, tier, preferBestKey: flagship || highTierCodeRequest, streamState: options.streamState || { sent: false } };
     const errors = [];
