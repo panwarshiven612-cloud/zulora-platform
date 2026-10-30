@@ -23,6 +23,7 @@
 import React, { useCallback, useEffect, useState, useMemo } from 'react';
 import {
   AlertTriangle, BarChart2, Bell, Check, ChevronDown, ChevronRight,
+  Megaphone, MousePointer, ExternalLink, Image as ImageIcon,
   Download, FileText, Loader2, Lock, LogOut, RefreshCw, Send,
   Settings2, Shield, ShieldOff, Sparkles, Trash2, User, Users,
   XCircle, DollarSign, Package, TrendingUp, MessageSquare, Search,
@@ -34,11 +35,19 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { useAuth } from '../../context/AuthContext';
+import {
+  subscribeCustomAds,
+  subscribeAdAnalytics,
+  saveCustomAd,
+  toggleCustomAd,
+  deleteCustomAd
+} from '../../components/ads/adAnalyticsService';
 
 const ADMIN_EMAILS = new Set(['panwarshiven612@gmail.com', 'zulora.help@gmail.com']);
 
 const TABS = [
   { id: 'users',     label: 'User Activity & Management', icon: Users },
+  { id: 'ads',       label: 'Ad Manager & Analytics',     icon: Megaphone },
   { id: 'analytics', label: 'Reports & Token Metrics',     icon: BarChart2 },
   { id: 'notify',    label: 'FCM Push Broadcast',          icon: Bell },
   { id: 'payments',  label: 'Payments & Revenue',          icon: DollarSign },
@@ -147,13 +156,16 @@ function UserManagement() {
   const changeUserPlan = async (uid, newPlan) => {
     setUpdatingId(uid);
     const isPro = newPlan === 'pro' || newPlan === 'ultra' || newPlan === 'enterprise';
+    const planTier = newPlan === 'ultra' ? 'Ultra' : newPlan === 'enterprise' ? 'Enterprise' : isPro ? 'Pro' : 'Free';
     try {
       await updateDoc(doc(db, 'users', uid), { 
         plan: newPlan, 
+        tier: newPlan,
+        planTier,
         isPro, 
         planUpdatedAt: Date.now() 
       });
-      setUsers(prev => prev.map(u => u.id === uid ? { ...u, plan: newPlan, isPro } : u));
+      setUsers(prev => prev.map(u => u.id === uid ? { ...u, plan: newPlan, tier: newPlan, planTier, isPro } : u));
     } catch (e) {
       alert('Failed to change plan: ' + e.message);
     } finally {
@@ -927,6 +939,381 @@ function PaymentsTab() {
 }
 
 // ─── TAB 5: Feature Matrix Control ───────────────────────────────────────────
+
+// ─── TAB: Custom Ad Manager & Analytics ──────────────────────────────────────
+function AdManagerTab() {
+  const [ads, setAds] = useState([]);
+  const [analytics, setAnalytics] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // Form states
+  const [title, setTitle] = useState('');
+  const [sponsorName, setSponsorName] = useState('');
+  const [imageUrl, setImageUrl] = useState('');
+  const [targetUrl, setTargetUrl] = useState('');
+  const [ctaText, setCtaText] = useState('Learn More');
+  const [description, setDescription] = useState('');
+  const [placement, setPlacement] = useState('bottom_banner');
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+
+  useEffect(() => {
+    const unsubAds = subscribeCustomAds(data => {
+      setAds(data || []);
+      setLoading(false);
+    });
+    const unsubAnalytics = subscribeAdAnalytics(data => {
+      setAnalytics(data || []);
+    });
+
+    return () => {
+      unsubAds();
+      unsubAnalytics();
+    };
+  }, []);
+
+  const handleCreateAd = async (e) => {
+    e.preventDefault();
+    if (!title.trim() || !targetUrl.trim()) {
+      setFeedback({ type: 'error', text: 'Campaign Title and Target URL are required.' });
+      return;
+    }
+    setSaving(true);
+    setFeedback(null);
+
+    try {
+      await saveCustomAd({
+        title: title.trim(),
+        sponsorName: sponsorName.trim() || 'Featured Partner',
+        imageUrl: imageUrl.trim(),
+        targetUrl: targetUrl.trim(),
+        ctaText: ctaText.trim() || 'Learn More',
+        description: description.trim(),
+        placement,
+        active: true
+      });
+      setFeedback({ type: 'success', text: 'Custom promotional ad campaign published live!' });
+      setTitle('');
+      setSponsorName('');
+      setImageUrl('');
+      setTargetUrl('');
+      setDescription('');
+    } catch (err) {
+      setFeedback({ type: 'error', text: 'Failed to create campaign: ' + err.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggleActive = async (adId, currentActive) => {
+    try {
+      await toggleCustomAd(adId, !currentActive);
+    } catch (err) {
+      alert('Error updating ad status: ' + err.message);
+    }
+  };
+
+  const handleDeleteAd = async (adId) => {
+    if (!window.confirm('Are you sure you want to delete this custom ad campaign?')) return;
+    try {
+      await deleteCustomAd(adId);
+    } catch (err) {
+      alert('Error deleting ad: ' + err.message);
+    }
+  };
+
+  // Metrics computation
+  const totalImpressions = analytics.filter(a => a.action === 'impression').length;
+  const totalClicks = analytics.filter(a => a.action === 'click').length;
+  const ctr = totalImpressions > 0 ? ((totalClicks / totalImpressions) * 100).toFixed(1) : '0.0';
+  const uniqueReach = new Set(analytics.map(a => a.userId).filter(u => u && u !== 'anonymous')).size;
+
+  return (
+    <div className="space-y-6">
+      {/* Analytics KPI Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard icon={Eye} label="Total Ad Impressions" value={totalImpressions.toLocaleString()} sub="Live user views" color="sky" />
+        <StatCard icon={MousePointer} label="Total Ad Clicks" value={totalClicks.toLocaleString()} sub="Direct interactions" color="green" />
+        <StatCard icon={TrendingUp} label="Click-Through Rate" value={`${ctr}%`} sub="CTR efficiency" color="amber" />
+        <StatCard icon={Users} label="Unique User Reach" value={uniqueReach.toLocaleString()} sub="Distinct profiles" color="purple" />
+      </div>
+
+      {/* Main Grid: Form & Active Ads */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Ad Creator Form */}
+        <Card className="lg:col-span-1 space-y-4">
+          <div className="flex items-center gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
+            <Megaphone className="w-5 h-5 text-sky-500" />
+            <h3 className="font-bold text-sm text-slate-900 dark:text-white">Publish Custom Ad</h3>
+          </div>
+
+          {feedback && (
+            <div className={`p-3 rounded-xl text-xs font-semibold flex items-center gap-2 ${
+              feedback.type === 'success' 
+                ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-800'
+                : 'bg-rose-50 dark:bg-rose-950/60 text-rose-800 dark:text-rose-200 border border-rose-300 dark:border-rose-800'
+            }`}>
+              <span>{feedback.text}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleCreateAd} className="space-y-3">
+            <div>
+              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                Campaign Title *
+              </label>
+              <input
+                type="text"
+                value={title}
+                onChange={e => setTitle(e.target.value)}
+                placeholder="e.g. Build with Next.js & Supabase"
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-sky-500"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                Sponsor / Brand Name
+              </label>
+              <input
+                type="text"
+                value={sponsorName}
+                onChange={e => setSponsorName(e.target.value)}
+                placeholder="e.g. Supabase Cloud"
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-sky-500"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                Promotional Image URL (String)
+              </label>
+              <input
+                type="url"
+                value={imageUrl}
+                onChange={e => setImageUrl(e.target.value)}
+                placeholder="https://... (Direct image string URL)"
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-sky-500"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                Target URL (Redirect Link) *
+              </label>
+              <input
+                type="url"
+                value={targetUrl}
+                onChange={e => setTargetUrl(e.target.value)}
+                placeholder="https://example.com/promo"
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-sky-500"
+                required
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                  CTA Button Text
+                </label>
+                <input
+                  type="text"
+                  value={ctaText}
+                  onChange={e => setCtaText(e.target.value)}
+                  placeholder="Learn More"
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-sky-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                  Ad Slot Placement
+                </label>
+                <select
+                  value={placement}
+                  onChange={e => setPlacement(e.target.value)}
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer"
+                >
+                  <option value="bottom_banner">Bottom Chat Banner</option>
+                  <option value="sidebar">Sidebar Side Slot</option>
+                  <option value="both">Both Placements</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                Short Description
+              </label>
+              <textarea
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                rows={2}
+                placeholder="Brief promotional pitch visible to users..."
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-sky-500 resize-none"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={saving}
+              className="w-full py-2.5 px-4 rounded-xl text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 disabled:opacity-50 transition cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
+            >
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Megaphone className="w-4 h-4" />}
+              <span>{saving ? 'Publishing...' : 'Publish Sponsored Ad'}</span>
+            </button>
+          </form>
+        </Card>
+
+        {/* Live Campaigns Table */}
+        <Card className="lg:col-span-2 space-y-4">
+          <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+            <div>
+              <h3 className="font-bold text-sm text-slate-900 dark:text-white">Active Sponsored Campaigns</h3>
+              <p className="text-xs text-slate-400">Manage real-time sponsored banners running across Zulora AI</p>
+            </div>
+            <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300">
+              {ads.length} Total Ads
+            </span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 uppercase tracking-wider">
+                <tr>
+                  <th className="px-3 py-2.5 rounded-l-lg">Campaign</th>
+                  <th className="px-3 py-2.5">Placement</th>
+                  <th className="px-3 py-2.5">Status</th>
+                  <th className="px-3 py-2.5 text-right rounded-r-lg">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {ads.map(ad => (
+                  <tr key={ad.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                    <td className="px-3 py-3">
+                      <div className="flex items-center gap-2.5">
+                        {ad.imageUrl ? (
+                          <img 
+                            src={ad.imageUrl} 
+                            alt={ad.title} 
+                            className="w-9 h-9 rounded-lg object-cover border border-slate-200 dark:border-slate-700 shrink-0" 
+                            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                          />
+                        ) : (
+                          <div className="w-9 h-9 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center shrink-0">
+                            <ImageIcon className="w-4 h-4 text-slate-400" />
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <p className="font-bold text-slate-900 dark:text-white truncate max-w-[180px]">{ad.title}</p>
+                          <p className="text-[10px] text-slate-400 truncate">{ad.sponsorName} &bull; <a href={ad.targetUrl} target="_blank" rel="noreferrer" className="text-sky-500 hover:underline">Target Link</a></p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className="capitalize text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                        {ad.placement || 'Bottom'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <button
+                        onClick={() => handleToggleActive(ad.id, ad.active)}
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase transition cursor-pointer ${
+                          ad.active 
+                            ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-200' 
+                            : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-300'
+                        }`}
+                      >
+                        {ad.active ? 'Active' : 'Paused'}
+                      </button>
+                    </td>
+                    <td className="px-3 py-3 text-right">
+                      <button
+                        onClick={() => handleDeleteAd(ad.id)}
+                        className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
+                        title="Delete campaign"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {ads.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="text-center py-8 text-slate-400">
+                      No custom sponsor ads created yet. Create your first campaign on the left.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
+
+      {/* Live Ad Impression & Click Stream */}
+      <Card className="space-y-4">
+        <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+          <div>
+            <h3 className="font-bold text-sm text-slate-900 dark:text-white">Live Ad Interaction Stream</h3>
+            <p className="text-xs text-slate-400">Real-time impressions and clicks logged to Firestore adAnalytics</p>
+          </div>
+          <span className="text-xs font-semibold text-slate-400">Showing last {analytics.length} events</span>
+        </div>
+
+        <div className="overflow-x-auto max-h-60 overflow-y-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 sticky top-0 uppercase tracking-wider">
+              <tr>
+                <th className="px-3 py-2">Timestamp</th>
+                <th className="px-3 py-2">Action</th>
+                <th className="px-3 py-2">Campaign / Ad ID</th>
+                <th className="px-3 py-2">User ID</th>
+                <th className="px-3 py-2">Slot</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {analytics.slice(0, 50).map((ev, idx) => (
+                <tr key={ev.id || idx} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                  <td className="px-3 py-2 text-slate-400 whitespace-nowrap">
+                    {ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '-'}
+                  </td>
+                  <td className="px-3 py-2">
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                      ev.action === 'click' 
+                        ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300' 
+                        : 'bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300'
+                    }`}>
+                      {ev.action}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 font-semibold text-slate-800 dark:text-slate-200">
+                    {ev.adTitle || ev.adId}
+                  </td>
+                  <td className="px-3 py-2 text-slate-400 font-mono text-[11px] truncate max-w-[120px]">
+                    {ev.userId}
+                  </td>
+                  <td className="px-3 py-2 text-slate-400 capitalize">
+                    {ev.placement || 'Bottom'}
+                  </td>
+                </tr>
+              ))}
+              {analytics.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="text-center py-6 text-slate-400">
+                    No ad telemetry events recorded yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function ContentControl() {
   const [categories, setCategories] = useState([
     { id: 'chat', label: 'AI Chat & Multi-Provider Gateway', enabled: true, featured: true },
@@ -1062,6 +1449,8 @@ export default function AdminPanel() {
 
         {/* Tab Content */}
         {activeTab === 'users' && <UserManagement />}
+        {activeTab === 'ads' && <AdManagerTab />}
+        {activeTab === 'ads' && <AdManagerTab />}
         {activeTab === 'analytics' && <AnalyticsTab />}
         {activeTab === 'notify' && <NotificationsTab />}
         {activeTab === 'payments' && <PaymentsTab />}

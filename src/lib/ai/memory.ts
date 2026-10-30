@@ -1,17 +1,14 @@
 /**
  * memory.ts — Zulora AI Personal Context, Training Brain & Vault Indexer
  * =======================================================================
- * Bridges "AI Training & Personal Brain" and "Zulora Vault" into LLM inference:
- * - Reads user custom instructions, communication preferences, and domain rules from both
- *   `users/{userId}.ai_brain` and `users/{userId}/settings/ai_brain`.
- * - Reads user long-term vault preferences and key facts from both
- *   `users/{userId}/vault/personal` and `users/{userId}/settings/vault`.
+ * Bridges "AI Training & Personal Brain", "Zulora Vault", and "User Memory DB" into LLM inference:
+ * - Stores user preferences, past searches, active projects, and username in a dedicated Firestore user document.
  * - Ingests user-fed custom documents and research items from `users/{userId}/vault` and `users/{userId}/search_vault`.
  * - Compiles a structured, high-priority context block injected into the LLM system prompt.
  * - Automatically indexes conversation summaries and key user facts back into Firestore.
  */
 
-import { doc, getDoc, setDoc, updateDoc, collection, addDoc, query, orderBy, limit, getDocs } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, collection, addDoc, query, orderBy, limit, getDocs, arrayUnion } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 
 export interface AiBrainData {
@@ -29,9 +26,21 @@ export interface UserVaultData {
   updatedAt?: number;
 }
 
+export interface UserMemoryProfile {
+  username?: string;
+  pastSearches?: string[];
+  activeProjects?: string[];
+  preferences?: Record<string, any>;
+  lastActivityAt?: number;
+  lastSearchQuery?: string;
+  lastSearchAt?: number;
+  updatedAt?: number;
+}
+
 export interface UserPersonalMemory {
   brain: AiBrainData;
   vault: UserVaultData;
+  profile: UserMemoryProfile;
   recentFacts: string[];
   vaultDocuments: string[];
   compiledContextPrompt: string;
@@ -41,12 +50,11 @@ const MEMORY_CACHE = new Map<string, { data: UserPersonalMemory; timestamp: numb
 const CACHE_TTL_MS = 60_000; // 1 minute cache
 
 /**
- * Loads AI Brain settings from Firestore (checks both user document and settings subcollection)
+ * Loads AI Brain settings from Firestore
  */
 export async function getAiBrain(userId: string): Promise<AiBrainData> {
   if (!userId) return {};
   try {
-    // 1. Check user profile doc directly (where firestoreService.saveAiBrain stores it)
     const userDocSnap = await getDoc(doc(db, 'users', userId));
     if (userDocSnap.exists()) {
       const data = userDocSnap.data();
@@ -55,7 +63,6 @@ export async function getAiBrain(userId: string): Promise<AiBrainData> {
       }
     }
 
-    // 2. Check settings subcollection fallback
     const settingsSnap = await getDoc(doc(db, 'users', userId, 'settings', 'ai_brain'));
     if (settingsSnap.exists()) {
       return settingsSnap.data() as AiBrainData;
@@ -72,13 +79,11 @@ export async function getAiBrain(userId: string): Promise<AiBrainData> {
 export async function getUserVault(userId: string): Promise<UserVaultData> {
   if (!userId) return {};
   try {
-    // 1. Check vault/personal subcollection (where firestoreService.saveVault stores it)
     const personalVaultSnap = await getDoc(doc(db, 'users', userId, 'vault', 'personal'));
     if (personalVaultSnap.exists()) {
       return personalVaultSnap.data() as UserVaultData;
     }
 
-    // 2. Check settings/vault subcollection fallback
     const settingsVaultSnap = await getDoc(doc(db, 'users', userId, 'settings', 'vault'));
     if (settingsVaultSnap.exists()) {
       return settingsVaultSnap.data() as UserVaultData;
@@ -87,6 +92,105 @@ export async function getUserVault(userId: string): Promise<UserVaultData> {
     console.warn('[Memory] Failed to read User Vault from Firestore:', error);
   }
   return {};
+}
+
+/**
+ * Retrieves the dedicated User Memory Profile (username, past searches, active projects)
+ */
+export async function getUserMemoryProfile(userId: string): Promise<UserMemoryProfile> {
+  if (!userId) return {};
+  try {
+    // 1. Check dedicated memory subcollection
+    const memSnap = await getDoc(doc(db, 'users', userId, 'memory', 'profile'));
+    if (memSnap.exists()) {
+      return memSnap.data() as UserMemoryProfile;
+    }
+
+    // 2. Fallback to main user doc
+    const userSnap = await getDoc(doc(db, 'users', userId));
+    if (userSnap.exists()) {
+      const data = userSnap.data();
+      return {
+        username: data.displayName || data.username || '',
+        pastSearches: data.pastSearches || (data.lastSearchQuery ? [data.lastSearchQuery] : []),
+        activeProjects: data.activeProjects || [],
+        preferences: data.preferences || {},
+        lastActivityAt: data.lastActiveAt?.seconds ? data.lastActiveAt.seconds * 1000 : data.lastActiveAt,
+        lastSearchQuery: data.lastSearchQuery || '',
+        lastSearchAt: data.lastSearchAt
+      };
+    }
+  } catch (err) {
+    console.warn('[Memory] Failed to get user memory profile:', err);
+  }
+  return {};
+}
+
+/**
+ * Records a user search query into Firestore memory
+ */
+export async function recordUserSearch(userId: string, searchQuery: string): Promise<void> {
+  if (!userId || !searchQuery || searchQuery.trim().length < 2) return;
+  const clean = searchQuery.trim();
+
+  try {
+    const now = Date.now();
+    // Update main user document
+    await updateDoc(doc(db, 'users', userId), {
+      lastSearchQuery: clean,
+      lastSearchAt: now,
+      lastActiveAt: now,
+      pastSearches: arrayUnion(clean.slice(0, 100))
+    }).catch(async () => {
+      // If doc doesn't support update, use setDoc with merge
+      await setDoc(doc(db, 'users', userId), {
+        lastSearchQuery: clean,
+        lastSearchAt: now,
+        lastActiveAt: now,
+        pastSearches: [clean.slice(0, 100)]
+      }, { merge: true });
+    });
+
+    // Also update memory/profile doc
+    await setDoc(doc(db, 'users', userId, 'memory', 'profile'), {
+      lastSearchQuery: clean,
+      lastSearchAt: now,
+      lastActivityAt: now,
+      pastSearches: arrayUnion(clean.slice(0, 100)),
+      updatedAt: now
+    }, { merge: true });
+
+    MEMORY_CACHE.delete(userId);
+  } catch (err) {
+    console.debug('[Memory] recordUserSearch non-critical error:', err);
+  }
+}
+
+/**
+ * Records an active project into user's memory database
+ */
+export async function recordUserProject(userId: string, projectName: string, summary?: string): Promise<void> {
+  if (!userId || !projectName) return;
+  const cleanName = projectName.trim();
+
+  try {
+    const now = Date.now();
+    await setDoc(doc(db, 'users', userId, 'memory', 'profile'), {
+      activeProjects: arrayUnion(cleanName),
+      lastProject: cleanName,
+      lastProjectSummary: summary || '',
+      updatedAt: now
+    }, { merge: true });
+
+    await setDoc(doc(db, 'users', userId), {
+      activeProjects: arrayUnion(cleanName),
+      lastActiveAt: now
+    }, { merge: true });
+
+    MEMORY_CACHE.delete(userId);
+  } catch (err) {
+    console.debug('[Memory] recordUserProject error:', err);
+  }
 }
 
 /**
@@ -131,15 +235,21 @@ export async function getUserVaultDocuments(userId: string, count = 5): Promise<
 }
 
 /**
- * Compiles AI Brain & Vault into a unified, high-priority system prompt instruction
+ * Compiles AI Brain, Vault, and User Memory into a unified, high-priority system prompt instruction
  */
 export function compilePersonalContextPrompt(
   brain: AiBrainData, 
   vault: UserVaultData, 
+  profile: UserMemoryProfile = {},
   facts: string[] = [],
   documents: string[] = []
 ): string {
   const sections: string[] = [];
+
+  const userName = profile.username?.trim();
+  if (userName) {
+    sections.push(`- User Identity: Speaking with ${userName}. Address them naturally when appropriate.`);
+  }
 
   const style = (brain.talkStyle || vault.preferences || '').trim();
   if (style) {
@@ -154,6 +264,15 @@ export function compilePersonalContextPrompt(
   const domain = (brain.domainContext || '').trim();
   if (domain) {
     sections.push(`- Domain Knowledge, Work Context & Project Rules:\n  ${domain}`);
+  }
+
+  if (profile.activeProjects && profile.activeProjects.length > 0) {
+    sections.push(`- Active User Projects:\n  * ${profile.activeProjects.slice(0, 3).join('\n  * ')}`);
+  }
+
+  if (profile.pastSearches && profile.pastSearches.length > 0) {
+    const recentQueries = profile.pastSearches.slice(-4).reverse();
+    sections.push(`- Recent Exploration & Search History:\n  * ${recentQueries.join('\n  * ')}`);
   }
 
   const keyFacts = (vault.keyFacts || '').trim();
@@ -173,9 +292,9 @@ export function compilePersonalContextPrompt(
 
   return [
     '==================================================',
-    'PERSONAL BRAIN & ZULORA VAULT USER CONTEXT',
+    'PERSONAL BRAIN, VAULT & USER MEMORY CONTEXT',
     '==================================================',
-    'Follow these personalized preferences, instructions, and vault documents strictly throughout this session:',
+    'Follow these personalized preferences, instructions, and user memory context strictly throughout this session:',
     ...sections,
     '=================================================='
   ].join('\n');
@@ -192,16 +311,17 @@ export async function getUserPersonalContext(userId: string): Promise<string> {
     return cached.data.compiledContextPrompt;
   }
 
-  const [brain, vault, facts, documents] = await Promise.all([
+  const [brain, vault, profile, facts, documents] = await Promise.all([
     getAiBrain(userId),
     getUserVault(userId),
+    getUserMemoryProfile(userId),
     getRecentMemoryFacts(userId, 5),
     getUserVaultDocuments(userId, 5)
   ]);
 
-  const compiledContextPrompt = compilePersonalContextPrompt(brain, vault, facts, documents);
+  const compiledContextPrompt = compilePersonalContextPrompt(brain, vault, profile, facts, documents);
   MEMORY_CACHE.set(userId, {
-    data: { brain, vault, recentFacts: facts, vaultDocuments: documents, compiledContextPrompt },
+    data: { brain, vault, profile, recentFacts: facts, vaultDocuments: documents, compiledContextPrompt },
     timestamp: Date.now()
   });
 
@@ -229,6 +349,9 @@ export async function indexUserFact(userId: string, factText: string, category =
 export default {
   getAiBrain,
   getUserVault,
+  getUserMemoryProfile,
+  recordUserSearch,
+  recordUserProject,
   getUserPersonalContext,
   compilePersonalContextPrompt,
   indexUserFact

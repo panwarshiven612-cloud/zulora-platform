@@ -16,6 +16,8 @@ import ComputerPluginModal from '../components/ComputerPluginModal';
 import GuestGateModal from '../components/GuestGateModal';
 import { RewardModal } from '../components/ads/RewardModal';
 import { firestoreService } from '../services/firestoreService';
+import { checkAndScheduleInactivityReminder } from '../lib/firebase/notifications';
+import { db } from '../services/firebase';
 
 const AIStudio = lazy(() => import('./AIStudio'));
 
@@ -102,6 +104,13 @@ export const Dashboard = ({
       setActiveTab(initialTab);
     }
   }, [initialTab]);
+
+  // 24-Hour Personalized Inactivity Reminder Trigger
+  useEffect(() => {
+    if (currentUser?.uid && !guestMode) {
+      checkAndScheduleInactivityReminder(currentUser, userProfile, db).catch(() => {});
+    }
+  }, [currentUser?.uid, guestMode, userProfile]);
 
   // Load / Restore active chat session — with full defensive guards
   useEffect(() => {

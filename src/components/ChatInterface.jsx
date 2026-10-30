@@ -74,6 +74,7 @@ import ChatInput from './chat/ChatInput';
 import ConnectorsModal from './ConnectorsModal';
 import GuestGateModal from './GuestGateModal';
 import { AdBanner } from './ads/AdBanner';
+import { recordUserSearch } from '../lib/ai/memory';
 import { guestGate } from '../services/guestGate';
 import { backgroundTaskManager } from '../services/backgroundTaskManager';
 import { runFullVideoPipeline } from '../services/videoEditAgent';
@@ -1153,6 +1154,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
     if (!basePrompt) return;
 
     console.log('Sending message:', basePrompt);
+    if (currentUser?.uid) { recordUserSearch(currentUser.uid, basePrompt).catch(() => {}); }
 
     // Immediately reset input and file states for instant responsive feedback
     const activeAttachedFiles = [...attachments];
@@ -2072,7 +2074,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       <div
         ref={messagesContainerRef}
         onScroll={handleScroll}
-        className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-4 md:px-6 py-4 sm:py-6 space-y-6 scroll-smooth"
+        className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-4 md:px-6 py-4 sm:py-6 space-y-6 scroll-smooth overscroll-contain" style={{ willChange: 'scroll-position', WebkitOverflowScrolling: 'touch' }}
       >
         {messages.length === 0 ? (
           <WelcomeScreen user={{ displayName: currentUser?.displayName || (guestMode ? 'Guest' : 'Shiven') }} onSuggestion={(q) => sendMessage(q)} />
@@ -2157,6 +2159,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         <AdBanner
           onOpenRewards={onOpenRewards}
           tier={isPro ? 'pro' : (userProfile?.planTier || 'free')}
+          userId={currentUser?.uid || 'guest'}
         />
 
         {/* Disclaimer */}

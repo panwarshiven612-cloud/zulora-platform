@@ -1,4 +1,4 @@
-export { AdBanner } from './AdBanner';
-export { RewardModal } from './RewardModal';
-export default { AdBanner, RewardModal };
-
+export * from './AdBanner';
+export * from './RewardModal';
+export * from './SidePanelAdSlot';
+export * from './adAnalyticsService';

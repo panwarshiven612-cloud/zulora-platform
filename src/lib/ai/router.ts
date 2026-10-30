@@ -116,16 +116,16 @@ export function resolveModelRoute(
   const raw = String(preference || 'auto').trim().toLowerCase();
 
   // 1. Strict Explicit User Selection Overrides
-  if (raw === 'gemini-3.8-flash' || raw === 'gemini-3.8' || raw === 'gemini' || raw === 'gemini flash' || raw === 'flash' || raw === 'think' || raw === 'pro' || raw.includes('pro')) {
+  if (raw.includes('3.8') || raw === 'gemini-3.8-flash' || raw === 'gemini-3.8' || raw === 'think' || raw === 'pro' || (raw.includes('flash') && !raw.includes('lite') && !raw.includes('3.5'))) {
     return { provider: 'gemini', model: 'gemini-3.8-flash', isAuto: false, maxTokens: 40000, taskType: 'coding' };
   }
-  if (raw === 'gemini-3.5-flash-lite' || raw === 'gemini-3.5' || raw === 'flash lite' || raw === 'gemini lite' || raw === 'lite') {
+  if (raw.includes('3.5') || raw.includes('lite') || raw === 'gemini-3.5-flash-lite') {
     return { provider: 'gemini', model: 'gemini-3.5-flash-lite', isAuto: false, maxTokens: 16384, taskType: 'general' };
   }
-  if (raw === 'groq' || raw === 'groq lpu' || raw.includes('lpu') || raw.includes('groq')) {
+  if (raw.includes('groq') || raw.includes('lpu')) {
     return { provider: 'groq', model: 'llama-3.3-70b-versatile', isAuto: false, maxTokens: 16384, taskType: 'simple' };
   }
-  if (raw === 'openrouter' || raw === 'openrouter multi-provider' || raw.includes('openrouter')) {
+  if (raw.includes('openrouter') || raw.includes('meta-llama') || raw.includes('llama-3.3-70b-instruct')) {
     return { provider: 'openrouter', model: 'meta-llama/llama-3.3-70b-instruct', isAuto: false, maxTokens: 16384, taskType: 'general' };
   }
 

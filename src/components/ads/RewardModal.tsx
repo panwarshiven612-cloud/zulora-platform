@@ -11,7 +11,9 @@ import {
   ArrowRight,
   Award,
   Layers,
-  ChevronRight
+  ChevronRight,
+  ShieldAlert,
+  ShieldCheck
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { useAuth } from '../../context/AuthContext';
@@ -25,6 +27,8 @@ export interface RewardModalProps {
 const POINTS_PER_AD = 10;
 const PRO_REDEEM_THRESHOLD = 200;
 const AD_DURATION_SECONDS = 10;
+const AD_COOLDOWN_SECONDS = 60; // Anti-exploit cooldown between ad views
+const COOLDOWN_STORAGE_KEY = 'zulora_last_ad_watched_at';
 
 export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => {
   const { currentUser, userProfile, tier, refreshProfile } = useAuth();
@@ -38,14 +42,48 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
   const [redeeming, setRedeeming] = useState(false);
   const [redeemSuccess, setRedeemSuccess] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
+  const [cooldownSeconds, setCooldownSeconds] = useState(0);
 
   const timerRef = useRef<any>(null);
+  const cooldownRef = useRef<any>(null);
 
+  // Calculate cooldown state on modal open or userProfile update
   useEffect(() => {
+    const checkCooldown = () => {
+      let lastWatchedMs = 0;
+      if (userProfile?.lastAdWatchedAt) {
+        lastWatchedMs = new Date(userProfile.lastAdWatchedAt).getTime();
+      } else {
+        const stored = typeof window !== 'undefined' ? localStorage.getItem(COOLDOWN_STORAGE_KEY) : null;
+        if (stored) lastWatchedMs = Number(stored);
+      }
+
+      if (lastWatchedMs > 0) {
+        const diffMs = Date.now() - lastWatchedMs;
+        const remainingSec = Math.ceil((AD_COOLDOWN_SECONDS * 1000 - diffMs) / 1000);
+        if (remainingSec > 0) {
+          setCooldownSeconds(remainingSec);
+          return;
+        }
+      }
+      setCooldownSeconds(0);
+    };
+
+    checkCooldown();
+
+    // Live cooldown countdown
+    cooldownRef.current = setInterval(() => {
+      setCooldownSeconds(prev => {
+        if (prev <= 1) return 0;
+        return prev - 1;
+      });
+    }, 1000);
+
     return () => {
+      if (cooldownRef.current) clearInterval(cooldownRef.current);
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, []);
+  }, [userProfile?.lastAdWatchedAt, isOpen]);
 
   if (!isOpen) return null;
 
@@ -54,6 +92,13 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
       setNotification('Please sign in to save your reward points!');
       return;
     }
+
+    // Anti-exploit check
+    if (cooldownSeconds > 0) {
+      setNotification(`Anti-exploit cooldown active. Please wait ${cooldownSeconds}s before watching another ad.`);
+      return;
+    }
+
     setWatchingAd(true);
     setAdSecondsLeft(AD_DURATION_SECONDS);
     setAdFinished(false);
@@ -76,13 +121,21 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
     setWatchingAd(false);
     setAdFinished(true);
 
+    const nowIso = new Date().toISOString();
+    const nowMs = Date.now();
+    try {
+      localStorage.setItem(COOLDOWN_STORAGE_KEY, String(nowMs));
+    } catch {}
+
+    setCooldownSeconds(AD_COOLDOWN_SECONDS);
+
     if (!currentUser?.uid) return;
 
     try {
       const newPoints = currentPoints + POINTS_PER_AD;
       await firestoreService.updateUserProfile(currentUser.uid, {
         points: newPoints,
-        lastAdWatchedAt: new Date().toISOString()
+        lastAdWatchedAt: nowIso
       });
 
       // Trigger celebratory confetti
@@ -200,174 +253,166 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
                 <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 block">
                   Your Reward Balance
                 </span>
-                <div className="flex items-baseline gap-1.5 mt-0.5">
-                  <span className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white">
-                    {currentPoints}
-                  </span>
-                  <span className="text-xs font-bold text-slate-500 dark:text-slate-400">
-                    / {PRO_REDEEM_THRESHOLD} Points
-                  </span>
-                </div>
+                <p className="text-2xl font-black text-slate-900 dark:text-white flex items-baseline gap-1.5">
+                  <span>{currentPoints}</span>
+                  <span className="text-xs font-semibold text-slate-400">/ {PRO_REDEEM_THRESHOLD} pts</span>
+                </p>
               </div>
 
               <div className="text-right">
-                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-extrabold text-xs">
-                  <Zap className="w-3.5 h-3.5" />
-                  <span>{Math.round(progressPercent)}%</span>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 block">
+                  Pro Status
                 </span>
-                <p className="text-[10px] text-slate-400 mt-1">
-                  {currentPoints >= PRO_REDEEM_THRESHOLD 
-                    ? 'Ready to redeem!' 
-                    : `${PRO_REDEEM_THRESHOLD - currentPoints} pts to 1 Mo Pro`}
-                </p>
+                <span className={`text-xs font-extrabold px-2.5 py-1 rounded-lg inline-block ${
+                  isAlreadyPro 
+                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800'
+                    : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+                }`}>
+                  {isAlreadyPro ? 'Active Pro' : `${PRO_REDEEM_THRESHOLD - currentPoints} pts to Pro`}
+                </span>
               </div>
             </div>
 
             {/* Progress Bar */}
-            <div className="w-full h-3 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden p-0.5">
-              <div 
-                className="h-full rounded-full bg-gradient-to-r from-emerald-500 via-teal-500 to-sky-500 transition-all duration-500 shadow-xs"
-                style={{ width: `${progressPercent}%` }}
-              />
-            </div>
-
-            <div className="flex justify-between text-[10px] text-slate-400 font-semibold px-1">
-              <span>0 pts</span>
-              <span>100 pts</span>
-              <span className="text-emerald-600 dark:text-emerald-400 font-bold">200 pts (1 Mo Pro)</span>
+            <div className="space-y-1">
+              <div className="w-full h-2.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                <div 
+                  className="h-full bg-gradient-to-r from-emerald-500 via-teal-400 to-sky-500 rounded-full transition-all duration-500 ease-out"
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-[10px] text-slate-400 font-medium">
+                <span>0 pts</span>
+                <span>{Math.round(progressPercent)}% towards 1 Month Free Pro</span>
+                <span>200 pts</span>
+              </div>
             </div>
           </div>
 
-          {/* Active Rewarded Ad Player Screen */}
-          {watchingAd ? (
-            <div className="p-5 rounded-2xl border-2 border-emerald-400 bg-gradient-to-b from-slate-900 to-[#070b14] text-white shadow-xl text-center space-y-4 animate-scale-in">
-              <div className="flex items-center justify-center gap-2 text-xs font-bold text-emerald-400 tracking-wider uppercase">
-                <Clock className="w-4 h-4 animate-spin text-emerald-400" />
-                <span>Sponsored Video Playing</span>
-              </div>
-
-              <div className="py-6 px-4 rounded-xl bg-slate-800/60 border border-slate-700/60 relative overflow-hidden">
-                <p className="text-lg font-bold text-white mb-1">
-                  Ad in Progress...
-                </p>
-                <p className="text-xs text-slate-300 max-w-sm mx-auto mb-4">
-                  Please watch until the timer reaches zero to claim your reward of +10 points!
-                </p>
-
-                {/* Big Countdown Number */}
-                <div className="w-16 h-16 mx-auto rounded-full border-4 border-emerald-400/80 bg-emerald-500/20 flex items-center justify-center text-2xl font-black text-white shadow-lg">
-                  {adSecondsLeft}s
+          {/* Ad Viewing Panel */}
+          <div className="p-4 rounded-2xl border border-sky-100 dark:border-sky-950/70 bg-gradient-to-br from-sky-50/50 to-indigo-50/30 dark:from-sky-950/20 dark:to-indigo-950/20 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-sky-500 text-white">
+                  <Play className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-xs font-bold text-slate-900 dark:text-white">
+                    Watch Rewarded Ad (+10 Points)
+                  </h3>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    Watch for 10 seconds to earn points. Anti-exploit protected.
+                  </p>
                 </div>
               </div>
 
-              <p className="text-[11px] text-slate-400">
-                Reward will automatically be credited to your account upon completion.
-              </p>
+              {cooldownSeconds > 0 && !watchingAd && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-900 px-2 py-0.5 rounded-lg">
+                  <Clock className="w-3 h-3 animate-spin" />
+                  {cooldownSeconds}s cooldown
+                </span>
+              )}
             </div>
-          ) : (
-            /* Action Buttons: Watch Ad & Redeem Pro */
-            <div className="space-y-3">
-              {/* Watch Ad Button */}
+
+            {/* Active Ad Playing Card */}
+            {watchingAd ? (
+              <div className="p-4 rounded-xl border border-sky-300 dark:border-sky-800 bg-sky-50/90 dark:bg-sky-950/50 text-center space-y-2 animate-fade-slide">
+                <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-sky-500 text-white font-extrabold text-lg shadow-md animate-pulse">
+                  {adSecondsLeft}s
+                </div>
+                <p className="text-xs font-bold text-sky-900 dark:text-sky-200">
+                  Sponsored Video Ad in Progress...
+                </p>
+                <p className="text-[10px] text-sky-700 dark:text-sky-400">
+                  Please keep this window open. Your +10 points will credit automatically when timer hits 0.
+                </p>
+              </div>
+            ) : (
               <button
                 type="button"
                 onClick={handleStartWatchAd}
-                className="w-full flex items-center justify-between p-4 rounded-2xl border border-sky-300/80 bg-gradient-to-r from-sky-500 via-indigo-500 to-purple-600 text-white font-bold text-sm shadow-lg shadow-sky-500/25 hover:opacity-95 active:scale-[0.99] transition-all cursor-pointer group"
+                disabled={watchingAd || cooldownSeconds > 0}
+                className={`w-full py-3 px-4 rounded-xl text-xs font-extrabold flex items-center justify-center gap-2 transition shadow-sm ${
+                  cooldownSeconds > 0
+                    ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
+                    : 'bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-600 hover:to-indigo-700 text-white cursor-pointer active:scale-98'
+                }`}
               >
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center group-hover:scale-110 transition-transform">
-                    <Play className="w-5 h-5 fill-white" />
-                  </div>
-                  <div className="text-left">
-                    <p className="leading-tight">Watch Rewarded Ad</p>
-                    <p className="text-[11px] font-normal text-sky-100">10 seconds &bull; Earn +10 Points</p>
-                  </div>
-                </div>
-
-                <span className="px-2.5 py-1 rounded-xl bg-white/20 text-xs font-extrabold tracking-wide">
-                  +10 pts
-                </span>
+                {cooldownSeconds > 0 ? (
+                  <>
+                    <Clock className="w-4 h-4 text-amber-500 animate-spin" />
+                    <span>Cooldown active: Wait {cooldownSeconds}s before next ad</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-4 h-4 fill-white" />
+                    <span>Watch Short Ad &bull; Earn +10 Points</span>
+                  </>
+                )}
               </button>
+            )}
 
-              {/* Redeem 1 Month Free Pro Button */}
+            {/* Anti-exploit notice */}
+            <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+              <span>Anti-Exploit Security: 60-second cooldown applies between view credits.</span>
+            </div>
+          </div>
+
+          {/* Pro Redemption Card */}
+          <div className="p-4 rounded-2xl border border-emerald-200/80 dark:border-emerald-900/50 bg-gradient-to-br from-emerald-50/50 to-teal-50/30 dark:from-emerald-950/20 dark:to-teal-950/20 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-emerald-500 text-white">
+                  <Crown className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-xs font-bold text-slate-900 dark:text-white">
+                    Redeem 1 Month Free Pro Subscription
+                  </h3>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    Unlocks unlimited Gemini 3.8 Flash, 65k token thinking effort, high-res image & video tools.
+                  </p>
+                </div>
+              </div>
+
+              <span className="shrink-0 text-xs font-extrabold text-emerald-600 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/50 px-2.5 py-1 rounded-lg">
+                200 pts
+              </span>
+            </div>
+
+            {redeemSuccess ? (
+              <div className="p-3 rounded-xl bg-emerald-500 text-white text-center text-xs font-bold flex items-center justify-center gap-2 animate-bounce">
+                <CheckCircle2 className="w-4 h-4" />
+                <span>🎉 Congratulations! 1 Month Free Pro Subscription Activated!</span>
+              </div>
+            ) : (
               <button
                 type="button"
                 onClick={handleRedeemPro}
-                disabled={currentPoints < PRO_REDEEM_THRESHOLD || redeeming}
-                className={`w-full flex items-center justify-between p-4 rounded-2xl border font-bold text-sm transition-all ${
+                disabled={redeeming || currentPoints < PRO_REDEEM_THRESHOLD}
+                className={`w-full py-3 px-4 rounded-xl text-xs font-extrabold flex items-center justify-center gap-2 transition shadow-sm ${
                   currentPoints >= PRO_REDEEM_THRESHOLD
-                    ? 'border-emerald-400 bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-500/30 hover:opacity-95 active:scale-[0.99] cursor-pointer'
-                    : 'border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 text-slate-400 dark:text-slate-500 cursor-not-allowed'
+                    ? 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white cursor-pointer active:scale-98 animate-pulse'
+                    : 'bg-slate-200 dark:bg-slate-800 text-slate-400 dark:text-slate-600 cursor-not-allowed'
                 }`}
               >
-                <div className="flex items-center gap-3">
-                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${currentPoints >= PRO_REDEEM_THRESHOLD ? 'bg-white/20' : 'bg-slate-200 dark:bg-slate-800'}`}>
-                    <Crown className="w-5 h-5 text-amber-300" />
-                  </div>
-                  <div className="text-left">
-                    <p className="leading-tight">
-                      {redeeming ? 'Activating Pro Subscription...' : 'Redeem 1 Month Free Pro'}
-                    </p>
-                    <p className="text-[11px] font-normal opacity-85">
-                      {currentPoints >= PRO_REDEEM_THRESHOLD 
-                        ? 'Worth ₹299 &bull; Click to activate instantly!' 
-                        : `Need 200 Points (${currentPoints}/200)`}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs font-extrabold">200 pts</span>
-                  <ChevronRight className="w-4 h-4" />
-                </div>
+                {redeeming ? (
+                  <span>Activating Pro Subscription...</span>
+                ) : currentPoints >= PRO_REDEEM_THRESHOLD ? (
+                  <>
+                    <Crown className="w-4 h-4" />
+                    <span>Redeem 1 Month Free Pro Now!</span>
+                  </>
+                ) : (
+                  <>
+                    <Crown className="w-4 h-4" />
+                    <span>Need {PRO_REDEEM_THRESHOLD - currentPoints} More Points to Redeem Pro</span>
+                  </>
+                )}
               </button>
-            </div>
-          )}
-
-          {/* Success Screen after Redemption */}
-          {redeemSuccess && (
-            <div className="p-4 rounded-2xl border border-emerald-400 bg-emerald-50/90 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-100 text-center space-y-2 animate-scale-in">
-              <CheckCircle2 className="w-8 h-8 mx-auto text-emerald-500" />
-              <p className="font-extrabold text-sm">
-                🎉 Congratulations! Pro Subscription Activated!
-              </p>
-              <p className="text-xs text-emerald-700 dark:text-emerald-300">
-                You now have 30 days of free Pro access with 40k-65k tokens for coding, instant Groq LPU, and an ad-free workspace.
-              </p>
-            </div>
-          )}
-
-          {/* Perks list of Pro */}
-          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/70 dark:border-slate-800/70 space-y-2">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 block">
-              Pro Tier Perks Included
-            </span>
-            <ul className="text-xs text-slate-600 dark:text-slate-300 space-y-1.5">
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                <span><strong>40k - 65k Token Budget</strong> for full web apps &amp; coding</span>
-              </li>
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                <span><strong>Zulora Research 8-Part</strong> deep reporting framework</span>
-              </li>
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                <span><strong>Zero Ad Banners</strong> &amp; priority GPU/LPU compute</span>
-              </li>
-            </ul>
+            )}
           </div>
-        </div>
-
-        {/* Modal Footer */}
-        <div className="p-4 px-6 border-t border-slate-100 dark:border-slate-800/80 bg-slate-50/60 dark:bg-slate-900/40 flex items-center justify-between text-xs text-slate-400">
-          <span>1 Ad = 10 Pts &bull; 20 Ads = 1 Month Pro Free</span>
-          <button
-            type="button"
-            onClick={onClose}
-            className="font-semibold text-slate-600 dark:text-slate-300 hover:text-sky-500 transition-colors"
-          >
-            Done
-          </button>
         </div>
       </div>
     </div>
@@ -375,4 +420,3 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
 };
 
 export default RewardModal;
-
