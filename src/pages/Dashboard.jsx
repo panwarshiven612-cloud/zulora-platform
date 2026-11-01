@@ -12,7 +12,6 @@ import UsageLimitsModal from '../components/UsageLimitsModal';
 import PricingModal from '../components/PricingModal';
 import AccountSettings from './AccountSettings';
 import VoiceAgentModal from '../components/VoiceAgentModal';
-import ComputerPluginModal from '../components/ComputerPluginModal';
 import GuestGateModal from '../components/GuestGateModal';
 import { RewardModal } from '../components/ads/RewardModal';
 import { UserAdDashboard } from '../components/ads/UserAdDashboard';
@@ -93,7 +92,6 @@ export const Dashboard = ({
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
-  const [isComputerPluginOpen, setIsComputerPluginOpen] = useState(false);
   const [isRewardModalOpen, setIsRewardModalOpen] = useState(false);
   const [isAdDashboardOpen, setIsAdDashboardOpen] = useState(false);
   const [showGuestUpgrade, setShowGuestUpgrade] = useState(false);
@@ -252,7 +250,6 @@ export const Dashboard = ({
         onOpenSettings={() => setIsSettingsOpen(true)}
         onNewChat={handleNewChat}
         onOpenVoiceAssistant={guestMode ? undefined : () => setIsVoiceModalOpen(true)}
-        onOpenComputerPlugin={guestMode ? undefined : () => setIsComputerPluginOpen(true)}
         guestMode={guestMode}
         onSignIn={() => onNavigate?.('/login')}
       />
@@ -268,7 +265,6 @@ export const Dashboard = ({
           isMobileOpen={isMobileSidebarOpen}
           onCloseMobile={() => setIsMobileSidebarOpen(false)}
           setActiveTab={handleSelectTab}
-          onOpenComputerPlugin={guestMode ? undefined : () => setIsComputerPluginOpen(true)}
           onOpenRewards={() => setIsRewardModalOpen(true)}
           onOpenAdDashboard={() => setIsAdDashboardOpen(true)}
         />
@@ -354,11 +350,6 @@ export const Dashboard = ({
         />
       )}
 
-      {/* Computer Plugin Drawer */}
-      {!guestMode && <ComputerPluginModal
-        isOpen={isComputerPluginOpen}
-        onClose={() => setIsComputerPluginOpen(false)}
-      />}
       {guestMode && showGuestUpgrade && <GuestGateModal
         onSignIn={() => { setShowGuestUpgrade(false); onNavigate?.('/login'); }}
         onClose={() => setShowGuestUpgrade(false)}

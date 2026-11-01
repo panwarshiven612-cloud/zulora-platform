@@ -1061,13 +1061,28 @@ function AdCampaignManagerTab() {
   };
 
   const handleCheckWallet = async () => {
-    if (!walletUid.trim()) return;
+    const input = walletUid.trim();
+    if (!input) return;
     try {
-      const w = await getUserWallet(walletUid.trim());
+      // Check if input is a 12-digit UTR reference
+      if (/^\d{12}$/.test(input)) {
+        const q = query(collection(db, 'walletRequests'), where('utr', '==', input), limit(1));
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          const req = snap.docs[0].data();
+          setWalletUid(req.userId);
+          const w = await getUserWallet(req.userId);
+          setWalletCurrent(w);
+          setWalletAmount(String(req.amount || 100));
+          setWalletMsg(`Matched UTR ${input} -> User ${req.userEmail || req.userId}. Current Balance: ₹${w.balanceInr}. Req Amount: ₹${req.amount}`);
+          return;
+        }
+      }
+      const w = await getUserWallet(input);
       setWalletCurrent(w);
-      setWalletMsg(`Balance: ₹${w.balanceInr} | Total Spent: ₹${w.totalSpent || 0}`);
+      setWalletMsg(`User ${input.slice(0, 8)}... Balance: ₹${w.balanceInr} | Total Spent: ₹${w.totalSpent || 0}`);
     } catch (e) {
-      setWalletMsg('User wallet not found');
+      setWalletMsg('User or UTR reference not found');
     }
   };
 
@@ -1329,13 +1344,13 @@ function AdCampaignManagerTab() {
 
           <div className="space-y-3">
             <div>
-              <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">User UID</label>
+              <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">User UID or 12-Digit UTR Reference</label>
               <div className="flex gap-2">
                 <input
                   type="text"
                   value={walletUid}
                   onChange={e => setWalletUid(e.target.value)}
-                  placeholder="Firebase user UID"
+                  placeholder="User UID or 12-digit UTR"
                   className="flex-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-mono"
                 />
                 <button

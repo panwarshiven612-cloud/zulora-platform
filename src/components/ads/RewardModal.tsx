@@ -147,19 +147,46 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
 
     try {
       const newPoints = currentPoints + POINTS_PER_AD;
-      await firestoreService.updateUserProfile(currentUser.uid, {
-        points: newPoints,
-        lastAdWatchedAt: new Date().toISOString()
-      });
 
-      confetti({
-        particleCount: 80,
-        spread: 60,
-        origin: { y: 0.7 }
-      });
+      // Check for automatic Pro redemption milestone (200 points)
+      if (newPoints >= PRO_REDEEM_THRESHOLD) {
+        const oneMonthLater = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+        const remainingPoints = Math.max(0, newPoints - PRO_REDEEM_THRESHOLD);
 
-      setNotification(`🎉 +${POINTS_PER_AD} Points earned! Total: ${newPoints} pts. Next ad available in ${COOLDOWN_SECONDS}s.`);
-      await refreshProfile?.();
+        await firestoreService.updateUserProfile(currentUser.uid, {
+          tier: TIERS.PRO,
+          planTier: 'Pro',
+          proExpiresAt: oneMonthLater,
+          points: remainingPoints,
+          lastAdWatchedAt: new Date().toISOString(),
+          redeemedProAt: new Date().toISOString()
+        });
+
+        confetti({
+          particleCount: 180,
+          spread: 100,
+          origin: { y: 0.6 }
+        });
+
+        setRedeemSuccess(true);
+        setNotification('🎉 Milestone Reached: 200 Points! 1 Month Free Pro Subscription Automatically Activated!');
+        await refreshProfile?.();
+      } else {
+        // Normal points credit
+        await firestoreService.updateUserProfile(currentUser.uid, {
+          points: newPoints,
+          lastAdWatchedAt: new Date().toISOString()
+        });
+
+        confetti({
+          particleCount: 80,
+          spread: 60,
+          origin: { y: 0.7 }
+        });
+
+        setNotification(`🎉 +${POINTS_PER_AD} Points earned! Total: ${newPoints} pts. Next ad available in ${COOLDOWN_SECONDS}s.`);
+        await refreshProfile?.();
+      }
     } catch (err: any) {
       console.warn('Error crediting reward points:', err?.message);
       setNotification(`+${POINTS_PER_AD} Points credited! Next ad in ${COOLDOWN_SECONDS}s.`);
@@ -329,29 +356,60 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
                       muted
                       loop
                       playsInline
-                      className="w-full max-h-40 rounded-lg object-contain mx-auto mb-3"
+                      className="w-full max-h-48 rounded-xl object-contain mx-auto mb-3 bg-slate-900"
                     />
                   ) : (
                     <img
                       src={promoAd.imageUrl}
                       alt={promoAd.title}
-                      className="w-full max-h-36 rounded-lg object-contain mx-auto mb-3"
+                      className="w-full max-h-44 rounded-xl object-contain mx-auto mb-3 bg-slate-900 shadow-md"
                       onError={(e: React.SyntheticEvent<HTMLImageElement>) => {
                         e.currentTarget.style.display = 'none';
                       }}
                     />
                   )
-                ) : null}
+                ) : (
+                  /* High quality fallback promotional showcase when no custom ads uploaded yet */
+                  <div className="w-full py-5 px-3 rounded-xl bg-gradient-to-tr from-sky-900/60 via-indigo-950/60 to-purple-900/60 border border-sky-500/30 mb-3 text-center">
+                    <Crown className="w-10 h-10 text-amber-400 mx-auto mb-2 animate-bounce" />
+                    <p className="font-extrabold text-sm text-white">Zulora Pro Ultra Experience</p>
+                    <p className="text-[11px] text-sky-200 mt-1">Unlock 65k Token Budget, Instant Groq LPU, and Ad-Free Superintelligence</p>
+                  </div>
+                )}
 
-                <p className="text-base font-bold text-white mb-1">
-                  {promoAd?.title || 'Sponsored Zulora Partner'}
-                </p>
-                <p className="text-xs text-slate-300 max-w-sm mx-auto mb-3">
-                  {promoAd?.description || 'Watch until the timer reaches zero to claim your reward of +10 points!'}
-                </p>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="text-left min-w-0 flex-1">
+                    <p className="text-sm font-bold text-white truncate">
+                      {promoAd?.title || 'Zulora AI Pro Ultra'}
+                    </p>
+                    <p className="text-[11px] text-slate-300 line-clamp-2">
+                      {promoAd?.description || 'Earn 10 points per ad. 200 points automatically unlocks 1 Month Free Pro!'}
+                    </p>
+                  </div>
+
+                  {/* Clickable target link button during ad view */}
+                  <a
+                    href={promoAd?.targetUrl || 'https://zulora.in/pricing'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => {
+                      if (promoAd?.id && currentUser?.uid) {
+                        logAdClick(promoAd.id, currentUser.uid, {
+                          adTitle: promoAd.title,
+                          targetUrl: promoAd.targetUrl,
+                          placement: 'rewarded_modal'
+                        }).catch(() => {});
+                      }
+                    }}
+                    className="shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-[11px] transition shadow-xs"
+                  >
+                    <span>{promoAd?.ctaText || 'Visit Sponsor'}</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
 
                 {/* Big Countdown Number */}
-                <div className="w-16 h-16 mx-auto rounded-full border-4 border-emerald-400/80 bg-emerald-500/20 flex items-center justify-center text-2xl font-black text-white shadow-lg">
+                <div className="w-16 h-16 mx-auto rounded-full border-4 border-emerald-400/80 bg-emerald-500/20 flex items-center justify-center text-2xl font-black text-white shadow-lg mt-3">
                   {adSecondsLeft}s
                 </div>
               </div>
@@ -465,7 +523,7 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
 
         {/* Modal Footer */}
         <div className="p-4 px-6 border-t border-slate-100 dark:border-slate-800/80 bg-slate-50/60 dark:bg-slate-900/40 flex items-center justify-between text-xs text-slate-400">
-          <span>1 Ad = 10 Pts &bull; 200 Pts = 1 Month Pro Free &bull; 60s cooldown</span>
+          <span>1 Ad = 10 Pts &bull; 200 Pts = Auto 1 Month Pro Free &bull; 60s cooldown</span>
           <button
             type="button"
             onClick={onClose}

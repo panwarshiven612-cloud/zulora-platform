@@ -333,6 +333,9 @@ export const PricingModal = ({ isOpen, onClose }) => {
             {utrError && <p role="alert" className="text-xs text-rose-600 dark:text-rose-300">{utrError}</p>}
             {utrMessage && <p role="status" className="text-xs text-emerald-700 dark:text-emerald-300">{utrMessage}</p>}
             <p className="text-[11px] text-slate-500 dark:text-slate-400">Each UTR can be submitted once. The submitted UTR is recorded with your account.</p>
+            <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-[11px] text-amber-900 dark:text-amber-200">
+              <em>&quot;Send your UTR ID and payment screenshot to our WhatsApp (+91 6395211325) for fastest verification and wallet crediting within 1 hour.&quot;</em>
+            </div>
           </form>
         </div>
 

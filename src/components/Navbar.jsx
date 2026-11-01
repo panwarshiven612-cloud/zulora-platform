@@ -3,7 +3,7 @@ import {
   Sparkles, MessageSquare, Image as ImageIcon, Film,
   Sun, Moon, LogOut, ChevronDown, Menu, Zap, BarChart3,
   User, Crown, Settings, Clock, Shield,
-  Code2, Plus, Radio, Mic, Plug, FolderOpen
+  Code2, Plus, Radio, Mic, FolderOpen
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -18,7 +18,7 @@ const TAB_CONFIG = [
   { id: 'library', label: 'Library',     icon: FolderOpen,    description: 'Generated and uploaded assets' },
 ];
 
-const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, onNewChat, onOpenVoiceAssistant, onOpenComputerPlugin, guestMode = false, onSignIn }) => {
+const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, onNewChat, onOpenVoiceAssistant, guestMode = false, onSignIn }) => {
   const {
     currentUser, theme, toggleTheme, logout, tier,
     setIsUsageModalOpen, setIsPricingModalOpen, userProfile,
@@ -120,17 +120,7 @@ const Navbar = ({ activeTab, setActiveTab, onOpenMobileSidebar, onOpenSettings, 
             </button>
           )}
 
-          {/*  Computer Plugin button */}
-          {!guestMode && onOpenComputerPlugin && (
-            <button
-              onClick={onOpenComputerPlugin}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-300/60 dark:border-indigo-700/60 hover:border-indigo-400 shadow-sm transition-all flex-shrink-0"
-              title="Open Computer Plugin — Browser Automation"
-            >
-              <Plug className="w-3.5 h-3.5 text-indigo-500" />
-              <span className="hidden md:inline">Computer</span>
-            </button>
-          )}
+          
 
           {/* Usage */}
           {!guestMode && <button

@@ -18,10 +18,8 @@ import {
   MessageCircle,
   Brain,
   Database,
-  Plug,
   FolderOpen,
   Shield,
-  Download,
   Gift,
   BarChart2
 } from 'lucide-react';
@@ -38,7 +36,6 @@ export const Sidebar = ({
   isMobileOpen, 
   onCloseMobile,
   setActiveTab,
-  onOpenComputerPlugin,
   onOpenRewards,
   onOpenAdDashboard
 }) => {
@@ -362,16 +359,7 @@ export const Sidebar = ({
           <Database className="h-4 w-4 text-indigo-500" />
           <span>Zulora AI Vault</span>
         </button>
-        <button
-          onClick={() => {
-            onOpenComputerPlugin?.();
-            if (onCloseMobile) onCloseMobile();
-          }}
-          className="mt-1 flex w-full items-center gap-2 rounded-xl border border-violet-200/70 bg-violet-50/70 p-2.5 text-left text-xs font-semibold text-slate-700 transition-colors hover:border-violet-300 hover:bg-violet-100/80 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-slate-300 dark:hover:bg-violet-950/60"
-        >
-          <Plug className="h-4 w-4 text-violet-500" />
-          <span>Computer Plugin</span>
-        </button>
+        
         
         <button
           type="button"
@@ -590,13 +578,7 @@ export const Sidebar = ({
             >
               <Database className="w-5 h-5" />
             </button>
-            <button
-              onClick={() => onOpenComputerPlugin?.()}
-              className="p-2.5 rounded-xl text-slate-600 dark:text-slate-400 hover:text-violet-500 hover:bg-slate-100 dark:hover:bg-slate-800"
-              title="Computer Plugin"
-            >
-              <Plug className="w-5 h-5" />
-            </button>
+            
             <button
               onClick={() => setIsUsageModalOpen(true)}
               className="p-2.5 rounded-xl text-amber-500 hover:bg-slate-100 dark:hover:bg-slate-800"
