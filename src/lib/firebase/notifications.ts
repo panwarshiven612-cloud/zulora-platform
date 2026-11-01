@@ -4,6 +4,7 @@
  * Handles background push notifications when a user navigates away from
  * the tab while a heavy model query or video task is generating.
  * Deep-links directly back to the active chat session upon click.
+ * Includes 24-hour automated re-engagement reminders.
  */
 
 import { getToken, onMessage, type Messaging } from 'firebase/messaging';
@@ -145,7 +146,61 @@ export async function sendCompletionNotification(options: CompletionNotification
   }
 }
 
+/**
+ * 24-Hour Automated Re-engagement Reminder Service
+ * Triggers when users are inactive for 24 hours, combining their name and last project search
+ * e.g., "Zulora is waiting for you, Shiven! Let's continue building your web app."
+ */
+export async function checkAndTrigger24HourReminder(
+  userId: string,
+  userName: string = 'Explorer',
+  lastTopicOrProject: string = 'your AI project'
+): Promise<boolean> {
+  if (typeof window === 'undefined' || !('Notification' in window)) return false;
+  if (Notification.permission !== 'granted') return false;
+
+  const storageKey = `zulora_last_active_${userId}`;
+  const now = Date.now();
+  let lastActive = 0;
+  try {
+    lastActive = parseInt(localStorage.getItem(storageKey) || '0', 10);
+  } catch {}
+
+  // Update last active in localStorage
+  try {
+    localStorage.setItem(storageKey, now.toString());
+  } catch {}
+
+  // Check if user was away for > 24 hours (86,400,000 ms)
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+  if (lastActive > 0 && now - lastActive >= ONE_DAY_MS) {
+    const title = `Zulora is waiting for you, ${userName}!`;
+    const body = `Let's continue building ${lastTopicOrProject}. Your models and token budget are ready.`;
+    
+    try {
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.getRegistration('/firebase-messaging-sw.js') || await navigator.serviceWorker.ready;
+        if (reg && 'showNotification' in reg) {
+          await (reg as any).showNotification(title, {
+            body,
+            icon: '/favicon.ico',
+            tag: `zulora-reminder-${userId}`,
+            data: { url: '/dashboard', timestamp: now }
+          });
+          return true;
+        }
+      }
+      new Notification(title, { body, icon: '/favicon.ico' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 export default {
   requestNotificationPermission,
-  sendCompletionNotification
+  sendCompletionNotification,
+  checkAndTrigger24HourReminder
 };

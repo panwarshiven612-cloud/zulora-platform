@@ -22,7 +22,7 @@
 
 import React, { useCallback, useEffect, useState, useMemo } from 'react';
 import {
-  AlertTriangle, BarChart2, Bell, Check, ChevronDown, ChevronRight,
+  AlertTriangle, BarChart2, Bell, Megaphone, Wallet, Play, Pause, Check, ChevronDown, ChevronRight,
   Download, FileText, Loader2, Lock, LogOut, RefreshCw, Send,
   Settings2, Shield, ShieldOff, Sparkles, Trash2, User, Users,
   XCircle, DollarSign, Package, TrendingUp, MessageSquare, Search,
@@ -34,6 +34,10 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { useAuth } from '../../context/AuthContext';
+import { 
+  getAllCustomAds, updateAdCampaign, createAdCampaign, 
+  subscribeAdAnalytics, adjustUserWallet, getUserWallet
+} from '../../components/ads/adAnalyticsService';
 
 const ADMIN_EMAILS = new Set(['panwarshiven612@gmail.com', 'zulora.help@gmail.com']);
 
@@ -43,6 +47,7 @@ const TABS = [
   { id: 'notify',    label: 'FCM Push Broadcast',          icon: Bell },
   { id: 'payments',  label: 'Payments & Revenue',          icon: DollarSign },
   { id: 'content',   label: 'Feature Matrix',              icon: Package },
+  { id: 'ads',       label: 'Ad & Campaign Manager',       icon: Megaphone },
 ];
 
 const Card = ({ children, className = '' }) => (
@@ -960,6 +965,471 @@ function ContentControl() {
   );
 }
 
+
+// ─── AD CAMPAIGN & REACH ANALYTICS TAB ─────────────────────────────────────────
+function AdCampaignManagerTab() {
+  const [ads, setAds] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [actionMsg, setActionMsg] = useState(null);
+
+  // New Admin Ad form
+  const [newAd, setNewAd] = useState({
+    title: '',
+    description: '',
+    imageUrl: '',
+    targetUrl: '',
+    ctaText: 'Learn More',
+    placement: 'bottom_banner',
+    sponsorName: 'Zulora AI Official'
+  });
+  const [creatingAd, setCreatingAd] = useState(false);
+
+  // Wallet control
+  const [walletUid, setWalletUid] = useState('');
+  const [walletAmount, setWalletAmount] = useState('');
+  const [walletCurrent, setWalletCurrent] = useState(null);
+  const [walletMsg, setWalletMsg] = useState(null);
+
+  const loadAds = useCallback(async () => {
+    try {
+      setLoading(true);
+      const data = await getAllCustomAds();
+      setAds(data);
+    } catch (e) {
+      console.warn('Error loading ads:', e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadAds();
+    // Subscribe to live adAnalytics stream
+    const unsub = subscribeAdAnalytics((evts) => {
+      setEvents(evts.slice(0, 100));
+    });
+    return () => unsub();
+  }, [loadAds]);
+
+  const handleUpdateStatus = async (adId, newStatus) => {
+    try {
+      await updateAdCampaign(adId, { status: newStatus });
+      setAds(prev => prev.map(a => a.id === adId ? { ...a, status: newStatus } : a));
+      setActionMsg(`Ad status updated to ${newStatus}`);
+      setTimeout(() => setActionMsg(null), 3000);
+    } catch (err) {
+      setActionMsg('Failed to update status');
+    }
+  };
+
+  const handleCreateAdminAd = async (e) => {
+    e.preventDefault();
+    if (!newAd.title.trim() || !newAd.targetUrl.trim()) {
+      setActionMsg('Title and Target URL are required');
+      return;
+    }
+    setCreatingAd(true);
+    try {
+      const id = await createAdCampaign({
+        ...newAd,
+        status: 'active',
+        impressions: 0,
+        clicks: 0,
+        budgetInr: 99999,
+        impressionBudget: 1000000
+      });
+      if (id) {
+        setActionMsg('New Admin Ad published live!');
+        setNewAd({
+          title: '',
+          description: '',
+          imageUrl: '',
+          targetUrl: '',
+          ctaText: 'Learn More',
+          placement: 'bottom_banner',
+          sponsorName: 'Zulora AI Official'
+        });
+        await loadAds();
+      }
+    } catch (e) {
+      setActionMsg('Error creating ad');
+    } finally {
+      setCreatingAd(false);
+      setTimeout(() => setActionMsg(null), 4000);
+    }
+  };
+
+  const handleCheckWallet = async () => {
+    if (!walletUid.trim()) return;
+    try {
+      const w = await getUserWallet(walletUid.trim());
+      setWalletCurrent(w);
+      setWalletMsg(`Balance: ₹${w.balanceInr} | Total Spent: ₹${w.totalSpent || 0}`);
+    } catch (e) {
+      setWalletMsg('User wallet not found');
+    }
+  };
+
+  const handleAdjustWallet = async (delta) => {
+    if (!walletUid.trim() || !walletAmount) return;
+    const amount = Number(walletAmount);
+    if (isNaN(amount) || amount <= 0) return;
+    try {
+      await adjustUserWallet(walletUid.trim(), delta * amount);
+      const updated = await getUserWallet(walletUid.trim());
+      setWalletCurrent(updated);
+      setWalletMsg(`${delta > 0 ? 'Added' : 'Deducted'} ₹${amount}. New balance: ₹${updated.balanceInr}`);
+    } catch (e) {
+      setWalletMsg('Wallet adjustment failed');
+    }
+  };
+
+  const totalImpressions = ads.reduce((acc, a) => acc + (a.impressions || 0), 0);
+  const totalClicks = ads.reduce((acc, a) => acc + (a.clicks || 0), 0);
+  const overallCtr = totalImpressions > 0 ? ((totalClicks / totalImpressions) * 100).toFixed(2) : '0.00';
+
+  return (
+    <div className="space-y-6">
+      {/* Metrics Row */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <Card className="p-4">
+          <p className="text-[10px] font-bold uppercase text-slate-400">Total Campaigns</p>
+          <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">{ads.length}</p>
+        </Card>
+        <Card className="p-4">
+          <p className="text-[10px] font-bold uppercase text-slate-400">Total Ad Views</p>
+          <p className="text-2xl font-black text-sky-600 dark:text-sky-400 mt-1">{totalImpressions.toLocaleString()}</p>
+        </Card>
+        <Card className="p-4">
+          <p className="text-[10px] font-bold uppercase text-slate-400">Total Clicks</p>
+          <p className="text-2xl font-black text-violet-600 dark:text-violet-400 mt-1">{totalClicks.toLocaleString()}</p>
+        </Card>
+        <Card className="p-4">
+          <p className="text-[10px] font-bold uppercase text-slate-400">Average CTR</p>
+          <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400 mt-1">{overallCtr}%</p>
+        </Card>
+      </div>
+
+      {actionMsg && (
+        <div className="p-3 rounded-xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 text-xs font-semibold text-sky-700 dark:text-sky-300">
+          {actionMsg}
+        </div>
+      )}
+
+      {/* Campaigns Table */}
+      <Card className="space-y-4">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <Megaphone className="w-4 h-4 text-sky-500" />
+              All Ad Campaigns (Admin & User-Submitted)
+            </h3>
+            <p className="text-xs text-slate-500">Approve user campaigns or manage live platform ads</p>
+          </div>
+          <button
+            type="button"
+            onClick={loadAds}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Refresh
+          </button>
+        </div>
+
+        {loading ? (
+          <div className="py-8 text-center text-slate-400 text-xs">Loading campaigns...</div>
+        ) : ads.length === 0 ? (
+          <div className="py-8 text-center text-slate-400 text-xs">No ad campaigns found.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 text-left font-semibold">
+                  <th className="py-2.5 px-2">Campaign</th>
+                  <th className="py-2.5 px-2">Sponsor</th>
+                  <th className="py-2.5 px-2">Placement</th>
+                  <th className="py-2.5 px-2">Status</th>
+                  <th className="py-2.5 px-2 text-right">Views</th>
+                  <th className="py-2.5 px-2 text-right">Clicks</th>
+                  <th className="py-2.5 px-2 text-right">CTR</th>
+                  <th className="py-2.5 px-2 text-right">Budget</th>
+                  <th className="py-2.5 px-2 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                {ads.map(ad => {
+                  const ctr = (ad.impressions || 0) > 0 ? (((ad.clicks || 0) / ad.impressions) * 100).toFixed(2) : '0.00';
+                  return (
+                    <tr key={ad.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/30">
+                      <td className="py-2.5 px-2">
+                        <div className="flex items-center gap-2 max-w-[200px]">
+                          {ad.imageUrl && (
+                            <img src={ad.imageUrl} alt="" className="w-7 h-7 rounded-md object-cover bg-slate-100 dark:bg-slate-800 shrink-0" onError={e => { e.currentTarget.style.display = 'none'; }} />
+                          )}
+                          <div className="min-w-0">
+                            <p className="font-bold text-slate-900 dark:text-white truncate">{ad.title}</p>
+                            <a href={ad.targetUrl} target="_blank" rel="noreferrer" className="text-[10px] text-sky-500 truncate block hover:underline">
+                              {ad.targetUrl}
+                            </a>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-2 text-slate-500 font-medium max-w-[100px] truncate">
+                        {ad.sponsorName || (ad.sponsorUid ? ad.sponsorUid.slice(0, 8) + '...' : 'Admin')}
+                      </td>
+                      <td className="py-2.5 px-2 text-slate-400 capitalize text-[11px]">
+                        {ad.placement?.replace('_', ' ') || 'bottom banner'}
+                      </td>
+                      <td className="py-2.5 px-2">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                          ad.status === 'active' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400' :
+                          ad.status === 'pending' ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400' :
+                          ad.status === 'rejected' ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400' :
+                          'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+                        }`}>
+                          {ad.status}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-2 text-right font-semibold text-slate-700 dark:text-slate-300">
+                        {ad.impressions || 0}
+                      </td>
+                      <td className="py-2.5 px-2 text-right font-semibold text-slate-700 dark:text-slate-300">
+                        {ad.clicks || 0}
+                      </td>
+                      <td className="py-2.5 px-2 text-right font-semibold text-emerald-600">
+                        {ctr}%
+                      </td>
+                      <td className="py-2.5 px-2 text-right font-semibold text-slate-700 dark:text-slate-300">
+                        ₹{ad.budgetInr || 0}
+                      </td>
+                      <td className="py-2.5 px-2 text-right space-x-1">
+                        {ad.status !== 'active' && (
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateStatus(ad.id, 'active')}
+                            className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] transition"
+                            title="Approve / Activate"
+                          >
+                            Approve
+                          </button>
+                        )}
+                        {ad.status === 'active' && (
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateStatus(ad.id, 'paused')}
+                            className="px-2 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-[10px] transition"
+                            title="Pause"
+                          >
+                            Pause
+                          </button>
+                        )}
+                        {ad.status !== 'rejected' && (
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateStatus(ad.id, 'rejected')}
+                            className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] transition"
+                            title="Reject"
+                          >
+                            Reject
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {/* Grid: Create Admin Ad & User Wallet Control */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Create Official Admin Ad Card */}
+        <Card className="space-y-4">
+          <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-amber-500" />
+            Launch Official Admin Ad
+          </h3>
+          <p className="text-xs text-slate-500">Inject an active promotional card or banner immediately</p>
+
+          <form onSubmit={handleCreateAdminAd} className="space-y-3">
+            <div>
+              <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Ad Title *</label>
+              <input
+                type="text"
+                value={newAd.title}
+                onChange={e => setNewAd(a => ({ ...a, title: e.target.value }))}
+                placeholder="e.g. Try Zulora Pro Ultra Free"
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Target Link URL *</label>
+              <input
+                type="url"
+                value={newAd.targetUrl}
+                onChange={e => setNewAd(a => ({ ...a, targetUrl: e.target.value }))}
+                placeholder="https://zulora.in/pro"
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Image URL</label>
+                <input
+                  type="url"
+                  value={newAd.imageUrl}
+                  onChange={e => setNewAd(a => ({ ...a, imageUrl: e.target.value }))}
+                  placeholder="https://..."
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Placement</label>
+                <select
+                  value={newAd.placement}
+                  onChange={e => setNewAd(a => ({ ...a, placement: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
+                >
+                  <option value="bottom_banner">Bottom Banner</option>
+                  <option value="chat_sponsored_card">Chat Sponsored Card</option>
+                  <option value="sidebar">Sidebar Slot</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Description</label>
+              <input
+                type="text"
+                value={newAd.description}
+                onChange={e => setNewAd(a => ({ ...a, description: e.target.value }))}
+                placeholder="High-speed reasoning with 65k tokens"
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={creatingAd}
+              className="w-full py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 font-bold text-xs text-white transition disabled:opacity-50"
+            >
+              {creatingAd ? 'Publishing...' : 'Publish Official Ad'}
+            </button>
+          </form>
+        </Card>
+
+        {/* User Wallet & Fund Management */}
+        <Card className="space-y-4">
+          <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+            <Wallet className="w-4 h-4 text-emerald-500" />
+            User Wallet & Fund Control
+          </h3>
+          <p className="text-xs text-slate-500">Manually inspect or credit/deduct advertising wallet funds</p>
+
+          <div className="space-y-3">
+            <div>
+              <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">User UID</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={walletUid}
+                  onChange={e => setWalletUid(e.target.value)}
+                  placeholder="Firebase user UID"
+                  className="flex-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={handleCheckWallet}
+                  className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+                >
+                  Check
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Amount (₹ INR)</label>
+              <input
+                type="number"
+                value={walletAmount}
+                onChange={e => setWalletAmount(e.target.value)}
+                placeholder="100"
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-bold"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => handleAdjustWallet(1)}
+                className="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 font-bold text-xs text-white transition"
+              >
+                + Add Funds (₹)
+              </button>
+              <button
+                type="button"
+                onClick={() => handleAdjustWallet(-1)}
+                className="py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 font-bold text-xs text-white transition"
+              >
+                - Deduct Funds (₹)
+              </button>
+            </div>
+
+            {walletMsg && (
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                {walletMsg}
+              </div>
+            )}
+          </div>
+        </Card>
+      </div>
+
+      {/* Live Ad Reach Analytics Stream */}
+      <Card className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+            <Activity className="w-4 h-4 text-violet-500" />
+            Live Ad Reach & Event Stream (Firestore adAnalytics)
+          </h3>
+          <span className="text-[10px] text-slate-400 font-mono">Real-time stream ({events.length} events)</span>
+        </div>
+
+        <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1">
+          {events.length === 0 ? (
+            <p className="text-xs text-slate-400 py-4 text-center">No recent ad events logged yet.</p>
+          ) : (
+            events.map((evt, idx) => (
+              <div
+                key={evt.id || idx}
+                className="flex items-center justify-between gap-3 p-2 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/60 text-xs"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase ${
+                    evt.action === 'click' ? 'bg-sky-100 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300' :
+                    'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+                  }`}>
+                    {evt.action}
+                  </span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200 truncate max-w-[200px]">
+                    {evt.adTitle || evt.adId}
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-mono truncate max-w-[120px]">
+                    user: {evt.userId || 'guest'}
+                  </span>
+                </div>
+                <span className="text-[10px] text-slate-400 shrink-0">
+                  {evt.placement || 'bottom banner'}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 // ─── MAIN ADMIN PANEL COMPONENT ──────────────────────────────────────────────
 export default function AdminPanel() {
   const { currentUser, logout } = useAuth();
@@ -1066,6 +1536,7 @@ export default function AdminPanel() {
         {activeTab === 'notify' && <NotificationsTab />}
         {activeTab === 'payments' && <PaymentsTab />}
         {activeTab === 'content' && <ContentControl />}
+        {activeTab === 'ads' && <AdCampaignManagerTab />}
       </div>
     </div>
   );

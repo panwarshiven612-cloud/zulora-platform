@@ -10,8 +10,7 @@
     "test": "node --test src/__tests__/*.test.js",
     "cap:sync": "npx cap sync",
     "cap:build": "npm run build && npx cap sync",
-    "cap:android": "npx cap open android",
-    "build:apk": "bash scripts/build-apk.sh"
+    "cap:android": "npx cap open android"
   },
   "dependencies": {
     "@capacitor/android": "^8.6.0",

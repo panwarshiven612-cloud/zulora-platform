@@ -74,6 +74,7 @@ import ChatInput from './chat/ChatInput';
 import ConnectorsModal from './ConnectorsModal';
 import GuestGateModal from './GuestGateModal';
 import { AdBanner } from './ads/AdBanner';
+import { SponsoredCard } from './ads/SponsoredCard';
 import { guestGate } from '../services/guestGate';
 import { backgroundTaskManager } from '../services/backgroundTaskManager';
 import { runFullVideoPipeline } from '../services/videoEditAgent';
@@ -2151,6 +2152,12 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           enableWebSearch={enableWebSearch}
           onToggleWebSearch={() => setEnableWebSearch(value => !value)}
           onOpenConnectors={() => setShowConnectorsModal(true)}
+        />
+
+        {/* Sponsored Ad Card below response stream */}
+        <SponsoredCard
+          userId={currentUser?.uid || 'guest'}
+          tier={isPro ? 'pro' : (userProfile?.planTier || 'free')}
         />
 
         {/* ChatGPT-style bottom non-intrusive Ad Banner */}

@@ -11,11 +11,14 @@ import {
   ArrowRight,
   Award,
   Layers,
-  ChevronRight
+  ChevronRight,
+  Timer,
+  ExternalLink
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { useAuth } from '../../context/AuthContext';
 import { firestoreService, TIERS } from '../../services/firestoreService';
+import { getActiveCustomAds, logAdImpression, logAdClick, CustomAd } from './adAnalyticsService';
 
 export interface RewardModalProps {
   isOpen: boolean;
@@ -25,6 +28,7 @@ export interface RewardModalProps {
 const POINTS_PER_AD = 10;
 const PRO_REDEEM_THRESHOLD = 200;
 const AD_DURATION_SECONDS = 10;
+const COOLDOWN_SECONDS = 60;
 
 export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => {
   const { currentUser, userProfile, tier, refreshProfile } = useAuth();
@@ -38,18 +42,62 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
   const [redeeming, setRedeeming] = useState(false);
   const [redeemSuccess, setRedeemSuccess] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
+  const [cooldownSeconds, setCooldownSeconds] = useState(0);
+  const [promoAd, setPromoAd] = useState<CustomAd | null>(null);
 
   const timerRef = useRef<any>(null);
+  const cooldownRef = useRef<any>(null);
 
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
+      if (cooldownRef.current) clearInterval(cooldownRef.current);
     };
   }, []);
+
+  // Restore cooldown from localStorage on open and prefetch active promotional ad
+  useEffect(() => {
+    if (!isOpen) return;
+
+    if (currentUser?.uid) {
+      const key = `zulora_last_ad_watch_${currentUser.uid}`;
+      let last = 0;
+      try { last = parseInt(localStorage.getItem(key) || '0', 10); } catch (e) { /* ignore */ }
+      const elapsed = Math.floor((Date.now() - last) / 1000);
+      const remaining = Math.max(0, COOLDOWN_SECONDS - elapsed);
+      setCooldownSeconds(remaining);
+
+      if (remaining > 0) {
+        if (cooldownRef.current) clearInterval(cooldownRef.current);
+        cooldownRef.current = setInterval(() => {
+          setCooldownSeconds(prev => {
+            if (prev <= 1) {
+              clearInterval(cooldownRef.current);
+              return 0;
+            }
+            return prev - 1;
+          });
+        }, 1000);
+      }
+    }
+
+    // Prefetch an active promotional ad for the player
+    getActiveCustomAds().then(ads => {
+      if (ads && ads.length > 0) {
+        setPromoAd(ads[Math.floor(Math.random() * ads.length)]);
+      }
+    }).catch(() => {});
+
+    return () => {
+      if (cooldownRef.current) clearInterval(cooldownRef.current);
+    };
+  }, [isOpen, currentUser?.uid]);
 
   if (!isOpen) return null;
 
   const handleStartWatchAd = () => {
+    if (cooldownSeconds > 0) return;
     if (!currentUser?.uid) {
       setNotification('Please sign in to save your reward points!');
       return;
@@ -59,7 +107,11 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
     setAdFinished(false);
     setNotification(null);
 
-    // Countdown timer for 10 seconds
+    // Log impression for promo ad if present
+    if (promoAd?.id) {
+      logAdImpression(promoAd.id, currentUser.uid, { adTitle: promoAd.title, placement: 'rewarded_modal' }).catch(() => {});
+    }
+
     timerRef.current = setInterval(() => {
       setAdSecondsLeft(prev => {
         if (prev <= 1) {
@@ -78,6 +130,21 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
 
     if (!currentUser?.uid) return;
 
+    // Start 60-second anti-exploit cooldown immediately
+    const key = `zulora_last_ad_watch_${currentUser.uid}`;
+    try { localStorage.setItem(key, Date.now().toString()); } catch (e) { /* ignore */ }
+    setCooldownSeconds(COOLDOWN_SECONDS);
+    if (cooldownRef.current) clearInterval(cooldownRef.current);
+    cooldownRef.current = setInterval(() => {
+      setCooldownSeconds(prev => {
+        if (prev <= 1) {
+          clearInterval(cooldownRef.current);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
     try {
       const newPoints = currentPoints + POINTS_PER_AD;
       await firestoreService.updateUserProfile(currentUser.uid, {
@@ -85,18 +152,17 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
         lastAdWatchedAt: new Date().toISOString()
       });
 
-      // Trigger celebratory confetti
       confetti({
         particleCount: 80,
         spread: 60,
         origin: { y: 0.7 }
       });
 
-      setNotification(`🎉 +${POINTS_PER_AD} Points earned! Total: ${newPoints} pts.`);
+      setNotification(`🎉 +${POINTS_PER_AD} Points earned! Total: ${newPoints} pts. Next ad available in ${COOLDOWN_SECONDS}s.`);
       await refreshProfile?.();
     } catch (err: any) {
       console.warn('Error crediting reward points:', err?.message);
-      setNotification(`+${POINTS_PER_AD} Points credited!`);
+      setNotification(`+${POINTS_PER_AD} Points credited! Next ad in ${COOLDOWN_SECONDS}s.`);
     }
   };
 
@@ -122,7 +188,6 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
         redeemedProAt: new Date().toISOString()
       });
 
-      // Mega celebration confetti explosion
       confetti({
         particleCount: 160,
         spread: 90,
@@ -193,6 +258,14 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
             </div>
           )}
 
+          {/* Cooldown Active Banner */}
+          {cooldownSeconds > 0 && !watchingAd && (
+            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-xs font-semibold text-amber-800 dark:text-amber-200 flex items-center gap-2">
+              <Timer className="w-4 h-4 shrink-0 text-amber-500 animate-spin" />
+              <span>Anti-exploit cooldown active: next ad ready in <strong>{cooldownSeconds}s</strong></span>
+            </div>
+          )}
+
           {/* Points Progress Card */}
           <div className="p-4 rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/60 shadow-xs space-y-3">
             <div className="flex items-center justify-between">
@@ -246,12 +319,35 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
                 <span>Sponsored Video Playing</span>
               </div>
 
-              <div className="py-6 px-4 rounded-xl bg-slate-800/60 border border-slate-700/60 relative overflow-hidden">
-                <p className="text-lg font-bold text-white mb-1">
-                  Ad in Progress...
+              {/* Promotional Media Container */}
+              <div className="py-4 px-4 rounded-xl bg-slate-800/80 border border-slate-700/60 relative overflow-hidden">
+                {promoAd?.imageUrl ? (
+                  promoAd.imageUrl.endsWith('.mp4') || promoAd.imageUrl.endsWith('.webm') ? (
+                    <video
+                      src={promoAd.imageUrl}
+                      autoPlay
+                      muted
+                      loop
+                      playsInline
+                      className="w-full max-h-40 rounded-lg object-contain mx-auto mb-3"
+                    />
+                  ) : (
+                    <img
+                      src={promoAd.imageUrl}
+                      alt={promoAd.title}
+                      className="w-full max-h-36 rounded-lg object-contain mx-auto mb-3"
+                      onError={(e: React.SyntheticEvent<HTMLImageElement>) => {
+                        e.currentTarget.style.display = 'none';
+                      }}
+                    />
+                  )
+                ) : null}
+
+                <p className="text-base font-bold text-white mb-1">
+                  {promoAd?.title || 'Sponsored Zulora Partner'}
                 </p>
-                <p className="text-xs text-slate-300 max-w-sm mx-auto mb-4">
-                  Please watch until the timer reaches zero to claim your reward of +10 points!
+                <p className="text-xs text-slate-300 max-w-sm mx-auto mb-3">
+                  {promoAd?.description || 'Watch until the timer reaches zero to claim your reward of +10 points!'}
                 </p>
 
                 {/* Big Countdown Number */}
@@ -261,30 +357,39 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
               </div>
 
               <p className="text-[11px] text-slate-400">
-                Reward will automatically be credited to your account upon completion.
+                Reward will automatically be credited upon countdown completion.
               </p>
             </div>
           ) : (
             /* Action Buttons: Watch Ad & Redeem Pro */
             <div className="space-y-3">
-              {/* Watch Ad Button */}
+              {/* Watch Ad Button with Cooldown Guard */}
               <button
                 type="button"
-                onClick={handleStartWatchAd}
-                className="w-full flex items-center justify-between p-4 rounded-2xl border border-sky-300/80 bg-gradient-to-r from-sky-500 via-indigo-500 to-purple-600 text-white font-bold text-sm shadow-lg shadow-sky-500/25 hover:opacity-95 active:scale-[0.99] transition-all cursor-pointer group"
+                onClick={cooldownSeconds > 0 ? undefined : handleStartWatchAd}
+                disabled={cooldownSeconds > 0}
+                className={`w-full flex items-center justify-between p-4 rounded-2xl border font-bold text-sm transition-all ${
+                  cooldownSeconds > 0
+                    ? 'border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 text-slate-400 dark:text-slate-500 cursor-not-allowed'
+                    : 'border-sky-300/80 bg-gradient-to-r from-sky-500 via-indigo-500 to-purple-600 text-white shadow-lg shadow-sky-500/25 hover:opacity-95 active:scale-[0.99] cursor-pointer group'
+                }`}
               >
                 <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center group-hover:scale-110 transition-transform">
-                    <Play className="w-5 h-5 fill-white" />
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${cooldownSeconds > 0 ? 'bg-slate-200 dark:bg-slate-800' : 'bg-white/20 group-hover:scale-110 transition-transform'}`}>
+                    {cooldownSeconds > 0 ? <Timer className="w-5 h-5" /> : <Play className="w-5 h-5 fill-white" />}
                   </div>
                   <div className="text-left">
-                    <p className="leading-tight">Watch Rewarded Ad</p>
-                    <p className="text-[11px] font-normal text-sky-100">10 seconds &bull; Earn +10 Points</p>
+                    <p className="leading-tight">
+                      {cooldownSeconds > 0 ? `Wait ${cooldownSeconds}s before next ad` : 'Watch Rewarded Ad'}
+                    </p>
+                    <p className="text-[11px] font-normal opacity-85">
+                      {cooldownSeconds > 0 ? '60s anti-exploit cooldown' : '10 seconds &bull; Earn +10 Points'}
+                    </p>
                   </div>
                 </div>
 
-                <span className="px-2.5 py-1 rounded-xl bg-white/20 text-xs font-extrabold tracking-wide">
-                  +10 pts
+                <span className={`px-2.5 py-1 rounded-xl text-xs font-extrabold tracking-wide ${cooldownSeconds > 0 ? 'bg-slate-200 dark:bg-slate-800 text-slate-400' : 'bg-white/20'}`}>
+                  {cooldownSeconds > 0 ? `${cooldownSeconds}s` : '+10 pts'}
                 </span>
               </button>
 
@@ -360,7 +465,7 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
 
         {/* Modal Footer */}
         <div className="p-4 px-6 border-t border-slate-100 dark:border-slate-800/80 bg-slate-50/60 dark:bg-slate-900/40 flex items-center justify-between text-xs text-slate-400">
-          <span>1 Ad = 10 Pts &bull; 20 Ads = 1 Month Pro Free</span>
+          <span>1 Ad = 10 Pts &bull; 200 Pts = 1 Month Pro Free &bull; 60s cooldown</span>
           <button
             type="button"
             onClick={onClose}
@@ -375,4 +480,3 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
 };
 
 export default RewardModal;
-

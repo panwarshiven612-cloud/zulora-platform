@@ -15,7 +15,9 @@ import VoiceAgentModal from '../components/VoiceAgentModal';
 import ComputerPluginModal from '../components/ComputerPluginModal';
 import GuestGateModal from '../components/GuestGateModal';
 import { RewardModal } from '../components/ads/RewardModal';
+import { UserAdDashboard } from '../components/ads/UserAdDashboard';
 import { firestoreService } from '../services/firestoreService';
+import { checkAndTrigger24HourReminder } from '../lib/firebase/notifications';
 
 const AIStudio = lazy(() => import('./AIStudio'));
 
@@ -93,9 +95,19 @@ export const Dashboard = ({
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
   const [isComputerPluginOpen, setIsComputerPluginOpen] = useState(false);
   const [isRewardModalOpen, setIsRewardModalOpen] = useState(false);
+  const [isAdDashboardOpen, setIsAdDashboardOpen] = useState(false);
   const [showGuestUpgrade, setShowGuestUpgrade] = useState(false);
 
   const safeDisplayName = currentUser?.displayName || userProfile?.displayName || (guestMode ? 'Guest' : 'Shiven');
+
+  // 24-Hour automated re-engagement reminder check
+  useEffect(() => {
+    if (currentUser?.uid && !guestMode) {
+      const name = safeDisplayName || 'Explorer';
+      checkAndTrigger24HourReminder(currentUser.uid, name, 'your web app project').catch(() => {});
+    }
+  }, [currentUser?.uid, guestMode, safeDisplayName]);
+
 
   useEffect(() => {
     if (['chat', 'image', 'video', 'brain', 'vault', 'studio', 'library'].includes(initialTab)) {
@@ -258,6 +270,7 @@ export const Dashboard = ({
           setActiveTab={handleSelectTab}
           onOpenComputerPlugin={guestMode ? undefined : () => setIsComputerPluginOpen(true)}
           onOpenRewards={() => setIsRewardModalOpen(true)}
+          onOpenAdDashboard={() => setIsAdDashboardOpen(true)}
         />
 
         {/* Main Interactive Area — wrapped in DashboardErrorBoundary */}
@@ -319,6 +332,19 @@ export const Dashboard = ({
       <UsageLimitsModal isOpen={isUsageModalOpen} onClose={() => setIsUsageModalOpen(false)} />
       <PricingModal isOpen={isPricingModalOpen} onClose={() => setIsPricingModalOpen(false)} />
       {isSettingsOpen && <AccountSettings onClose={() => setIsSettingsOpen(false)} />}
+
+      {/* Self-Serve User Ad Dashboard Modal */}
+      {!guestMode && isAdDashboardOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-[130] flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-md animate-fade-slide"
+        >
+          <div className="relative w-full max-w-2xl h-[85vh] rounded-3xl border border-white/70 dark:border-slate-800 bg-white dark:bg-[#0c1222] shadow-2xl overflow-hidden">
+            <UserAdDashboard onClose={() => setIsAdDashboardOpen(false)} />
+          </div>
+        </div>
+      )}
 
       {/* Ad Reward Modal */}
       {!guestMode && (

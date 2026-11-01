@@ -1,5 +1,11 @@
-import type { Metadata } from 'next';
 import React from 'react';
+
+export interface Metadata {
+  title?: string;
+  description?: string;
+  other?: Record<string, string>;
+  [key: string]: any;
+}
 
 export const metadata: Metadata = {
   title: 'Zulora AI — Free Multi-Model AI Studio',
@@ -28,4 +34,3 @@ export default function RootLayout({
     </html>
   );
 }
-
