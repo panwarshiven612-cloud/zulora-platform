@@ -9,13 +9,13 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Plus, Wallet, TrendingUp, Eye, MousePointer, BarChart2,
+  Plus, Wallet, TrendingUp, Eye, Users, MousePointer, BarChart2,
   Play, Pause, Trash2, ChevronRight, AlertCircle, CheckCircle2,
   Loader2, X, Image, ExternalLink, IndianRupee, Target,
   QrCode, MessageCircle, Copy, Check
 } from 'lucide-react';
 import {
-  createAdCampaign, getUserAdCampaigns, updateAdCampaign,
+  createAdCampaign, getUserAdCampaigns, updateAdCampaign, deleteAdCampaign,
   getUserWallet, adjustUserWallet,
   CustomAd, UserWallet
 } from './adAnalyticsService';
@@ -151,26 +151,37 @@ export const UserAdDashboard: React.FC<UserAdDashboardProps> = ({ onClose }) => 
     if (!uid) { notify('error', 'Please sign in to create a campaign.'); return; }
     if (!form.title.trim()) { notify('error', 'Ad title is required.'); return; }
     if (!form.targetUrl.trim()) { notify('error', 'Target URL is required.'); return; }
-    if (wallet.balanceInr < MIN_FUND_INR) {
-      notify('error', `You need at least ₹${MIN_FUND_INR} in your wallet to launch a campaign. Please add funds in the Wallet tab.`);
+    const requiredBudget = Math.max(MIN_FUND_INR, Number(form.budgetInr || 100));
+    if (wallet.balanceInr < requiredBudget) {
+      notify('error', `You need at least ₹${requiredBudget} in your wallet to launch this campaign. Current balance: ₹${wallet.balanceInr}. Please add funds in the Wallet tab.`);
       setTab('wallet');
       return;
     }
 
     setCreating(true);
-    const impressionBudget = Math.floor((form.budgetInr / INR_PER_500_IMPRESSIONS) * 500);
+    const impressionBudget = Math.floor((requiredBudget / INR_PER_500_IMPRESSIONS) * 500);
     const id = await createAdCampaign({
       ...form,
       sponsorUid: uid,
       status: 'pending',
       impressions: 0,
+      uniqueViewers: 0,
+      viewerUids: [],
       clicks: 0,
       impressionBudget,
-      budgetInr: form.budgetInr
+      budgetInr: requiredBudget
     });
 
     if (id) {
-      notify('success', `Campaign submitted for review! It will go live after admin approval. (ID: ${id.slice(0, 8)}...)`);
+      // Immediately deduct required budget from advertising wallet balance
+      await adjustUserWallet(uid, -requiredBudget);
+      setWallet(prev => ({
+        ...prev,
+        balanceInr: Math.max(0, prev.balanceInr - requiredBudget),
+        totalSpent: prev.totalSpent + requiredBudget
+      }));
+
+      notify('success', `Campaign submitted for review! ₹${requiredBudget} deducted from ad wallet. It will go live after admin approval. (ID: ${id.slice(0, 8)}...)`);
       setForm({
         title: '',
         description: '',
@@ -187,6 +198,18 @@ export const UserAdDashboard: React.FC<UserAdDashboardProps> = ({ onClose }) => 
       notify('error', 'Failed to create campaign. Please try again.');
     }
     setCreating(false);
+  };
+
+  const handleDeleteCampaign = async (ad: CustomAd) => {
+    if (!ad.id) return;
+    if (!window.confirm('Are you sure you want to delete this campaign?')) return;
+    try {
+      await deleteAdCampaign(ad.id);
+      setCampaigns(prev => prev.filter(c => c.id !== ad.id));
+      notify('success', 'Campaign deleted successfully.');
+    } catch {
+      notify('error', 'Failed to delete campaign.');
+    }
   };
 
   const handleToggleCampaign = async (ad: CustomAd) => {
@@ -309,8 +332,9 @@ export const UserAdDashboard: React.FC<UserAdDashboardProps> = ({ onClose }) => 
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <StatChip label="Views" value={ad.impressions || 0} icon={<Eye className="w-4 h-4" />} color="text-sky-600" />
+                    <StatChip label="Viewers" value={ad.uniqueViewers || (ad.viewerUids ? ad.viewerUids.length : (ad.impressions ? 1 : 0))} icon={<Users className="w-4 h-4" />} color="text-indigo-600" />
                     <StatChip label="Clicks" value={ad.clicks || 0} icon={<MousePointer className="w-4 h-4" />} color="text-violet-600" />
                     <StatChip label="CTR" value={ctr(ad)} icon={<TrendingUp className="w-4 h-4" />} color="text-emerald-600" />
                   </div>
@@ -334,6 +358,13 @@ export const UserAdDashboard: React.FC<UserAdDashboardProps> = ({ onClose }) => 
                         {ad.status === 'active' ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
                       </button>
                     )}
+                    <button
+                      onClick={() => handleDeleteCampaign(ad)}
+                      className="p-1.5 rounded-lg text-rose-500 hover:text-rose-700 hover:bg-rose-100 dark:hover:bg-rose-950/40 transition-colors"
+                      title="Delete Campaign"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
               ))

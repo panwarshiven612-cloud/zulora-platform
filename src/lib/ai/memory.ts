@@ -226,10 +226,72 @@ export async function indexUserFact(userId: string, factText: string, category =
   }
 }
 
+/**
+ * Derives user interest tags from search history, brain settings, and indexed memory facts.
+ * Used for targeted ad matching and personalized response context.
+ */
+export async function getUserInterestTags(userId: string): Promise<string[]> {
+  if (!userId || userId === 'guest') return [];
+  try {
+    const [brain, facts, documents] = await Promise.all([
+      getAiBrain(userId),
+      getRecentMemoryFacts(userId, 5),
+      getUserVaultDocuments(userId, 5)
+    ]);
+
+    const tags = new Set<string>();
+    if (brain.domainContext) {
+      brain.domainContext.split(/[\s,._-]+/).forEach(w => {
+        if (w.length > 3) tags.add(w.toLowerCase());
+      });
+    }
+    for (const f of facts) {
+      f.split(/[\s,._-]+/).forEach(w => {
+        if (w.length > 3) tags.add(w.toLowerCase());
+      });
+    }
+    for (const d of documents) {
+      d.split(/[\s,._-]+/).forEach(w => {
+        if (w.length > 3) tags.add(w.toLowerCase());
+      });
+    }
+    return Array.from(tags).slice(0, 30);
+  } catch (err) {
+    console.warn('[Memory] Could not derive interest tags:', err);
+    return [];
+  }
+}
+
+/**
+ * Saves and updates user conversation history, project context, and state in Firestore.
+ */
+export async function saveUserConversationContext(
+  userId: string,
+  sessionId: string,
+  summaryOrProject: {
+    title?: string;
+    topics?: string[];
+    lastPrompt?: string;
+    summary?: string;
+  }
+): Promise<void> {
+  if (!userId || userId === 'guest' || !sessionId) return;
+  try {
+    await setDoc(doc(db, 'users', userId, 'chats', sessionId), {
+      ...summaryOrProject,
+      updatedAt: Date.now()
+    }, { merge: true });
+  } catch (err) {
+    console.warn('[Memory] Failed to save conversation context:', err);
+  }
+}
+
 export default {
   getAiBrain,
   getUserVault,
   getUserPersonalContext,
   compilePersonalContextPrompt,
-  indexUserFact
+  indexUserFact,
+  getUserInterestTags,
+  saveUserConversationContext
 };

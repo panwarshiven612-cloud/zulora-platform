@@ -3,22 +3,23 @@
  * =========================
  * Global Zulora Ad Broadcasting Service & Real-Time Hooks.
  * 
- * Key Architecture:
+ * Key Features:
  * 1. Global Multi-Collection Query: Listens to 'adCampaigns', 'adminAds', and 'customAds'
  *    in Firestore to catch all admin-created, approved, and user campaigns.
  * 2. Unrestricted Public Broadcast: Does NOT filter by userId, ensuring all active/approved
  *    campaigns are immediately broadcasted to all visitors globally.
- * 3. Composite Index Free: Queries collections and evaluates approval/active status in-memory,
- *    preventing Firestore missing composite index failures.
+ * 3. Composite Index Free: Queries collections and evaluates approval/active status in-memory.
  * 4. Real-time onSnapshot Synchronization: useActiveAds hook updates instantly when an admin
- *    approves or creates an ad.
- * 5. Complete Analytics: Tracks impressions and clicks into Firestore 'adAnalytics' collection.
+ *    approves, deletes, or creates an ad.
+ * 5. Accurate Views & Unique Viewers: Tracks total impressions (views) and deduplicated unique viewers (viewerUids).
+ * 6. User Interest-Based Targeting: Matches user interest tags and context prompt with ad descriptions.
+ * 7. Permanent Campaign Deletion: Allows admins to permanently delete unwanted ad campaigns.
  */
 
 import { useState, useEffect, useRef } from 'react';
 import {
-  collection, doc, addDoc, getDocs, onSnapshot,
-  updateDoc, increment, serverTimestamp
+  collection, doc, addDoc, getDoc, getDocs, onSnapshot,
+  updateDoc, deleteDoc, increment, serverTimestamp, arrayUnion
 } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 
@@ -42,6 +43,8 @@ export interface CustomAd {
   budgetInr?: number;
   impressionBudget?: number;
   impressions?: number;
+  uniqueViewers?: number;
+  viewerUids?: string[];
   clicks?: number;
   createdAt?: number;
   updatedAt?: number;
@@ -97,6 +100,10 @@ export function isAdActive(ad: Partial<CustomAd>): boolean {
  * Normalizes raw Firestore document data into a CustomAd object.
  */
 function normalizeAdDoc(id: string, data: any, sourceCollection: string): CustomAd {
+  const viewerUids = Array.isArray(data.viewerUids) ? data.viewerUids : [];
+  const impressions = Number(data.impressions || 0);
+  const uniqueViewers = Number(data.uniqueViewers || (viewerUids.length > 0 ? viewerUids.length : (impressions > 0 ? 1 : 0)));
+
   return {
     id,
     title: String(data.title || 'Featured Promotion').trim(),
@@ -111,7 +118,9 @@ function normalizeAdDoc(id: string, data: any, sourceCollection: string): Custom
     approved: Boolean(data.approved || data.status === 'active' || data.status === 'approved'),
     budgetInr: Number(data.budgetInr || 0),
     impressionBudget: Number(data.impressionBudget || 0),
-    impressions: Number(data.impressions || 0),
+    impressions,
+    uniqueViewers,
+    viewerUids,
     clicks: Number(data.clicks || 0),
     createdAt: Number(data.createdAt || Date.now()),
     updatedAt: Number(data.updatedAt || Date.now()),
@@ -136,6 +145,55 @@ export const DEFAULT_PROMO_AD: CustomAd = {
   approved: true,
   createdAt: Date.now()
 };
+
+/* ─── Interest-Based Ad Matching Helper ──────────────────────────────────── */
+
+/**
+ * Matches candidate ads against user interest tags & context keywords.
+ * Returns the highest-scoring relevant ad, or falls back to the freshest/random ad.
+ */
+export function getInterestTargetedAd(
+  ads: CustomAd[],
+  userInterests: string[] = [],
+  contextPrompt: string = ''
+): CustomAd | null {
+  if (!ads || ads.length === 0) return null;
+  if (ads.length === 1) return ads[0];
+
+  // Tokenize interests and context prompt into normalized lowercase keywords
+  const tokens = new Set<string>();
+  for (const tag of userInterests) {
+    String(tag || '').toLowerCase().split(/[\s,._-]+/).forEach(w => {
+      if (w.length > 2) tokens.add(w);
+    });
+  }
+  String(contextPrompt || '').toLowerCase().split(/[\s,._-]+/).forEach(w => {
+    if (w.length > 3) tokens.add(w);
+  });
+
+  if (tokens.size === 0) {
+    return ads[Math.floor(Math.random() * ads.length)];
+  }
+
+  let bestAd: CustomAd = ads[0];
+  let maxScore = -1;
+
+  for (const ad of ads) {
+    let score = 0;
+    const adText = `${ad.title} ${ad.description || ''} ${ad.targetUrl} ${ad.sponsorName || ''}`.toLowerCase();
+    for (const token of tokens) {
+      if (adText.includes(token)) {
+        score += token.length > 5 ? 3 : 1;
+      }
+    }
+    if (score > maxScore) {
+      maxScore = score;
+      bestAd = ad;
+    }
+  }
+
+  return bestAd;
+}
 
 /* ─── Global Real-Time Subscription ──────────────────────────────────────── */
 
@@ -279,7 +337,7 @@ export async function getActiveAds(placement?: AdPlacement | string): Promise<Cu
  * Broadcasts across bottom banners, sponsored cards, and rewarded modals.
  * When admin creates/approves an ad, activeAd updates instantly.
  */
-export function useActiveAds(placement?: AdPlacement | string) {
+export function useActiveAds(placement?: AdPlacement | string, contextPrompt?: string, userInterests?: string[]) {
   const [ads, setAds] = useState<CustomAd[]>([]);
   const [activeAd, setActiveAd] = useState<CustomAd | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -294,6 +352,17 @@ export function useActiveAds(placement?: AdPlacement | string) {
       setAds(fetchedAds);
 
       if (fetchedAds.length > 0) {
+        // If contextPrompt or userInterests exist, use smart targeting
+        if (contextPrompt || (userInterests && userInterests.length > 0)) {
+          const targeted = getInterestTargetedAd(fetchedAds, userInterests, contextPrompt);
+          if (targeted) {
+            activeAdIdRef.current = targeted.id || null;
+            setActiveAd(targeted);
+            setLoading(false);
+            return;
+          }
+        }
+
         // Keep current ad if still valid, otherwise pick one
         const currentStillActive = fetchedAds.find(a => a.id === activeAdIdRef.current);
         if (currentStillActive) {
@@ -314,15 +383,16 @@ export function useActiveAds(placement?: AdPlacement | string) {
       mounted = false;
       unsubscribe();
     };
-  }, [placement]);
+  }, [placement, contextPrompt, (userInterests || []).join(',')]);
 
   return { ads, activeAd, loading };
 }
 
-/* ─── Impression & Click Tracking ────────────────────────────────────────── */
+/* ─── Impression & Click Tracking (Views & Unique Viewers) ───────────────── */
 
 /**
  * Logs an impression to the 'adAnalytics' Firestore collection and increments document counter.
+ * Accurately tracks Views (total impressions) vs Viewers (unique viewer IDs).
  */
 export async function logAdImpression(
   adId: string,
@@ -333,12 +403,13 @@ export async function logAdImpression(
 
   const placement = meta.placement || 'bottom_banner';
   const adTitle = meta.adTitle || '';
+  const cleanUid = String(userId || 'guest').trim();
 
   try {
-    // 1. Record analytics event
+    // 1. Record analytics event in 'adAnalytics'
     await addDoc(collection(db, 'adAnalytics'), {
       adId,
-      userId: userId || 'guest',
+      userId: cleanUid,
       action: 'impression',
       adTitle,
       placement,
@@ -348,12 +419,31 @@ export async function logAdImpression(
     // 2. Increment impression counter on ad document across possible collections
     const collectionsToTry = meta.sourceCollection ? [meta.sourceCollection] : AD_COLLECTIONS;
     await Promise.allSettled(
-      collectionsToTry.map(coll =>
-        updateDoc(doc(db, coll, adId), {
+      collectionsToTry.map(async coll => {
+        const adRef = doc(db, coll, adId);
+        const snap = await getDoc(adRef);
+        if (!snap.exists()) return;
+        const currentData = snap.data();
+        const viewers: string[] = Array.isArray(currentData.viewerUids) ? currentData.viewerUids : [];
+        const isNewViewer = cleanUid !== 'guest' && !viewers.includes(cleanUid);
+
+        const updates: any = {
           impressions: increment(1),
           updatedAt: Date.now()
-        })
-      )
+        };
+
+        if (isNewViewer) {
+          updates.uniqueViewers = increment(1);
+          updates.viewerUids = arrayUnion(cleanUid);
+        } else if (!currentData.uniqueViewers) {
+          updates.uniqueViewers = 1;
+          if (cleanUid !== 'guest') {
+            updates.viewerUids = arrayUnion(cleanUid);
+          }
+        }
+
+        await updateDoc(adRef, updates);
+      })
     );
   } catch (err: any) {
     console.warn('[AdService] Failed to log ad impression:', err.message);
@@ -401,7 +491,7 @@ export async function logAdClick(
   }
 }
 
-/* ─── Campaign Creation & Admin Approval Updates ─────────────────────────── */
+/* ─── Campaign Creation, Deletion & Admin Approval Updates ───────────────── */
 
 /**
  * Creates an ad campaign in both 'adCampaigns' and 'customAds' collections
@@ -418,6 +508,8 @@ export async function createAdCampaign(ad: Partial<CustomAd>): Promise<string> {
       status,
       approved,
       impressions: Number(ad.impressions || 0),
+      uniqueViewers: 0,
+      viewerUids: [],
       clicks: Number(ad.clicks || 0),
       createdAt: ad.createdAt || Date.now(),
       updatedAt: Date.now()
@@ -454,6 +546,22 @@ export async function updateAdCampaign(adId: string, updates: Partial<CustomAd>)
   );
 }
 
+/**
+ * Permanently deletes an ad campaign across all ad collections in Firestore.
+ */
+export async function deleteAdCampaign(adId: string): Promise<boolean> {
+  if (!adId) return false;
+  try {
+    await Promise.allSettled(
+      AD_COLLECTIONS.map(coll => deleteDoc(doc(db, coll, adId)))
+    );
+    return true;
+  } catch (err: any) {
+    console.warn('[AdService] deleteAdCampaign failed:', err.message);
+    return false;
+  }
+}
+
 export default {
   useActiveAds,
   subscribeToActiveAds,
@@ -462,8 +570,9 @@ export default {
   logAdClick,
   createAdCampaign,
   updateAdCampaign,
+  deleteAdCampaign,
+  getInterestTargetedAd,
   isAdActive,
   DEFAULT_PROMO_AD,
   AD_COLLECTIONS
 };
-

@@ -12,12 +12,16 @@ export interface SponsoredCardProps {
   userId?: string;
   tier?: string;
   className?: string;
+  contextPrompt?: string;
+  userInterests?: string[];
 }
 
 export const SponsoredCard: React.FC<SponsoredCardProps> = ({
   userId = 'guest',
   tier = 'free',
-  className = ''
+  className = '',
+  contextPrompt = '',
+  userInterests = []
 }) => {
   const [dismissed, setDismissed] = useState(false);
   const loggedImpressionAdIdRef = useRef<string | null>(null);
@@ -26,7 +30,7 @@ export const SponsoredCard: React.FC<SponsoredCardProps> = ({
   const isPaidUser = tier === 'pro' || tier === 'ultra';
 
   // Global real-time listener for chat sponsored cards / bottom banners
-  const { ads, activeAd, loading } = useActiveAds('chat_sponsored_card');
+  const { ads, activeAd, loading } = useActiveAds('chat_sponsored_card', contextPrompt, userInterests);
   const ad: CustomAd | null = activeAd || (ads.length > 0 ? ads[0] : null);
 
   useEffect(() => {

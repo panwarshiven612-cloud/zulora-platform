@@ -35,7 +35,7 @@ import {
 import { db } from '../../services/firebase';
 import { useAuth } from '../../context/AuthContext';
 import { 
-  getAllCustomAds, updateAdCampaign, createAdCampaign, 
+  getAllCustomAds, updateAdCampaign, createAdCampaign, deleteAdCampaign, 
   subscribeAdAnalytics, adjustUserWallet, getUserWallet
 } from '../../components/ads/adAnalyticsService';
 
@@ -1023,6 +1023,18 @@ function AdCampaignManagerTab() {
     }
   };
 
+  const handleDeleteCampaign = async (adId) => {
+    if (!window.confirm('Are you sure you want to permanently delete this ad campaign?')) return;
+    try {
+      await deleteAdCampaign(adId);
+      setAds(prev => prev.filter(a => a.id !== adId));
+      setActionMsg('Ad campaign permanently deleted');
+      setTimeout(() => setActionMsg(null), 3000);
+    } catch (err) {
+      setActionMsg('Failed to delete campaign');
+    }
+  };
+
   const handleCreateAdminAd = async (e) => {
     e.preventDefault();
     if (!newAd.title.trim() || !newAd.targetUrl.trim()) {
@@ -1101,28 +1113,33 @@ function AdCampaignManagerTab() {
   };
 
   const totalImpressions = ads.reduce((acc, a) => acc + (a.impressions || 0), 0);
+  const totalUniqueViewers = ads.reduce((acc, a) => acc + (a.uniqueViewers || (a.viewerUids ? a.viewerUids.length : (a.impressions ? 1 : 0))), 0);
   const totalClicks = ads.reduce((acc, a) => acc + (a.clicks || 0), 0);
   const overallCtr = totalImpressions > 0 ? ((totalClicks / totalImpressions) * 100).toFixed(2) : '0.00';
 
   return (
     <div className="space-y-6">
       {/* Metrics Row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <Card className="p-4">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <Card className="p-3.5">
           <p className="text-[10px] font-bold uppercase text-slate-400">Total Campaigns</p>
-          <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">{ads.length}</p>
+          <p className="text-xl font-black text-slate-900 dark:text-white mt-1">{ads.length}</p>
         </Card>
-        <Card className="p-4">
-          <p className="text-[10px] font-bold uppercase text-slate-400">Total Ad Views</p>
-          <p className="text-2xl font-black text-sky-600 dark:text-sky-400 mt-1">{totalImpressions.toLocaleString()}</p>
+        <Card className="p-3.5">
+          <p className="text-[10px] font-bold uppercase text-slate-400">Total Views</p>
+          <p className="text-xl font-black text-sky-600 dark:text-sky-400 mt-1">{totalImpressions.toLocaleString()}</p>
         </Card>
-        <Card className="p-4">
+        <Card className="p-3.5">
+          <p className="text-[10px] font-bold uppercase text-slate-400">Unique Viewers</p>
+          <p className="text-xl font-black text-indigo-600 dark:text-indigo-400 mt-1">{totalUniqueViewers.toLocaleString()}</p>
+        </Card>
+        <Card className="p-3.5">
           <p className="text-[10px] font-bold uppercase text-slate-400">Total Clicks</p>
-          <p className="text-2xl font-black text-violet-600 dark:text-violet-400 mt-1">{totalClicks.toLocaleString()}</p>
+          <p className="text-xl font-black text-violet-600 dark:text-violet-400 mt-1">{totalClicks.toLocaleString()}</p>
         </Card>
-        <Card className="p-4">
+        <Card className="p-3.5">
           <p className="text-[10px] font-bold uppercase text-slate-400">Average CTR</p>
-          <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400 mt-1">{overallCtr}%</p>
+          <p className="text-xl font-black text-emerald-600 dark:text-emerald-400 mt-1">{overallCtr}%</p>
         </Card>
       </div>
 
@@ -1166,6 +1183,7 @@ function AdCampaignManagerTab() {
                   <th className="py-2.5 px-2">Placement</th>
                   <th className="py-2.5 px-2">Status</th>
                   <th className="py-2.5 px-2 text-right">Views</th>
+                  <th className="py-2.5 px-2 text-right">Viewers</th>
                   <th className="py-2.5 px-2 text-right">Clicks</th>
                   <th className="py-2.5 px-2 text-right">CTR</th>
                   <th className="py-2.5 px-2 text-right">Budget</th>
@@ -1209,6 +1227,9 @@ function AdCampaignManagerTab() {
                       <td className="py-2.5 px-2 text-right font-semibold text-slate-700 dark:text-slate-300">
                         {ad.impressions || 0}
                       </td>
+                      <td className="py-2.5 px-2 text-right font-semibold text-indigo-600 dark:text-indigo-400">
+                        {ad.uniqueViewers || (ad.viewerUids ? ad.viewerUids.length : (ad.impressions ? 1 : 0))}
+                      </td>
                       <td className="py-2.5 px-2 text-right font-semibold text-slate-700 dark:text-slate-300">
                         {ad.clicks || 0}
                       </td>
@@ -1249,6 +1270,14 @@ function AdCampaignManagerTab() {
                             Reject
                           </button>
                         )}
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteCampaign(ad.id)}
+                          className="px-2 py-1 rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-rose-600 hover:text-white text-slate-600 dark:text-slate-300 font-bold text-[10px] transition ml-1"
+                          title="Delete Permanently"
+                        >
+                          <Trash2 className="w-3 h-3 inline" />
+                        </button>
                       </td>
                     </tr>
                   );

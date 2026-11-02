@@ -20,10 +20,12 @@ import {
   getActiveAds,
   createAdCampaign as serviceCreateCampaign,
   updateAdCampaign as serviceUpdateCampaign,
+  deleteAdCampaign as serviceDeleteCampaign,
   logAdImpression as serviceLogImpression,
   logAdClick as serviceLogClick,
   useActiveAds,
   subscribeToActiveAds,
+  getInterestTargetedAd,
   AD_COLLECTIONS,
   DEFAULT_PROMO_AD
 } from '../../lib/ads/adService';
@@ -43,7 +45,13 @@ export interface UserWallet {
 }
 
 // Re-export core functions from adService
-export { useActiveAds, subscribeToActiveAds, DEFAULT_PROMO_AD, AD_COLLECTIONS };
+export {
+  useActiveAds,
+  subscribeToActiveAds,
+  getInterestTargetedAd,
+  DEFAULT_PROMO_AD,
+  AD_COLLECTIONS
+};
 
 /* ─── Ad Campaign CRUD ───────────────────────────────────────────────────── */
 
@@ -122,6 +130,10 @@ export async function getUserAdCampaigns(uid: string): Promise<CustomAd[]> {
 
 export async function updateAdCampaign(id: string, updates: Partial<CustomAd>): Promise<void> {
   return serviceUpdateCampaign(id, updates);
+}
+
+export async function deleteAdCampaign(id: string): Promise<boolean> {
+  return serviceDeleteCampaign(id);
 }
 
 /* ─── Event Logging ─────────────────────────────────────────────────────── */

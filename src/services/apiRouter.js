@@ -68,7 +68,7 @@ const CLOUDFLARE_TOKEN = getEnv('VITE_CLOUDFLARE_API_TOKEN');
 // Round-robin tracking index
 let activeGeminiIdx = 0;
 const geminiKeyPerformance = new Map();
-const CODE_GENERATION_MAX_TOKENS = 32_768;
+const CODE_GENERATION_MAX_TOKENS = 65_536;
 
 const providerSystemPrompt = options => [
   buildSystemPrompt(options.contextMemory, undefined, options.aiBrain, options.userVault),
@@ -99,12 +99,12 @@ export const MODEL_TIERS = {
     id: 'gemini-3.8-flash',
     label: 'Gemini 3.8 Flash',
     shortLabel: '3.8 Flash',
-    description: 'Next-gen multimodal speed with sub-second response times',
-    badge: '⚡',
+    description: 'High capacity 65k token budget for coding, web apps & motion graphics',
+    badge: '65k Tokens',
     color: 'text-amber-500',
     geminiModel: 'gemini-3.8-flash',
     groqModel: GROQ_MODELS.primary,
-    maxTokens: 8192,
+    maxTokens: 65536,
     tier: 'free',
   },
   'gemini-3.5-flash-lite': {

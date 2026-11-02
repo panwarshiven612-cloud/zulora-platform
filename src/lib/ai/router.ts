@@ -85,8 +85,8 @@ export function getRotatedKeys(
   return [...pool.slice(start), ...pool.slice(0, start)];
 }
 
-export const CODING_REGEX = /\b(?:code|coding|function|class|component|refactor|debug|typescript|javascript|python|rust|golang|c\+\+|html|css|sql|regex|algorithm|api\s*route|backend|frontend|react|vue|svelte|nextjs|vite|build\s+(?:a\s+)?(?:website|web\s*app|site|dashboard))\b/i;
-export const VIDEO_REGEX = /\b(?:video|animation|motion|motion\s*graphics?|render|timeline|storyboard|gsap|canvas|keyframe|1080x1920|9:16|mp4|ffmpeg)\b/i;
+export const CODING_REGEX = /\b(?:code|coding|function|class|component|refactor|debug|typescript|javascript|python|rust|golang|c\+\+|html|css|sql|regex|algorithm|api\s*route|backend|frontend|react|vue|svelte|nextjs|vite|build\s+(?:a\s+)?(?:website|web\s*app|site|dashboard|application|saas|landing\s*page|full[- ]stack))\b/i;
+export const VIDEO_REGEX = /\b(?:video|animation|motion|motion\s*graphics?|render|timeline|storyboard|gsap|canvas|keyframe|1080x1920|9:16|mp4|ffmpeg|ui\/ux\s*animation|lottie|threejs|webgl|shader|kinetic)\b/i;
 export const RESEARCH_REGEX = /\b(?:research|deep\s*dive|in-depth|cite|citation|paper|sources|benchmark|analysis|audit|compare|investigate|thorough|market\s*analysis|competitive\s*analysis|landscape|evaluation|comprehensive|detailed\s*report|literature\s*review|whitepaper)\b/i;
 
 export function classifyTaskType(prompt: string, hasAttachments = false): 'simple' | 'coding' | 'video' | 'research' | 'general' {
@@ -117,7 +117,7 @@ export function resolveModelRoute(
 
   // 1. Strict Explicit User Selection Overrides
   if (raw === 'gemini-3.8-flash' || raw === 'gemini-3.8' || raw === 'gemini' || raw === 'gemini flash' || raw === 'flash' || raw === 'think' || raw === 'pro' || raw.includes('pro')) {
-    return { provider: 'gemini', model: 'gemini-3.8-flash', isAuto: false, maxTokens: 40000, taskType: 'coding' };
+    return { provider: 'gemini', model: 'gemini-3.8-flash', isAuto: false, maxTokens: 65536, taskType: 'coding' };
   }
   if (raw === 'gemini-3.5-flash-lite' || raw === 'gemini-3.5' || raw === 'flash lite' || raw === 'gemini lite' || raw === 'lite') {
     return { provider: 'gemini', model: 'gemini-3.5-flash-lite', isAuto: false, maxTokens: 16384, taskType: 'general' };
@@ -132,13 +132,13 @@ export function resolveModelRoute(
   // 2. Smart Auto Waterfall
   const taskType = classifyTaskType(prompt, hasAttachments);
 
-  // Coding & Complex Video Generation -> Gemini 3.8 Flash with 40,000 token execution budget
+  // Coding, Full-Scale Web Apps & Motion Graphics -> Gemini 3.8 Flash (65,536 token scaling)
   if (taskType === 'coding' || taskType === 'video') {
     return {
       provider: 'gemini',
       model: 'gemini-3.8-flash',
       isAuto: true,
-      maxTokens: 40000,
+      maxTokens: 65536,
       taskType
     };
   }

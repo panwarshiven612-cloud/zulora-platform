@@ -124,7 +124,7 @@ const getZuloraEngineLabel = (model = '', provider = '', effort = '') => {
 
   const modelId = rawModel.toLowerCase();
   if (modelId === 'gemini-3.8-flash' || modelId === 'gemini 3.8 flash' || (modelId.includes('3.8') && modelId.includes('flash'))) {
-    const effortText = effort ? `${effort.charAt(0).toUpperCase() + effort.slice(1)} Effort` : 'High Effort';
+    const effortText = effort ? `${effort.charAt(0).toUpperCase() + effort.slice(1)} Effort (65k Tokens)` : 'High Effort (65k Tokens)';
     return `Gemini 3.8 Flash | ${effortText}`;
   }
   if (modelId === 'gemini-3.5-flash-lite' || modelId === 'gemini 3.5 flash lite' || (modelId.includes('3.5') && modelId.includes('lite'))) {
@@ -2092,23 +2092,41 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             <WelcomeScreen user={{ displayName: currentUser?.displayName || (guestMode ? 'Guest' : 'Shiven') }} onSuggestion={(q) => sendMessage(q)} />
           ) : (
             <>
-              {messages.map((msg, i) => (
-                <MessageBubble
-                  key={msg.id || i}
-                  message={msg}
-                  index={i}
-                  onCopy={handleCopy}
-                  onSpeak={handleSpeak}
-                  onEdit={handleEditPrompt}
-                  isSpeaking={isSpeakingIndex}
-                  copiedIndex={copiedIndex}
-                  attachmentPreviews={messageMedia.get(msg.id) || []}
-                  onReconnect={() => {
-                    setConnectorReauthProvider(msg.connectorProvider || 'Google service');
-                    setShowConnectorsModal(true);
-                  }}
-                />
-              ))}
+              {messages.map((msg, i) => {
+                const isCompletedAssistant = msg.role === 'assistant' && !msg.streaming;
+                const isLastCompletedAssistant = isCompletedAssistant && (
+                  i === messages.length - 1 || 
+                  messages.slice(i + 1).every(m => m.role === 'user' || (m.role === 'assistant' && m.streaming))
+                );
+
+                return (
+                  <React.Fragment key={msg.id || i}>
+                    <MessageBubble
+                      message={msg}
+                      index={i}
+                      onCopy={handleCopy}
+                      onSpeak={handleSpeak}
+                      onEdit={handleEditPrompt}
+                      isSpeaking={isSpeakingIndex}
+                      copiedIndex={copiedIndex}
+                      attachmentPreviews={messageMedia.get(msg.id) || []}
+                      onReconnect={() => {
+                        setConnectorReauthProvider(msg.connectorProvider || 'Google service');
+                        setShowConnectorsModal(true);
+                      }}
+                    />
+                    {isLastCompletedAssistant && !loading && (
+                      <div className="w-full pl-0 sm:pl-11 pr-0 sm:pr-2 mt-1">
+                        <SponsoredCard
+                          userId={currentUser?.uid || 'guest'}
+                          tier={isPro ? 'pro' : (userProfile?.planTier || 'free')}
+                          contextPrompt={msg.content}
+                        />
+                      </div>
+                    )}
+                  </React.Fragment>
+                );
+              })}
               {loading && showThinking && <TypingIndicator />}
             </>
           )}
@@ -2166,12 +2184,6 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           enableWebSearch={enableWebSearch}
           onToggleWebSearch={() => setEnableWebSearch(value => !value)}
           onOpenConnectors={() => setShowConnectorsModal(true)}
-        />
-
-        {/* Sponsored Ad Card below response stream */}
-        <SponsoredCard
-          userId={currentUser?.uid || 'guest'}
-          tier={isPro ? 'pro' : (userProfile?.planTier || 'free')}
         />
 
         {/* ChatGPT-style bottom non-intrusive Ad Banner */}
