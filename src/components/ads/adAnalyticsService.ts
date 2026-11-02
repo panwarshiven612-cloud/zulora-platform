@@ -3,49 +3,37 @@
  * =========================================
  * Firestore-backed Ad Analytics, Campaign CRUD, and User Wallet management.
  * Tracks impressions, clicks, CTR and ad-to-Pro conversion rates.
+ * Enhanced with Global Multi-Collection querying ('adCampaigns', 'adminAds', 'customAds').
  */
 
 import {
-  collection, doc, addDoc, getDoc, getDocs, query, where,
+  collection, doc, addDoc, getDoc, getDocs, query,
   orderBy, limit, onSnapshot, updateDoc, serverTimestamp,
-  increment, setDoc, Timestamp
+  increment, setDoc
 } from 'firebase/firestore';
 import { db } from '../../services/firebase';
+import {
+  CustomAd as BaseCustomAd,
+  AdPlacement as BaseAdPlacement,
+  AdStatus as BaseAdStatus,
+  AdEventLog as BaseAdEventLog,
+  getActiveAds,
+  createAdCampaign as serviceCreateCampaign,
+  updateAdCampaign as serviceUpdateCampaign,
+  logAdImpression as serviceLogImpression,
+  logAdClick as serviceLogClick,
+  useActiveAds,
+  subscribeToActiveAds,
+  AD_COLLECTIONS,
+  DEFAULT_PROMO_AD
+} from '../../lib/ads/adService';
 
 /* ─── Types ─────────────────────────────────────────────────────────────── */
 
-export type AdPlacement = 'bottom_banner' | 'sidebar' | 'chat_sponsored_card' | 'rewarded_modal';
-export type AdStatus = 'pending' | 'active' | 'paused' | 'rejected' | 'exhausted';
-
-export interface CustomAd {
-  id?: string;
-  title: string;
-  description?: string;
-  imageUrl?: string;
-  targetUrl?: string;
-  ctaText?: string;
-  sponsorName?: string;
-  sponsorUid?: string;        // null = admin ad
-  placement: AdPlacement;
-  status: AdStatus;
-  budgetInr?: number;         // ₹ wallet budget allocated
-  impressionBudget?: number;  // max impressions
-  impressions?: number;
-  clicks?: number;
-  createdAt?: number;
-  updatedAt?: number;
-}
-
-export interface AdEventLog {
-  id?: string;
-  adId: string;
-  userId: string;
-  action: 'impression' | 'click' | 'dismiss';
-  adTitle?: string;
-  placement?: AdPlacement | string;
-  targetUrl?: string;
-  timestamp?: any;
-}
+export type AdPlacement = BaseAdPlacement;
+export type AdStatus = BaseAdStatus;
+export type CustomAd = BaseCustomAd;
+export type AdEventLog = BaseAdEventLog;
 
 export interface UserWallet {
   uid: string;
@@ -54,72 +42,86 @@ export interface UserWallet {
   lastUpdated?: number;
 }
 
+// Re-export core functions from adService
+export { useActiveAds, subscribeToActiveAds, DEFAULT_PROMO_AD, AD_COLLECTIONS };
+
 /* ─── Ad Campaign CRUD ───────────────────────────────────────────────────── */
 
 export async function createAdCampaign(ad: Omit<CustomAd, 'id'>): Promise<string> {
-  try {
-    const ref = await addDoc(collection(db, 'customAds'), {
-      ...ad,
-      status: 'pending',
-      impressions: 0,
-      clicks: 0,
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    });
-    return ref.id;
-  } catch (err: any) {
-    console.warn('[AdService] createAdCampaign:', err.message);
-    return '';
-  }
+  return serviceCreateCampaign(ad);
 }
 
+/**
+ * Retrieves active/approved custom ads globally across all collections.
+ * Does NOT filter by userId when serving public placements to broadcast everywhere.
+ */
 export async function getActiveCustomAds(
   placement?: AdPlacement,
   sponsorUid?: string
 ): Promise<CustomAd[]> {
   try {
-    const colRef = collection(db, 'customAds');
-    let q = query(colRef, where('status', '==', 'active'), orderBy('createdAt', 'desc'), limit(20));
-    const snap = await getDocs(q);
-    let ads = snap.docs.map(d => ({ id: d.id, ...d.data() } as CustomAd));
-    if (placement) ads = ads.filter(a => !a.placement || a.placement === placement || a.placement === 'bottom_banner');
-    if (sponsorUid) ads = ads.filter(a => a.sponsorUid === sponsorUid);
+    let ads = await getActiveAds(placement);
+    if (sponsorUid) {
+      ads = ads.filter(a => a.sponsorUid === sponsorUid);
+    }
     return ads;
-  } catch {
+  } catch (err: any) {
+    console.warn('[AdAnalyticsService] getActiveCustomAds failed:', err.message);
     return [];
   }
 }
 
+/**
+ * Retrieves all ad campaigns across all collections (for Admin Panel management).
+ */
 export async function getAllCustomAds(): Promise<CustomAd[]> {
   try {
-    const snap = await getDocs(query(collection(db, 'customAds'), orderBy('createdAt', 'desc'), limit(100)));
-    return snap.docs.map(d => ({ id: d.id, ...d.data() } as CustomAd));
+    const allAds: CustomAd[] = [];
+    await Promise.allSettled(
+      AD_COLLECTIONS.map(async coll => {
+        const snap = await getDocs(collection(db, coll));
+        snap.forEach(d => {
+          allAds.push({
+            id: d.id,
+            ...(d.data() as any),
+            _sourceCollection: coll
+          });
+        });
+      })
+    );
+
+    // Deduplicate by id and targetUrl
+    const seen = new Set<string>();
+    const deduped: CustomAd[] = [];
+    for (const ad of allAds) {
+      const key = ad.id || `${ad.title}_${ad.targetUrl}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduped.push(ad);
+      }
+    }
+
+    deduped.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+    return deduped;
   } catch {
     return [];
   }
 }
 
+/**
+ * Retrieves user ad campaigns without requiring composite index.
+ */
 export async function getUserAdCampaigns(uid: string): Promise<CustomAd[]> {
   try {
-    const q = query(
-      collection(db, 'customAds'),
-      where('sponsorUid', '==', uid),
-      orderBy('createdAt', 'desc'),
-      limit(50)
-    );
-    const snap = await getDocs(q);
-    return snap.docs.map(d => ({ id: d.id, ...d.data() } as CustomAd));
+    const all = await getAllCustomAds();
+    return all.filter(a => a.sponsorUid === uid || (a as any).userId === uid);
   } catch {
     return [];
   }
 }
 
 export async function updateAdCampaign(id: string, updates: Partial<CustomAd>): Promise<void> {
-  try {
-    await updateDoc(doc(db, 'customAds', id), { ...updates, updatedAt: Date.now() });
-  } catch (err: any) {
-    console.warn('[AdService] updateAdCampaign:', err.message);
-  }
+  return serviceUpdateCampaign(id, updates);
 }
 
 /* ─── Event Logging ─────────────────────────────────────────────────────── */
@@ -127,65 +129,46 @@ export async function updateAdCampaign(id: string, updates: Partial<CustomAd>): 
 export async function logAdImpression(
   adId: string,
   userId: string,
-  metaOrTitle: string | { adTitle?: string; placement?: string } = {},
+  metaOrTitle: string | { adTitle?: string; placement?: string; sourceCollection?: string } = {},
   placementStr?: string
 ): Promise<void> {
-  try {
-    const meta = typeof metaOrTitle === 'string'
-      ? { adTitle: metaOrTitle, placement: placementStr || 'bottom_banner' }
-      : metaOrTitle;
+  const meta = typeof metaOrTitle === 'string'
+    ? { adTitle: metaOrTitle, placement: placementStr || 'bottom_banner' }
+    : metaOrTitle;
 
-    await Promise.all([
-      addDoc(collection(db, 'adAnalytics'), {
-        adId, userId,
-        action: 'impression',
-        adTitle: meta.adTitle || '',
-        placement: meta.placement || 'bottom_banner',
-        timestamp: serverTimestamp()
-      }),
-      updateDoc(doc(db, 'customAds', adId), {
-        impressions: increment(1),
-        updatedAt: Date.now()
-      }).catch(() => {})
-    ]);
-  } catch {}
+  return serviceLogImpression(adId, userId, meta);
 }
 
 export async function logAdClick(
   adId: string,
   userId: string,
-  metaOrTitle: string | { adTitle?: string; targetUrl?: string; placement?: string } = {},
+  metaOrTitle: string | { adTitle?: string; targetUrl?: string; placement?: string; sourceCollection?: string } = {},
   targetUrlStr?: string,
   placementStr?: string
 ): Promise<void> {
-  try {
-    const meta = typeof metaOrTitle === 'string'
-      ? { adTitle: metaOrTitle, targetUrl: targetUrlStr || '', placement: placementStr || 'bottom_banner' }
-      : metaOrTitle;
+  const meta = typeof metaOrTitle === 'string'
+    ? { adTitle: metaOrTitle, targetUrl: targetUrlStr || '', placement: placementStr || 'bottom_banner' }
+    : metaOrTitle;
 
-    await Promise.all([
-      addDoc(collection(db, 'adAnalytics'), {
-        adId, userId,
-        action: 'click',
-        adTitle: meta.adTitle || '',
-        targetUrl: meta.targetUrl || '',
-        placement: meta.placement || 'bottom_banner',
-        timestamp: serverTimestamp()
-      }),
-      updateDoc(doc(db, 'customAds', adId), {
-        clicks: increment(1),
-        updatedAt: Date.now()
-      }).catch(() => {})
-    ]);
-  } catch {}
+  return serviceLogClick(adId, userId, meta);
 }
 
 export function subscribeAdAnalytics(callback: (events: AdEventLog[]) => void): () => void {
   try {
     const q = query(collection(db, 'adAnalytics'), orderBy('timestamp', 'desc'), limit(200));
-    return onSnapshot(q, snap => {
-      callback(snap.docs.map(d => ({ id: d.id, ...d.data() } as AdEventLog)));
-    });
+    return onSnapshot(
+      q,
+      snap => {
+        callback(snap.docs.map(d => ({ id: d.id, ...d.data() } as AdEventLog)));
+      },
+      error => {
+        console.warn('[AdService] subscribeAdAnalytics error:', error.message);
+        // Fallback without orderBy in case timestamp index is compiling
+        getDocs(collection(db, 'adAnalytics')).then(snap => {
+          callback(snap.docs.map(d => ({ id: d.id, ...d.data() } as AdEventLog)));
+        }).catch(() => {});
+      }
+    );
   } catch {
     return () => {};
   }
@@ -237,7 +220,11 @@ export async function deductAdBudget(uid: string, adId: string, amountInr: numbe
     await updateDoc(doc(db, 'customAds', adId), {
       budgetInr: increment(-amountInr),
       updatedAt: Date.now()
-    });
+    }).catch(() => {});
+    await updateDoc(doc(db, 'adCampaigns', adId), {
+      budgetInr: increment(-amountInr),
+      updatedAt: Date.now()
+    }).catch(() => {});
     return true;
   } catch {
     return false;

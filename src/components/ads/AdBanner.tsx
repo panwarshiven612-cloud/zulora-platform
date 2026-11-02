@@ -1,17 +1,18 @@
 /**
  * src/components/ads/AdBanner.tsx
  * ================================
- * ChatGPT-style bottom non-intrusive Ad Banner with Zulora Ads Priority.
- * - PRIORITIZES custom Zulora Ads (uploaded via Admin or User Campaigns).
- * - Tracks impressions and clicks in Firestore (`adAnalytics` collection).
- * - FALLS BACK to Google AdSense only if no active Zulora ad campaigns exist.
+ * ChatGPT-style bottom non-intrusive Ad Banner with Global Zulora Ads Priority.
+ * - Real-time listener via `useActiveAds`: broadcasts active/approved campaigns globally to all users.
+ * - ABSOLUTE PRIORITY: Zulora Custom Ads take 100% absolute priority over Google AdSense.
+ * - Tracks impressions and clicks into Firestore (`adAnalytics` collection).
+ * - FALLS BACK to Google AdSense only if zero active Zulora campaigns exist in Firestore.
  * - Hidden for Pro and Ultra subscribers.
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Sparkles, X, Gift, ExternalLink, ArrowRight, Zap } from 'lucide-react';
-import { getActiveCustomAds, logAdImpression, logAdClick, CustomAd } from './adAnalyticsService';
+import { Gift, ArrowRight, X } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useActiveAds, logAdImpression, logAdClick, CustomAd } from '../../lib/ads/adService';
 
 declare global {
   interface Window {
@@ -34,43 +35,33 @@ export const AdBanner: React.FC<AdBannerProps> = ({
   const userId = currentUser?.uid || 'guest';
 
   const [dismissed, setDismissed] = useState(false);
-  const [customAd, setCustomAd] = useState<CustomAd | null>(null);
-  const [checkedCustomAds, setCheckedCustomAds] = useState(false);
   const adRef = useRef<HTMLModElement>(null);
+  const loggedImpressionAdIdRef = useRef<string | null>(null);
 
   // If user is already on Pro or Ultra tier, hide ad banners completely
   const isPaidTier = tier === 'pro' || tier === 'ultra';
 
-  // 1. Prioritize Custom Zulora Ads
+  // 1. Global Real-time Zulora Ads Listener (queries adCampaigns, adminAds, customAds)
+  const { ads: activeAds, activeAd: realtimeAd, loading: adsLoading } = useActiveAds('bottom_banner');
+  const customAd: CustomAd | null = realtimeAd || (activeAds.length > 0 ? activeAds[0] : null);
+  const hasZuloraAd = Boolean(customAd);
+
+  // Track impression once per distinct active ad
   useEffect(() => {
-    if (isPaidTier || dismissed) return;
-    let active = true;
+    if (isPaidTier || dismissed || !customAd?.id) return;
+    if (loggedImpressionAdIdRef.current === customAd.id) return;
+    loggedImpressionAdIdRef.current = customAd.id;
 
-    getActiveCustomAds('bottom_banner')
-      .then(ads => {
-        if (!active) return;
-        if (ads && ads.length > 0) {
-          const selected = ads[Math.floor(Math.random() * ads.length)];
-          setCustomAd(selected);
-          if (selected.id) {
-            logAdImpression(selected.id, userId, {
-              adTitle: selected.title,
-              placement: 'bottom_banner'
-            }).catch(() => {});
-          }
-        }
-        setCheckedCustomAds(true);
-      })
-      .catch(() => {
-        if (active) setCheckedCustomAds(true);
-      });
+    logAdImpression(customAd.id, userId, {
+      adTitle: customAd.title,
+      placement: 'bottom_banner',
+      sourceCollection: customAd._sourceCollection
+    }).catch(() => {});
+  }, [customAd, isPaidTier, dismissed, userId]);
 
-    return () => { active = false; };
-  }, [isPaidTier, dismissed, userId]);
-
-  // 2. Fallback to Google AdSense ONLY if no custom ad is present
+  // 2. Google AdSense Fallback ONLY if zero active Zulora campaigns exist
   useEffect(() => {
-    if (isPaidTier || dismissed || customAd || !checkedCustomAds) return;
+    if (isPaidTier || dismissed || hasZuloraAd || adsLoading) return;
 
     try {
       if (typeof window !== 'undefined' && adRef.current) {
@@ -79,7 +70,7 @@ export const AdBanner: React.FC<AdBannerProps> = ({
     } catch (e) {
       // AdSense script may be blocked by adblocker, silent fallback
     }
-  }, [isPaidTier, dismissed, customAd, checkedCustomAds]);
+  }, [isPaidTier, dismissed, hasZuloraAd, adsLoading]);
 
   if (isPaidTier || dismissed) {
     return null;
@@ -90,7 +81,8 @@ export const AdBanner: React.FC<AdBannerProps> = ({
       logAdClick(customAd.id, userId, {
         adTitle: customAd.title,
         targetUrl: customAd.targetUrl,
-        placement: 'bottom_banner'
+        placement: 'bottom_banner',
+        sourceCollection: customAd._sourceCollection
       }).catch(() => {});
     }
     if (customAd?.targetUrl) {
@@ -109,8 +101,8 @@ export const AdBanner: React.FC<AdBannerProps> = ({
         {/* Subtle decorative glow */}
         <div className="absolute -right-10 -top-10 w-28 h-28 bg-sky-400/10 dark:bg-sky-500/10 rounded-full blur-2xl pointer-events-none" />
 
-        {/* ── PRIORITY 1: CUSTOM ZULORA AD LAYOUT (ChatGPT-Style) ── */}
-        {customAd ? (
+        {/* ── PRIORITY 1: CUSTOM ZULORA AD LAYOUT (ChatGPT-Style, 100% Absolute Priority) ── */}
+        {hasZuloraAd && customAd ? (
           <div className="flex items-center justify-between gap-3 flex-wrap sm:flex-nowrap">
             {/* Left side: Media + Sponsor Info */}
             <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -194,7 +186,7 @@ export const AdBanner: React.FC<AdBannerProps> = ({
             </div>
           </div>
         ) : (
-          /* ── PRIORITY 2: GOOGLE ADSENSE FALLBACK (When no custom ads) ── */
+          /* ── PRIORITY 2: GOOGLE ADSENSE FALLBACK (Only when zero custom Zulora ads exist) ── */
           <div>
             <div className="flex items-center justify-between gap-2.5 sm:gap-4 flex-wrap sm:flex-nowrap">
               <div className="flex items-center gap-2.5 min-w-0 flex-1">

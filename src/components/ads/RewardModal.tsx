@@ -18,7 +18,7 @@ import {
 import confetti from 'canvas-confetti';
 import { useAuth } from '../../context/AuthContext';
 import { firestoreService, TIERS } from '../../services/firestoreService';
-import { getActiveCustomAds, logAdImpression, logAdClick, CustomAd } from './adAnalyticsService';
+import { getActiveCustomAds, logAdImpression, logAdClick, CustomAd, DEFAULT_PROMO_AD } from './adAnalyticsService';
 
 export interface RewardModalProps {
   isOpen: boolean;
@@ -82,12 +82,16 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
       }
     }
 
-    // Prefetch an active promotional ad for the player
-    getActiveCustomAds().then(ads => {
+    // Prefetch an active promotional ad for the player globally across all ad collections
+    getActiveCustomAds('rewarded_modal').then(ads => {
       if (ads && ads.length > 0) {
         setPromoAd(ads[Math.floor(Math.random() * ads.length)]);
+      } else {
+        setPromoAd(DEFAULT_PROMO_AD);
       }
-    }).catch(() => {});
+    }).catch(() => {
+      setPromoAd(DEFAULT_PROMO_AD);
+    });
 
     return () => {
       if (cooldownRef.current) clearInterval(cooldownRef.current);
@@ -96,20 +100,38 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
 
   if (!isOpen) return null;
 
-  const handleStartWatchAd = () => {
+  const handleStartWatchAd = async () => {
     if (cooldownSeconds > 0) return;
     if (!currentUser?.uid) {
       setNotification('Please sign in to save your reward points!');
       return;
     }
+
+    let activeAd = promoAd;
+    if (!activeAd) {
+      try {
+        const liveAds = await getActiveCustomAds('rewarded_modal');
+        activeAd = (liveAds && liveAds.length > 0)
+          ? liveAds[Math.floor(Math.random() * liveAds.length)]
+          : DEFAULT_PROMO_AD;
+      } catch {
+        activeAd = DEFAULT_PROMO_AD;
+      }
+      setPromoAd(activeAd);
+    }
+
     setWatchingAd(true);
     setAdSecondsLeft(AD_DURATION_SECONDS);
     setAdFinished(false);
     setNotification(null);
 
     // Log impression for promo ad if present
-    if (promoAd?.id) {
-      logAdImpression(promoAd.id, currentUser.uid, { adTitle: promoAd.title, placement: 'rewarded_modal' }).catch(() => {});
+    if (activeAd?.id) {
+      logAdImpression(activeAd.id, currentUser.uid, {
+        adTitle: activeAd.title,
+        placement: 'rewarded_modal',
+        sourceCollection: (activeAd as any)._sourceCollection
+      }).catch(() => {});
     }
 
     timerRef.current = setInterval(() => {
@@ -339,7 +361,9 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
           </div>
 
           {/* Active Rewarded Ad Player Screen */}
-          {watchingAd ? (
+          {watchingAd ? (() => {
+            const displayPromo = promoAd || DEFAULT_PROMO_AD;
+            return (
             <div className="p-5 rounded-2xl border-2 border-emerald-400 bg-gradient-to-b from-slate-900 to-[#070b14] text-white shadow-xl text-center space-y-4 animate-scale-in">
               <div className="flex items-center justify-center gap-2 text-xs font-bold text-emerald-400 tracking-wider uppercase">
                 <Clock className="w-4 h-4 animate-spin text-emerald-400" />
@@ -348,10 +372,10 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
 
               {/* Promotional Media Container */}
               <div className="py-4 px-4 rounded-xl bg-slate-800/80 border border-slate-700/60 relative overflow-hidden">
-                {promoAd?.imageUrl ? (
-                  promoAd.imageUrl.endsWith('.mp4') || promoAd.imageUrl.endsWith('.webm') ? (
+                {displayPromo?.imageUrl ? (
+                  displayPromo.imageUrl.endsWith('.mp4') || displayPromo.imageUrl.endsWith('.webm') ? (
                     <video
-                      src={promoAd.imageUrl}
+                      src={displayPromo.imageUrl}
                       autoPlay
                       muted
                       loop
@@ -360,8 +384,8 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
                     />
                   ) : (
                     <img
-                      src={promoAd.imageUrl}
-                      alt={promoAd.title}
+                      src={displayPromo.imageUrl}
+                      alt={displayPromo.title}
                       className="w-full max-h-44 rounded-xl object-contain mx-auto mb-3 bg-slate-900 shadow-md"
                       onError={(e: React.SyntheticEvent<HTMLImageElement>) => {
                         e.currentTarget.style.display = 'none';
@@ -380,30 +404,31 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <div className="text-left min-w-0 flex-1">
                     <p className="text-sm font-bold text-white truncate">
-                      {promoAd?.title || 'Zulora AI Pro Ultra'}
+                      {displayPromo?.title || 'Zulora AI Pro Ultra'}
                     </p>
                     <p className="text-[11px] text-slate-300 line-clamp-2">
-                      {promoAd?.description || 'Earn 10 points per ad. 200 points automatically unlocks 1 Month Free Pro!'}
+                      {displayPromo?.description || 'Earn 10 points per ad. 200 points automatically unlocks 1 Month Free Pro!'}
                     </p>
                   </div>
 
                   {/* Clickable target link button during ad view */}
                   <a
-                    href={promoAd?.targetUrl || 'https://zulora.in/pricing'}
+                    href={displayPromo?.targetUrl || 'https://zulora.in/pricing'}
                     target="_blank"
                     rel="noopener noreferrer"
                     onClick={() => {
-                      if (promoAd?.id && currentUser?.uid) {
-                        logAdClick(promoAd.id, currentUser.uid, {
-                          adTitle: promoAd.title,
-                          targetUrl: promoAd.targetUrl,
-                          placement: 'rewarded_modal'
+                      if (displayPromo?.id && currentUser?.uid) {
+                        logAdClick(displayPromo.id, currentUser.uid, {
+                          adTitle: displayPromo.title,
+                          targetUrl: displayPromo.targetUrl,
+                          placement: 'rewarded_modal',
+                          sourceCollection: (displayPromo as any)._sourceCollection
                         }).catch(() => {});
                       }
                     }}
                     className="shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-[11px] transition shadow-xs"
                   >
-                    <span>{promoAd?.ctaText || 'Visit Sponsor'}</span>
+                    <span>{displayPromo?.ctaText || 'Visit Sponsor'}</span>
                     <ExternalLink className="w-3 h-3" />
                   </a>
                 </div>
@@ -418,7 +443,8 @@ export const RewardModal: React.FC<RewardModalProps> = ({ isOpen, onClose }) => 
                 Reward will automatically be credited upon countdown completion.
               </p>
             </div>
-          ) : (
+            );
+          })() : (
             /* Action Buttons: Watch Ad & Redeem Pro */
             <div className="space-y-3">
               {/* Watch Ad Button with Cooldown Guard */}

@@ -1,12 +1,12 @@
 /**
  * SponsoredCard.tsx — ChatGPT-style inline sponsored ad card.
  * Rendered directly beneath completed AI response streams.
- * Shown only for free-tier users. Logs impression and click metrics to Firestore.
+ * Shown only for free-tier users. Logs impression and click metrics to Firestore ('adAnalytics').
  */
 
-import React, { useEffect, useState } from 'react';
-import { X, ArrowRight, ExternalLink } from 'lucide-react';
-import { getActiveCustomAds, logAdImpression, logAdClick, CustomAd } from './adAnalyticsService';
+import React, { useEffect, useState, useRef } from 'react';
+import { X, ArrowRight } from 'lucide-react';
+import { useActiveAds, logAdImpression, logAdClick, CustomAd } from '../../lib/ads/adService';
 
 export interface SponsoredCardProps {
   userId?: string;
@@ -19,52 +19,29 @@ export const SponsoredCard: React.FC<SponsoredCardProps> = ({
   tier = 'free',
   className = ''
 }) => {
-  const [ad, setAd] = useState<CustomAd | null>(null);
   const [dismissed, setDismissed] = useState(false);
-  const [loaded, setLoaded] = useState(false);
+  const loggedImpressionAdIdRef = useRef<string | null>(null);
 
   // Free users only
   const isPaidUser = tier === 'pro' || tier === 'ultra';
 
+  // Global real-time listener for chat sponsored cards / bottom banners
+  const { ads, activeAd, loading } = useActiveAds('chat_sponsored_card');
+  const ad: CustomAd | null = activeAd || (ads.length > 0 ? ads[0] : null);
+
   useEffect(() => {
-    if (isPaidUser || dismissed) return;
-    let cancelled = false;
+    if (isPaidUser || dismissed || !ad?.id) return;
+    if (loggedImpressionAdIdRef.current === ad.id) return;
+    loggedImpressionAdIdRef.current = ad.id;
 
-    getActiveCustomAds('chat_sponsored_card')
-      .then(ads => {
-        if (cancelled) return;
-        if (ads.length > 0) {
-          const pick = ads[Math.floor(Math.random() * ads.length)];
-          setAd(pick);
-          setLoaded(true);
-          if (pick.id) {
-            logAdImpression(pick.id, userId, {
-              adTitle: pick.title,
-              placement: 'chat_sponsored_card'
-            }).catch(() => {});
-          }
-        } else {
-          // If no chat_sponsored_card, check general bottom_banner
-          getActiveCustomAds('bottom_banner').then(fallbackAds => {
-            if (cancelled || fallbackAds.length === 0) return;
-            const pick = fallbackAds[Math.floor(Math.random() * fallbackAds.length)];
-            setAd(pick);
-            setLoaded(true);
-            if (pick.id) {
-              logAdImpression(pick.id, userId, {
-                adTitle: pick.title,
-                placement: 'chat_sponsored_card'
-              }).catch(() => {});
-            }
-          }).catch(() => {});
-        }
-      })
-      .catch(() => {});
+    logAdImpression(ad.id, userId, {
+      adTitle: ad.title,
+      placement: 'chat_sponsored_card',
+      sourceCollection: ad._sourceCollection
+    }).catch(() => {});
+  }, [ad, isPaidUser, dismissed, userId]);
 
-    return () => { cancelled = true; };
-  }, [userId, isPaidUser, dismissed]);
-
-  if (isPaidUser || dismissed || !loaded || !ad) {
+  if (isPaidUser || dismissed || loading || !ad) {
     return null;
   }
 
@@ -73,7 +50,8 @@ export const SponsoredCard: React.FC<SponsoredCardProps> = ({
       logAdClick(ad.id, userId, {
         adTitle: ad.title,
         targetUrl: ad.targetUrl,
-        placement: 'chat_sponsored_card'
+        placement: 'chat_sponsored_card',
+        sourceCollection: ad._sourceCollection
       }).catch(() => {});
     }
     if (ad.targetUrl) {
@@ -165,4 +143,3 @@ export const SponsoredCard: React.FC<SponsoredCardProps> = ({
 };
 
 export default SponsoredCard;
-
