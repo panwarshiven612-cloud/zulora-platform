@@ -85,7 +85,7 @@ export const SponsoredCard: React.FC<SponsoredCardProps> = ({
     <div
       role="complementary"
       aria-label="Sponsored recommendation"
-      className={`mx-auto w-full max-w-2xl mt-3 mb-2 rounded-2xl border border-slate-200/90 dark:border-slate-800 bg-white/90 dark:bg-slate-900/80 backdrop-blur-md shadow-sm overflow-hidden animate-fade-slide ${className}`}
+      className={`mx-auto w-full max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mt-3 mb-2 rounded-2xl border border-slate-200/90 dark:border-slate-800 bg-white/90 dark:bg-slate-900/80 backdrop-blur-md shadow-sm overflow-hidden animate-fade-slide ${className}`}
     >
       {/* Header Bar */}
       <div className="flex items-center justify-between px-3.5 py-1.5 border-b border-slate-100 dark:border-slate-800/60 bg-slate-50/50 dark:bg-slate-950/30">

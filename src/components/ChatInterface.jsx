@@ -110,19 +110,29 @@ const normalizeAttachmentFile = file => {
 };
 const isImageAttachment = file => attachmentMimeType(file).startsWith('image/');
 const isPdfAttachment = file => attachmentMimeType(file) === 'application/pdf';
-const getZuloraEngineLabel = (model = '', provider = '') => {
+const getZuloraEngineLabel = (model = '', provider = '', effort = '') => {
   const rawModel = String(model || '').trim();
   const value = `${rawModel} ${provider}`.toLowerCase().replace(/[_-]+/g, ' ');
   if (/instant reply/.test(value)) return 'Zulora Instant Reply';
   if (/selecting model|generating/.test(value) || !rawModel || rawModel.toLowerCase() === 'auto') return 'Selecting model';
   if (/^(?:pro|think)$/.test(rawModel.toLowerCase())) return 'Gemini Pro (Research)';
-  if (rawModel.toLowerCase() === 'groq') return 'Groq LPU';
-  if (rawModel.toLowerCase() === 'openrouter') return 'OpenRouter';
+  if (rawModel.toLowerCase() === 'groq') return 'Groq LPU | Instant Hardware';
+  if (rawModel.toLowerCase() === 'openrouter') return 'OpenRouter | Multi-LLM';
   if (/zulora video engine/.test(value)) return 'Zulora Video Engine';
   if (/computer plugin|computer agent/.test(value)) return 'Computer Agent';
   if (/native api connectors|connector/.test(value)) return rawModel || 'Google Workspace Connector';
 
   const modelId = rawModel.toLowerCase();
+  if (modelId === 'gemini-3.8-flash' || modelId === 'gemini 3.8 flash' || (modelId.includes('3.8') && modelId.includes('flash'))) {
+    const effortText = effort ? `${effort.charAt(0).toUpperCase() + effort.slice(1)} Effort` : 'High Effort';
+    return `Gemini 3.8 Flash | ${effortText}`;
+  }
+  if (modelId === 'gemini-3.5-flash-lite' || modelId === 'gemini 3.5 flash lite' || (modelId.includes('3.5') && modelId.includes('lite'))) {
+    return 'Gemini 3.5 Flash Lite | Ultra Fast';
+  }
+  if (/groq|llama/.test(value)) return 'Groq LPU | Instant Hardware';
+  if (/openrouter/.test(value)) return 'OpenRouter | Multi-LLM';
+
   const cleanModelName = value => value.replace(/[-_]+/g, ' ')
     .replace(/\b(llama|flash|lite|pro|preview|versatile|instruct|small|latest|cerebras)\b/gi, word => word[0].toUpperCase() + word.slice(1).toLowerCase())
     .replace(/\b(\d+(?:\.\d+)?)b\b/gi, '$1B');
@@ -130,8 +140,6 @@ const getZuloraEngineLabel = (model = '', provider = '') => {
     ? `Gemini ${cleanModelName(modelId.slice('gemini-'.length))}`
     : cleanModelName(modelId.includes('/') ? modelId.split('/').at(-1) : modelId);
 
-  if (/groq|llama/.test(value)) return `Groq LPU (${prettyModel || 'Llama model'})`;
-  if (/openrouter/.test(value)) return `OpenRouter (${prettyModel || 'Active model'})`;
   if (/gemini/.test(value) || modelId.startsWith('gemini-')) return prettyModel;
   if (/pollinations/.test(value)) return `Pollinations AI (${prettyModel || 'Mistral'})`;
   if (/zulora resilient fallback|fallback cluster|system safe/.test(value)) return 'Zulora Fallback';
@@ -460,7 +468,7 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
       </div>
 
       {/* Content */}
-      <div className={`flex flex-col min-w-0 max-w-[92%] sm:max-w-[80%] gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
+      <div className={`flex flex-col min-w-0 max-w-[95%] sm:max-w-[90%] lg:max-w-[85%] w-full gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
         {/* Header */}
         <div className={`flex items-center gap-2 px-1 ${isUser ? 'flex-row-reverse' : ''}`}>
           <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">
@@ -471,10 +479,10 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
               {message.connectorBadge}
             </span>
           ) : message.model && !isUser && (
-            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${getZuloraEngineLabel(message.model, message.provider).startsWith('Groq LPU')
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${getZuloraEngineLabel(message.model, message.provider, message.effortLevel).startsWith('Groq LPU')
               ? 'bg-orange-100 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300 border-orange-200/60 dark:border-orange-800/40'
               : 'bg-sky-100 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 border-sky-200/50 dark:border-sky-800/40'}`}>
-              {getZuloraEngineLabel(message.model, message.provider)}
+              {getZuloraEngineLabel(message.model, message.provider, message.effortLevel)}
             </span>
           )}
           {timestamp && (
@@ -694,7 +702,7 @@ const WelcomeScreen = ({ user, onSuggestion }) => (
     </div>
 
     {/* Suggestion Cards */}
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-2xl">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 w-full max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mx-auto">
       {SUGGESTION_CARDS.map((card, i) => (
         <button
           key={i}
@@ -1328,7 +1336,8 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
         content: displayedText,
         timestamp: now,
         model: streamedProvider?.model || defaultModelLabel,
-        provider: streamedProvider?.provider || 'Zulora Intelligence',
+            provider: streamedProvider?.provider || 'Zulora Intelligence',
+            effortLevel: effortLevel || 'medium',
         thinkingSteps: [...thinkingSteps],
         streaming: generationState === 'generating'
       } : null;
@@ -1392,6 +1401,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
               timestamp: Date.now(),
               model: streamedProvider?.model || 'Generating...',
               provider: streamedProvider?.provider,
+              effortLevel: effortLevel || 'medium',
               thinkingSteps: [...thinkingSteps],
               streaming: true,
               streamMetrics: getLiveStreamMetrics()
@@ -1793,7 +1803,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           },
           onProvider: route => {
             streamedProvider = { provider: route?.provider || 'Zulora AI', model: route?.model || modelPreference };
-            pushThinkingStep(`${getZuloraEngineLabel(streamedProvider.model, streamedProvider.provider)} connected`, 'done');
+            pushThinkingStep(`${getZuloraEngineLabel(streamedProvider.model, streamedProvider.provider, effortLevel)} connected`, 'done');
             if (!displayedText || !isRequestCurrent()) return;
             setMessages(prev => [
               ...prev.filter(m => m.id !== assistantId),
@@ -1804,6 +1814,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
                 timestamp: Date.now(),
                 model: route.model || 'Generating...',
                 provider: route.provider,
+                effortLevel: effortLevel || 'medium',
                 thinkingSteps: [...thinkingSteps],
                 streaming: true,
                 streamMetrics: getLiveStreamMetrics()
@@ -1876,6 +1887,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
             : result.connectorProvider ? 'Zulora Connectors' : 'Zulora Drive'
           : result.model || streamedProvider?.model || modelPreference,
         provider: directTask ? 'Zulora AI' : result.provider || streamedProvider?.provider || 'Zulora AI',
+        effortLevel: effortLevel || 'medium',
         sources: result.sources || [],
         webSearched: Boolean(enableWebSearch),
         thinkingSteps: shouldShowThinkingBox ? [...thinkingSteps] : undefined,
@@ -2073,33 +2085,35 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       <div
         ref={messagesContainerRef}
         onScroll={handleScroll}
-        className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-4 md:px-6 py-4 sm:py-6 space-y-6 scroll-smooth"
+        className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-4 md:px-6 py-4 sm:py-6 scroll-smooth"
       >
-        {messages.length === 0 ? (
-          <WelcomeScreen user={{ displayName: currentUser?.displayName || (guestMode ? 'Guest' : 'Shiven') }} onSuggestion={(q) => sendMessage(q)} />
-        ) : (
-          <>
-            {messages.map((msg, i) => (
-              <MessageBubble
-                key={msg.id || i}
-                message={msg}
-                index={i}
-                onCopy={handleCopy}
-                onSpeak={handleSpeak}
-                onEdit={handleEditPrompt}
-                isSpeaking={isSpeakingIndex}
-                copiedIndex={copiedIndex}
-                attachmentPreviews={messageMedia.get(msg.id) || []}
-                onReconnect={() => {
-                  setConnectorReauthProvider(msg.connectorProvider || 'Google service');
-                  setShowConnectorsModal(true);
-                }}
-              />
-            ))}
-            {loading && showThinking && <TypingIndicator />}
-          </>
-        )}
-        <div ref={messagesEndRef} />
+        <div className="w-full max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mx-auto flex-1 flex flex-col space-y-6">
+          {messages.length === 0 ? (
+            <WelcomeScreen user={{ displayName: currentUser?.displayName || (guestMode ? 'Guest' : 'Shiven') }} onSuggestion={(q) => sendMessage(q)} />
+          ) : (
+            <>
+              {messages.map((msg, i) => (
+                <MessageBubble
+                  key={msg.id || i}
+                  message={msg}
+                  index={i}
+                  onCopy={handleCopy}
+                  onSpeak={handleSpeak}
+                  onEdit={handleEditPrompt}
+                  isSpeaking={isSpeakingIndex}
+                  copiedIndex={copiedIndex}
+                  attachmentPreviews={messageMedia.get(msg.id) || []}
+                  onReconnect={() => {
+                    setConnectorReauthProvider(msg.connectorProvider || 'Google service');
+                    setShowConnectorsModal(true);
+                  }}
+                />
+              ))}
+              {loading && showThinking && <TypingIndicator />}
+            </>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
       </div>
 
       {/* Scroll to Bottom Button */}

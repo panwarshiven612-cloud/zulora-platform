@@ -225,7 +225,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         e.stopPropagation();
         submitMessage(e);
       }}
-      className="chat-composer-container relative w-full max-w-4xl mx-auto rounded-2xl sm:rounded-3xl border border-slate-200/90 dark:border-slate-800 bg-white/95 dark:bg-[#0c1222]/95 shadow-xl backdrop-blur-2xl transition-all"
+      className="chat-composer-container relative w-full max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mx-auto rounded-2xl sm:rounded-3xl border border-slate-200/90 dark:border-slate-800 bg-white/95 dark:bg-[#0c1222]/95 shadow-xl backdrop-blur-2xl transition-all"
     >
       {/* Attachment Chips Tray */}
       {activeAttachments.length > 0 && (

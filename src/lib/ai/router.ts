@@ -143,21 +143,21 @@ export function resolveModelRoute(
     };
   }
 
-  // Deep Research -> Gemini 3.8 Flash with deep reasoning tokens (40k)
+  // Deep Research -> Gemini 3.8 Flash with deep reasoning tokens (65k)
   if (taskType === 'research') {
     return {
       provider: 'gemini',
       model: 'gemini-3.8-flash',
       isAuto: true,
-      maxTokens: 40000,
+      maxTokens: 65536,
       taskType: 'research'
     };
   }
 
-  // Common / Simple tasks -> Ultra-fast Groq LPU (<500ms latency)
+  // Common / Simple tasks -> Ultra-fast Gemini 3.5 Flash Lite (<500ms latency)
   return {
-    provider: 'groq',
-    model: 'llama-3.3-70b-versatile',
+    provider: 'gemini',
+    model: 'gemini-3.5-flash-lite',
     isAuto: true,
     maxTokens: 16384,
     taskType: 'simple'

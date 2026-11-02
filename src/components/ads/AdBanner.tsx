@@ -102,7 +102,7 @@ export const AdBanner: React.FC<AdBannerProps> = ({
     <div
       role="complementary"
       aria-label="Advertisement and Rewards"
-      className={`relative w-full max-w-4xl mx-auto my-1.5 transition-all duration-300 animate-fade-slide ${className}`}
+      className={`relative w-full max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mx-auto my-1.5 transition-all duration-300 animate-fade-slide ${className}`}
     >
       <div className="relative overflow-hidden rounded-2xl border border-sky-200/80 dark:border-sky-900/60 bg-gradient-to-r from-sky-50/95 via-indigo-50/80 to-emerald-50/80 dark:from-[#0c1222]/95 dark:via-sky-950/40 dark:to-slate-900/90 p-2 sm:p-2.5 shadow-sm backdrop-blur-md">
         
