@@ -4,19 +4,24 @@ import {
   OPENROUTER_KEYS, 
   getRotatedKeys,
   markKeyFailure,
+  recordKeySuccess,
   isKeyHealthy,
   resolveModelRoute,
-  classifyTaskType
+  classifyTaskType,
+  createLatencyWatchdog,
+  buildContinuationContext,
+  LATENCY_TIMEOUT_MS,
+  CODE_GENERATION_MAX_TOKENS
 } from '../../../lib/ai/router';
 import { MASTER_SYSTEM_PROMPT } from '../../../lib/llm/prompts/systemPrompt';
 import { buildInjectedConnectorContext, ConnectorContextPayload } from '../../../lib/connectors';
 import { isResearchQuery, formatResearchPrompt, getResearchTokenBudget, RESEARCH_TOKEN_BUDGET } from '../../../lib/ai/researchFormatter';
 
-// Dynamic effort-level token budget resolver
+// Dynamic effort-level token budget resolver scaling up to 65,536 tokens
 function resolveEffortTokenBudget(effortLevel: string, coding: boolean = false): number {
-  const EFFORT_BUDGETS: Record<string, number> = { low: 4096, medium: 8192, high: 20000, extra: 40000, max: 65536 };
+  const EFFORT_BUDGETS: Record<string, number> = { low: 4096, medium: 8192, high: 20000, extra: 45000, max: 65536 };
   let budget = EFFORT_BUDGETS[effortLevel] ?? 8192;
-  if (coding && budget < 20000) budget = 20000;
+  if (coding && budget < 45000) budget = 65536;
   return budget;
 }
 
@@ -56,22 +61,26 @@ function emitProviderChunk(
   controller.enqueue(encoder.encode(['event: token', `data: ${payload}`, '', ''].join('\n')));
 }
 
-function resetStreamStats(stats: StreamStats) {
-  stats.tokenCount = 0;
-  stats.responseText = '';
-  stats.firstTokenAt = undefined;
-}
-
-// Fast linked abort signal with aggressive 4s timeout for rapid failover
-function linkedFetchSignal(parent?: AbortSignal, timeoutMs = 4000) {
+// 2-Second Latency Switcher linked abort signal
+function linkedFetchSignal(parent?: AbortSignal, timeoutMs = LATENCY_TIMEOUT_MS) {
   const fetchController = new AbortController();
+  let disarmed = false;
   const abortFromParent = () => fetchController.abort(parent?.reason);
   if (parent?.aborted) fetchController.abort(parent.reason);
   else parent?.addEventListener('abort', abortFromParent, { once: true });
-  const timeoutId = setTimeout(() => fetchController.abort(), timeoutMs);
+  const timeoutId = setTimeout(() => {
+    if (!disarmed) {
+      fetchController.abort(new Error(`Latency threshold exceeded: ${timeoutMs}ms`));
+    }
+  }, timeoutMs);
   return {
     signal: fetchController.signal,
+    disarm: () => {
+      disarmed = true;
+      clearTimeout(timeoutId);
+    },
     cleanup: () => {
+      disarmed = true;
       clearTimeout(timeoutId);
       parent?.removeEventListener('abort', abortFromParent);
     }
@@ -87,7 +96,11 @@ async function streamFromGemini(
   systemInstruction?: string,
   maxOutputTokens: number = 16384
 ): Promise<boolean> {
-  const contents = messages
+  const effectiveMessages = stats.responseText 
+    ? buildContinuationContext(messages, stats.responseText)
+    : messages;
+
+  const contents = effectiveMessages
     .filter(m => m.role !== 'system')
     .map(m => ({
       role: m.role === 'assistant' ? 'model' : 'user',
@@ -107,9 +120,10 @@ async function streamFromGemini(
     for (const key of rotatedKeys) {
       if (stats.signal?.aborted) return false;
       if (!key) continue;
+      const startedAt = Date.now();
+      const fetchSignal = linkedFetchSignal(stats.signal, LATENCY_TIMEOUT_MS);
       try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:streamGenerateContent?alt=sse&key=${key}`;
-        const fetchSignal = linkedFetchSignal(stats.signal, 4000);
 
         const res = await fetch(url, {
           method: 'POST',
@@ -124,12 +138,10 @@ async function streamFromGemini(
           }),
           signal: fetchSignal.signal
         });
-        fetchSignal.cleanup();
 
         if (res.status === 429 || res.status === 404 || res.status === 401 || res.status >= 500 || !res.ok || !res.body) {
-          if (res.status === 429 || res.status === 401 || res.status === 404) {
-            markKeyFailure(key);
-          }
+          fetchSignal.cleanup();
+          markKeyFailure(key);
           continue;
         }
 
@@ -141,6 +153,12 @@ async function streamFromGemini(
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
+          // First chunk received within 2 seconds: disarm latency watchdog
+          if (!receivedAnyChunk) {
+            receivedAnyChunk = true;
+            fetchSignal.disarm();
+            recordKeySuccess(key, Date.now() - startedAt);
+          }
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
@@ -154,7 +172,6 @@ async function streamFromGemini(
                 const data = JSON.parse(jsonStr);
                 const textChunk = data.candidates?.[0]?.content?.parts?.[0]?.text;
                 if (textChunk) {
-                  receivedAnyChunk = true;
                   emitProviderChunk(textChunk, controller, encoder, stats);
                 }
               } catch {
@@ -163,11 +180,13 @@ async function streamFromGemini(
             }
           }
         }
+        fetchSignal.cleanup();
 
         if (receivedAnyChunk) {
           return true;
         }
       } catch {
+        fetchSignal.cleanup();
         markKeyFailure(key);
         if (stats.signal?.aborted) return false;
       }
@@ -187,11 +206,16 @@ async function streamFromOpenAiCompatible(
   systemInstruction?: string,
   maxTokens: number = 16384
 ): Promise<boolean> {
-  try {
-    if (stats.signal?.aborted || !key) return false;
-    const fetchSignal = linkedFetchSignal(stats.signal, 4000);
+  if (stats.signal?.aborted || !key) return false;
+  const startedAt = Date.now();
+  const fetchSignal = linkedFetchSignal(stats.signal, LATENCY_TIMEOUT_MS);
 
-    const formattedMessages = [...messages];
+  try {
+    const effectiveMessages = stats.responseText 
+      ? buildContinuationContext(messages, stats.responseText)
+      : messages;
+
+    const formattedMessages = [...effectiveMessages];
     if (systemInstruction && !formattedMessages.some(m => m.role === 'system')) {
       formattedMessages.unshift({ role: 'system', content: systemInstruction });
     }
@@ -211,12 +235,10 @@ async function streamFromOpenAiCompatible(
       }),
       signal: fetchSignal.signal
     });
-    fetchSignal.cleanup();
 
     if (res.status === 429 || res.status === 404 || res.status === 401 || res.status >= 500 || !res.ok || !res.body) {
-      if (res.status === 429 || res.status === 401 || res.status === 404) {
-        markKeyFailure(key);
-      }
+      fetchSignal.cleanup();
+      markKeyFailure(key);
       return false;
     }
 
@@ -228,6 +250,11 @@ async function streamFromOpenAiCompatible(
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      if (!receivedAnyToken) {
+        receivedAnyToken = true;
+        fetchSignal.disarm();
+        recordKeySuccess(key, Date.now() - startedAt);
+      }
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
@@ -241,7 +268,6 @@ async function streamFromOpenAiCompatible(
             const data = JSON.parse(jsonStr);
             const token = data.choices?.[0]?.delta?.content;
             if (token) {
-              receivedAnyToken = true;
               emitProviderChunk(token, controller, encoder, stats);
             }
           } catch {
@@ -250,9 +276,11 @@ async function streamFromOpenAiCompatible(
         }
       }
     }
+    fetchSignal.cleanup();
 
     return receivedAnyToken;
   } catch {
+    fetchSignal.cleanup();
     markKeyFailure(key);
     return false;
   }
@@ -346,7 +374,7 @@ export async function POST(req: Request) {
     effectiveSystemPrompt = formatResearchPrompt(effectiveSystemPrompt, injectedConnectorText);
   }
   const researchBudget = isResearch ? getResearchTokenBudget(effortLevel) : 0;
-  const finalTokenBudget = Math.max(maxTokens, effortBudget, researchBudget);
+  const finalTokenBudget = Math.max(maxTokens, effortBudget, researchBudget, CODE_GENERATION_MAX_TOKENS);
 
   // Non-streaming fallback
   if (!wantsStream) {
@@ -421,7 +449,7 @@ export async function POST(req: Request) {
       let activeProvider: string = provider;
       let activeModel: string = model;
 
-      // 1. Strict Primary Engine Dispatch (Strictly honor user selection)
+      // 1. Strict Primary Engine Dispatch
       if (provider === 'gemini') {
         streamed = await streamFromGemini(messages, model, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
       } else if (provider === 'groq') {
@@ -430,7 +458,6 @@ export async function POST(req: Request) {
           activeModel = 'llama-3.3-70b-versatile';
           streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
           if (!streamed) {
-            // Try backup model with same key if model-specific issue
             activeModel = 'llama-3.1-8b-instant';
             streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
           }
@@ -448,16 +475,15 @@ export async function POST(req: Request) {
         return;
       }
 
-      // 2. Intelligent Failover Waterfall (ONLY if primary engine hit 429/error without tokens)
+      // 2. Intelligent Failover Waterfall with Token Continuity
       if (!streamed) {
-        emit('reset', {});
-        resetStreamStats(stats);
+        if (!stats.responseText) {
+          emit('thinking', { status: 'reconnecting', message: 'Switching to next healthy model cluster...' });
+        }
 
-        // Strict Manual Mode: If user explicitly picked an engine, exhaust other healthy options,
-        // then gracefully waterfall to safety engines so the user request never fails.
+        // Waterfall routing maintaining token continuity
         if (!isAuto) {
           if (provider === 'gemini') {
-            // Waterfall fallback from Gemini: Try Groq -> OpenRouter
             activeProvider = 'groq';
             activeModel = 'llama-3.3-70b-versatile';
             emit('provider', { provider: 'Groq LPU (Fallback)', model: activeModel });
@@ -466,36 +492,29 @@ export async function POST(req: Request) {
               streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
             }
           } else if (provider === 'groq') {
-            // Waterfall fallback from Groq: Try Gemini 3.5 Flash Lite -> Gemini 3.8 Flash -> OpenRouter
             activeProvider = 'gemini';
             activeModel = 'gemini-3.5-flash-lite';
-            emit('provider', { provider: 'Google Gemini (Fallback)', model: activeModel });
+            emit('provider', { provider: 'Gemini 3.5 Flash Lite (Fallback)', model: activeModel });
             streamed = await streamFromGemini(messages, activeModel, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
           } else if (provider === 'openrouter') {
-            // Waterfall fallback from OpenRouter: Try Groq -> Gemini 3.5 Flash Lite
-            activeProvider = 'groq';
-            activeModel = 'llama-3.3-70b-versatile';
-            emit('provider', { provider: 'Groq LPU (Fallback)', model: activeModel });
-            for (const groqKey of getRotatedKeys('groq', GROQ_KEYS)) {
-              if (streamed) break;
-              streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
-            }
+            activeProvider = 'gemini';
+            activeModel = 'gemini-3.8-flash';
+            emit('provider', { provider: 'Google Gemini (Fallback)', model: activeModel });
+            streamed = await streamFromGemini(messages, activeModel, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
           }
         } else {
-          // Smart Auto Waterfall
-          if (taskType === 'simple' || taskType === 'general') {
-            // Waterfall Step 1: Groq LPU
-            if (!streamed) {
-              activeProvider = 'groq';
-              activeModel = 'llama-3.3-70b-versatile';
-              emit('provider', { provider: 'Groq LPU', model: activeModel });
-              for (const groqKey of getRotatedKeys('groq', GROQ_KEYS)) {
-                if (streamed) break;
-                streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
-              }
+          // Auto Mode Waterfall
+          if (taskType === 'simple') {
+            // Step 1: Groq LPU (Ultra-fast hardware sub-500ms)
+            activeProvider = 'groq';
+            activeModel = 'llama-3.3-70b-versatile';
+            emit('provider', { provider: 'Groq LPU', model: activeModel });
+            for (const groqKey of getRotatedKeys('groq', GROQ_KEYS)) {
+              if (streamed) break;
+              streamed = await streamFromOpenAiCompatible('https://api.groq.com/openai/v1/chat/completions', groqKey, activeModel, messages, controller, encoder, stats, effectiveSystemPrompt, 16384);
             }
 
-            // Waterfall Step 2: Gemini 3.5 Flash Lite
+            // Step 2: Gemini 3.5 Flash Lite
             if (!streamed) {
               activeProvider = 'gemini';
               activeModel = 'gemini-3.5-flash-lite';
@@ -503,7 +522,7 @@ export async function POST(req: Request) {
               streamed = await streamFromGemini(messages, activeModel, controller, encoder, stats, effectiveSystemPrompt, 16384);
             }
 
-            // Waterfall Step 3: OpenRouter Multi-Provider
+            // Step 3: OpenRouter
             if (!streamed) {
               activeProvider = 'openrouter';
               activeModel = 'meta-llama/llama-3.3-70b-instruct';
@@ -515,16 +534,15 @@ export async function POST(req: Request) {
             }
           }
 
-          // Coding, Deep Research, Complex Video Generation:
-          // Gemini 3.8 Flash with dedicated 40,000 token execution budget
+          // Coding, Deep Research, Complex Video/UI Graphics: Gemini 3.8 Flash (65,536 tokens)
           if (!streamed) {
             activeProvider = 'gemini';
             activeModel = 'gemini-3.8-flash';
-            emit('provider', { provider: 'Google Gemini', model: activeModel });
+            emit('provider', { provider: 'Google Gemini 3.8 Flash', model: activeModel });
             streamed = await streamFromGemini(messages, activeModel, controller, encoder, stats, effectiveSystemPrompt, finalTokenBudget);
           }
 
-          // Fallback to Groq / OpenRouter if Gemini quota exhausted
+          // Fallback to Groq / OpenRouter with token continuity
           if (!streamed) {
             activeProvider = 'groq';
             activeModel = 'llama-3.3-70b-versatile';
@@ -547,7 +565,7 @@ export async function POST(req: Request) {
         }
 
         // Ultimate Resilient Edge Fallback
-        if (!streamed) {
+        if (!streamed && !stats.responseText) {
           activeProvider = 'zulora';
           activeModel = 'resilient-edge';
           emit('provider', { provider: 'Zulora AI Engine', model: activeModel });

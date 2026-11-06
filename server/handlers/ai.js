@@ -36,7 +36,7 @@ const GEMINI_CHAT_MODEL_FALLBACKS = Object.freeze([
 const CHAT_WINDOW_MS = 4 * 60 * 60 * 1000;
 const CHAT_REQUEST_LIMIT = 60;
 const TOKEN_LIMITS = { free: 70_000, pro: 200_000, ultra: 8_000_000 };
-const CODE_GENERATION_MAX_TOKENS = 32_768;
+const CODE_GENERATION_MAX_TOKENS = 65_536;
 const maskClientChatMetadata = (output, preference) => ({
   ...output,
   provider: output?.provider || 'Zulora AI',
@@ -673,7 +673,7 @@ async function readProviderEventStream(response, readToken, onToken, streamState
       return await Promise.race([
         reader.read(),
         new Promise((_, reject) => {
-          const timeoutMs = streamState.sent ? 12_000 : 4_000;
+          const timeoutMs = streamState.sent ? 12_000 : 2_000;
           timer = setTimeout(() => reject(new Error('The model stream stalled. Switching to a fallback model.')), timeoutMs);
         })
       ]);
@@ -730,7 +730,7 @@ async function tryOpenAiProvider(provider, messages, options = {}) {
       const response = await fetchProviderWithRetry(config.url, {
         method: 'POST', headers, signal: options.signal,
         body: JSON.stringify(requestBody)
-      }, options.stream ? 12_000 : 15_000, 1);
+      }, options.stream ? 2_000 : 15_000, 1);
       if (response.ok) {
         options.onProvider?.(config.label, config.model);
         let tokenUsage;
@@ -788,7 +788,7 @@ async function tryGemini(messages, options = {}) {
           ...(options.enableWebSearch ? { tools: [{ google_search: {} }] } : {}),
           generationConfig: { temperature: 0.7, maxOutputTokens: options.maxTokens || (options.coding || options.flagship || options.model === 'gemini-3.8-flash' ? CODE_GENERATION_MAX_TOKENS : 4096) }
         })
-      }, options.stream ? 12_000 : 16_000, 1);
+      }, options.stream ? 2_000 : 16_000, 1);
       if (response.ok) {
         options.onProvider?.('Google Gemini', model);
         let data;
@@ -851,7 +851,7 @@ async function tryPollinationsText(messages, options = {}) {
     const combined = sysPrompt ? `${sysPrompt}\n\nUser: ${userPrompt}` : userPrompt;
     if (!combined.trim()) return null;
     const url = `https://text.pollinations.ai/${encodeURIComponent(combined.slice(0, 3500))}?model=mistral`;
-    const res = await fetchWithTimeout(url, { method: 'GET', signal: options.signal }, options.stream ? 12_000 : 15_000);
+    const res = await fetchWithTimeout(url, { method: 'GET', signal: options.signal }, options.stream ? 2_000 : 15_000);
     if (res.ok) {
       const text = await res.text();
       if (typeof text === 'string' && text.trim()) {
@@ -894,9 +894,9 @@ export async function generateTextWithWaterfall(prompt, systemPrompt = '') {
 }
 
 function resolveEffortTokenBudget(effortLevel, coding, research) {
-  const EFFORT_BUDGETS = { low: 4096, medium: 8192, high: 20000, extra: 40000, max: 65536 };
+  const EFFORT_BUDGETS = { low: 4096, medium: 8192, high: 20000, extra: 45000, max: 65536 };
   let budget = EFFORT_BUDGETS[String(effortLevel || 'medium')] || 8192;
-  if ((coding || research) && budget < 20000) budget = 20000;
+  if ((coding || research) && budget < 45000) budget = 65536;
   return budget;
 }
 
@@ -965,7 +965,10 @@ async function generateChat(body, streamOptions = {}) {
   const coding = isCodeGenerationRequest({ messages: [{ role: 'user', content: latestUserPrompt }] });
   const complex = ['pro', 'think', 'gemini-3.8-flash', 'high_reason', 'pro_314', 'pro_ultra'].includes(requestedPreference) ||
     /\b(?:complex|think deeply|reason(?:ing)?|analy[sz]e|analysis|architecture|derive|evaluate|proof|step by step|high reason)\b/i.test(latestUserPrompt);
-  const preference = requestedPreference === 'auto' ? 'gemini-3.8-flash' : requestedPreference;
+  const isSimpleQuery = simpleQuery || (!coding && !websiteBuild && !researchMode && !complex && latestUserPrompt.length < 300);
+  const preference = requestedPreference === 'auto'
+    ? (isSimpleQuery ? 'gemini-3.5-flash-lite' : 'gemini-3.8-flash')
+    : requestedPreference;
   const useProModel = ['pro', 'think', 'gemini-3.8-flash', 'high_reason', 'pro_314', 'pro_ultra'].includes(preference);
   const isDirectGemini = String(preference).startsWith('gemini-');
   const geminiModel = isDirectGemini
@@ -996,8 +999,7 @@ async function generateChat(body, streamOptions = {}) {
       if (streamOptions.signal?.aborted) throw error;
       console.warn(`${provider} chat generation failed; trying the next fallback:`, error?.message || 'provider error');
       if (streamOptions.stream && streamOptions.streamState?.sent) {
-        streamOptions.onReset?.();
-        streamOptions.streamState.sent = false;
+        // Token continuity: preserve partial emission, do not hard-reset
       }
     }
   }

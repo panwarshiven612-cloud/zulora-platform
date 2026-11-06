@@ -79,7 +79,9 @@ import { guestGate } from '../services/guestGate';
 import { backgroundTaskManager } from '../services/backgroundTaskManager';
 import { runFullVideoPipeline } from '../services/videoEditAgent';
 import { MotionArtifact, detectMotionArtifact } from './chat/MotionArtifact';
+import ThoughtProcess from './chat/ThoughtProcess';
 import ResponseProcess from './chat/ResponseProcess';
+import { getUserPersonalContext, saveUserConversationContext, indexUserFact } from '../lib/ai/memory';
 
 /* ============================================================
    CONSTANTS
@@ -523,7 +525,7 @@ const MessageBubble = memo(({ message, index, onCopy, onSpeak, onEdit, isSpeakin
             </>
           ) : (
             <>
-              <ResponseProcess 
+              <ThoughtProcess 
                 steps={message.thinkingSteps} 
                 isStreaming={message.streaming} 
                 sources={message.sources}
@@ -1380,9 +1382,11 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       if (!shouldShowThinkingBox || !label) return;
       const prior = thinkingSteps.at(-1);
       if (prior?.label === label && prior.status === status && prior.detail === detail) return;
+      const stepTime = Date.now();
+      const elapsedOffset = `+${Math.max(0.1, (stepTime - startTime) / 1000).toFixed(1)}s`;
       thinkingSteps = [
         ...thinkingSteps.map(step => step.status === 'running' ? { ...step, status: 'done' } : step),
-        { label: String(label), status, detail: String(detail || '') }
+        { label: String(label), status, detail: String(detail || ''), timestamp: stepTime, timeOffset: elapsedOffset }
       ].slice(-16);
       publishAssistant();
     };
@@ -1460,6 +1464,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
       }
       persistGenerationSnapshot(true);
       const contextMessages = buildContextMessages();
+      let personalMemoryPrompt = '';
       const [contextMemory, aiBrain, userVault] = !simpleQuery && currentUser?.uid
         ? await Promise.all([
           firestoreService.getRecentActivityContext(currentUser.uid),
@@ -1467,6 +1472,13 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           firestoreService.getVault(currentUser.uid)
         ])
         : [[], null, null];
+      if (!simpleQuery && currentUser?.uid) {
+        try {
+          personalMemoryPrompt = await getUserPersonalContext(currentUser.uid);
+        } catch (memErr) {
+          console.warn('[Memory] Could not load personal context:', memErr);
+        }
+      }
 
       // Build personal memory context string from Brain + Vault for API injection
       let personalMemoryContext = '';
@@ -1777,6 +1789,7 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           contextMemory,
           aiBrain,
           userVault,
+          personalMemory: personalMemoryPrompt || personalMemoryContext,
           guestMode: Boolean(guestMode && !currentUser?.uid),
           connectorContext: simpleQuery ? '' : connectorContext,
           attachments: [...attachmentPayloads, ...(driveTask?.attachments || [])],
@@ -1914,6 +1927,18 @@ export const ChatInterface = ({ activeSession, onUpdateSession, onNewChat, onOpe
           generationState: 'complete'
         };
         firestoreService.saveChatSession(currentUser.uid, sessionId, backgroundSession).catch(console.warn);
+      }
+
+      if (currentUser?.uid && !simpleQuery) {
+        saveUserConversationContext(currentUser.uid, sessionId, {
+          title: sessionTitle || basePrompt.slice(0, 60),
+          lastPrompt: basePrompt,
+          summary: responseText.slice(0, 300)
+        }).catch(err => console.warn('[MemorySync] Error saving conversation context:', err));
+
+        if (basePrompt.length > 20 && /\b(?:my name is|i am|i prefer|remember that|always|my project|my business|i work on|i like|i dislike)\b/i.test(basePrompt)) {
+          indexUserFact(currentUser.uid, basePrompt, 'user_directive').catch(console.warn);
+        }
       }
 
       setMessages(prev => {

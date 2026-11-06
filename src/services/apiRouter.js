@@ -16,9 +16,9 @@ import { requestConnectorModel, requestGeneration, requestGenerationStream, trac
 
 // Effort token budget resolver (inline, avoids TS import in .js file)
 function resolveTokenBudget(effortLevel, coding, research) {
-  const EFFORT_BUDGETS = { low: 4096, medium: 8192, high: 20000, extra: 40000, max: 65536 };
+  const EFFORT_BUDGETS = { low: 4096, medium: 8192, high: 20000, extra: 45000, max: 65536 };
   let budget = EFFORT_BUDGETS[String(effortLevel || 'medium')] || 8192;
-  if ((coding || research) && budget < 20000) budget = 20000;
+  if ((coding || research) && budget < 45000) budget = 65536;
   return budget;
 }
 import { generateVideo as generateVideoWithProviders } from './videoService';
@@ -1083,7 +1083,8 @@ export const apiRouter = {
     const flagship = requestedTier === 'think' || requestedTier === 'gemini-2.5-pro';
     const geminiSelected = requestedTier === 'gemini';
     const intentGeminiModel = directGeminiModel ? requestedTier : flagship ? GEMINI_PRO_MODEL_ID : 'gemini-3.8-flash';
-    const isComplex = coding || websiteBuild || options.effort === 'high' || options.effort === 'extra' || options.effort === 'max';
+    const isMotionOrResearch = /\b(?:video|animation|motion|motion\s*graphics?|render|timeline|storyboard|gsap|canvas|keyframe|1080x1920|9:16|mp4|ffmpeg|ui\/ux\s*animation|lottie|threejs|webgl|shader|kinetic|research|deep\s*dive|in-depth|cite|citation|paper|sources|benchmark|analysis|audit|compare|investigate|thorough)\b/i.test(prompt);
+    const isComplex = coding || websiteBuild || isMotionOrResearch || options.effort === 'high' || options.effort === 'extra' || options.effort === 'max';
     const autoTier = isComplex ? 'gemini-3.8-flash' : 'gemini-3.5-flash-lite';
     const tier = vision
       ? directGeminiModel ? requestedTier : (geminiSelected ? 'gemini' : requestedTier === 'think' || requestedTier === 'pro' ? 'gemini-2.5-pro' : 'gemini-3.8-flash')

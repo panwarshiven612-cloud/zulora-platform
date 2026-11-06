@@ -190,11 +190,13 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
         setInterimTranscript(interim.trim());
         clearTimeout(silenceTimerRef.current);
         if (combined.length > 2) {
+          const hasPunctuation = /[.?!…]$/.test(combined.trim());
+          const delayMs = hasPunctuation ? 500 : 750;
           silenceTimerRef.current = window.setTimeout(() => {
             if (!activeRef.current || !combined.trim()) return;
             try { recognition.stop(); } catch { /* The browser may have ended recognition already. */ }
             processQueryRef.current?.(combined.trim());
-          }, 1_450);
+          }, delayMs);
         }
       };
       recognition.onerror = event => {
@@ -300,7 +302,7 @@ export const VoiceAssistantModal = ({ isOpen, onClose, currentUser, onNewTurn })
     try {
       const context = conversation.slice(-6).map(turn => ({ role: turn.role, content: turn.text }));
       const generateVoiceReply = ({ stream = true } = {}) => apiRouter.generateChat(voicePrompt, context, {
-        model: 'auto', currentUser,
+        model: 'gemini-3.5-flash-lite', simpleQuery: true, currentUser,
         ...(stream ? {
           onToken: token => {
             if (!activeRef.current || !token) return;

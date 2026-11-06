@@ -14,7 +14,7 @@
 
 const ELEVENLABS_WSS = 'wss://api.elevenlabs.io/v1/text-to-speech';
 const MODEL_ID = 'eleven_turbo_v2_5';
-const CHUNK_WORD_THRESHOLD = 3; // flush audio every N words
+const CHUNK_WORD_THRESHOLD = 2; // flush audio every N words
 const PUNCTUATION_RE = /[.!?,;:\n]/;
 
 function getApiKey() {
@@ -75,7 +75,10 @@ export class LiveVoiceStream {
 
   _getAudioCtx() {
     if (!this._audioCtx) {
-      this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      this._audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+    }
+    if (this._audioCtx.state === 'suspended') {
+      try { this._audioCtx.resume(); } catch {}
     }
     return this._audioCtx;
   }
@@ -121,7 +124,7 @@ export class LiveVoiceStream {
           this._send({
             text: ' ',
             voice_settings: { stability: 0.5, similarity_boost: 0.8 },
-            generation_config: { chunk_length_schedule: [120, 160, 250, 290] }
+            generation_config: { chunk_length_schedule: [50, 80, 120, 150] }
           });
           this.onOpen();
           resolve();
